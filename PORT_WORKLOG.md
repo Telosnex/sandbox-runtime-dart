@@ -102,10 +102,14 @@ Repeat these translation decisions for the rest of the port:
   than rebuilding it in a ported file. `NodeError` carries `code`, `syscall`,
   and `path`; its FFI operation captures errno before another native call can
   overwrite it. Use `NodeException` for generic Node `Error` stringification.
-  Dart's RegExp omits Node's `d`-flag capture offsets; the `node/regexp.dart`
-  shim maps captures to their first occurrence in the full match. This is
-  exact for the current upstream patterns but ambiguous if a user-supplied
-  pattern repeats group 1's value earlier in its overall match.
+  Dart's RegExp omits Node's `d`-flag capture offsets; `node/regexp.dart`
+  instruments capture prefixes and lookbehind spans, and renumbers numeric
+  backreferences. Unsupported quantified captures and legacy octal escapes
+  throw rather than guess. Tests cover duplicate text, lookbehind, nesting,
+  escapes, named captures, and backreferences.
+- **Unavailable Node APIs.** Until an HTTP/socket shim exists, an unimplemented
+  Node API must throw `UnimplementedError` with the blocking hard spot rather
+  than silently no-op (particularly for body gates and budget enforcement).
 - **`process` overrides.** Import the shim as `process`; read its `platform`,
   `env`, and `cwd()` getters at the point of use. Tests that patch Node globals
   call `setPlatformForTesting`, `setEnvForTesting`, or `setCwdForTesting` and
@@ -131,6 +135,10 @@ and replaces paired EventEmitter one-shot callbacks with the
 - `http-proxy.ts`, `tls-terminate-proxy.ts`: depend on Node `http` details
   (`rawHeaders`, CONNECT `head`). `dart:io` lowercases headers. Likely needs a
   raw HTTP/1.1 parser shim.
+- `emitted-connection.ts`: depends on Node's raw HTTP parser callbacks and
+  emitted-socket lifecycle. `emitted-connection.dart` is partial until the
+  HTTP/socket shim exists; unsupported entry points fail with
+  `UnimplementedError` rather than fail open.
 - `mitm-leaf.ts`: Node picks a certificate per SNI. Dart has no SNI callback.
   Read the SNI from the ClientHello, then `SecureSocket.secureServer` with
   `bufferedData`.
@@ -156,10 +164,17 @@ and replaces paired EventEmitter one-shot callbacks with the
 | `src/utils/which.ts` | `lib/src/utils/which.dart` | `test/utils/which_test.dart`, `test/utils/which_node_test.dart` | Ported; 7 pass, 2 skipped (Bun-only); Node fallback script kept separate; Dart's synchronous process API has no spawn timeout |
 | `src/utils/ripgrep.ts` | `lib/src/utils/ripgrep.dart` | `test/utils/ripgrep_test.dart` | Ported; real `rg` process; six tests pass on this host; POSIX argv0 uses Bash `exec -a`; Windows argv0 case skips because Dart cannot override argv[0] |
 | `src/sandbox/sandbox-schemas.ts` | `lib/src/sandbox/sandbox_schemas.dart` | — | Ported; no matching standalone test file; six other sandbox tests import it (listed below) |
-| `src/sandbox/credential-extract.ts` | `lib/src/sandbox/credential_extract.dart` | — | Ported; no matching standalone test file; its direct extraction tests in `credential-mask-files.test.ts` remain for a later step; capture offsets use the RegExp shim approximation above |
-| `src/sandbox/emitted-connection.ts` | `lib/src/sandbox/emitted_connection.dart` | — | Ported; no matching standalone test file; byte-budget and runtime/proxy tests are deferred; Dart has no Node emitted-connection parser/server API, so header-batch and encoding functions are no-ops, while gate/end need Node-shaped request/socket objects at the shim boundary |
+| `src/sandbox/credential-extract.ts` | `lib/src/sandbox/credential_extract.dart` | — | Ported; no matching standalone test file; direct extraction tests in `credential-mask-files.test.ts` remain queued; exact capture offsets use the instrumented RegExp shim |
+| `src/sandbox/emitted-connection.ts` | `lib/src/sandbox/emitted_connection.dart` | — | **Partial: blocked on HTTP shim**; no matching upstream test file; byte-budget/runtime tests are deferred; unsupported HTTP/parser/socket operations throw rather than no-op |
 | — (Node shims) | `lib/src/node/{errno,events,fs,net,process}.dart` | — | No upstream counterparts; small compatibility layer for these files |
-| — (Node shims) | `lib/src/node/{abort,emitted_http,regexp}.dart` | — | No upstream counterparts; AbortSignal, emitted HTTP/socket, and RegExp-with-indices boundaries for this batch |
+| — (Node shims) | `lib/src/node/{abort,emitted_http,regexp}.dart` | `test/node/{emitted_http,regexp}_test.dart` | No upstream counterparts; AbortSignal, fail-closed HTTP/socket boundary, and exact supported RegExp-with-indices instrumentation |
+
+### Known port gaps
+
+- `which.ts`: Dart's synchronous `Process.runSync` has no `spawnSync` timeout;
+  the upstream one-second timeout cannot be reproduced synchronously.
+- `emitted-connection.ts`: blocked on the raw HTTP/1.1 parser/socket shim;
+  unsupported operations throw as recorded above.
 
 ### Related upstream tests not ported in this batch
 
@@ -170,6 +185,7 @@ they stay queued for those files' port steps (per the one-file test rule):
 - `sandbox-schemas.ts`: `test/sandbox/{macos-seatbelt,symlink-boundary,macos-profile-size,allow-read,read-list-precedence,macos-pty}.test.ts`.
 - `emitted-connection.ts`: direct tests in `test/sandbox/{byte-budget,tls-terminate-runtime,tls-terminate-upload-gate,tls-terminate-relay-budget}.test.ts`; its helper `test/helpers/emitted-connections.ts` is used by `test/proxy-cli.test.ts` and `test/sandbox/{canonical-host-routing,client-abort,connect-non-tls,credential-mask-body,credential-mask-sigv4,deny-late-body,invalid-upstream-response,proxy-only-edges,proxy-only,request-filter,request-rewriting,request-target-forwarding,resolved-address-guard,response-header-bytes,tls-terminate-handshake-deadline,tls-terminate-in-process,tls-terminate-keepalive,tls-terminate-proxy,trailers-then-request}.test.ts`.
 
-The sandbox schema port uses Dart named records for nested object-shaped
-values (`maskedFileBinds` and `NetworkHostPattern`); unlike upstream plain
-objects, records cannot be reassigned field-by-field.
+The upstream `src` and `test` grep for `maskedFileBinds` and
+`NetworkHostPattern` found reads and object construction only; no code mutates
+`realPath`, `fakePath`, `host`, or `port` fields. The existing named records
+remain appropriate for those nested object shapes.

@@ -81,7 +81,7 @@ void keepFlushedHeaderBatches(Object sock) {
  * be bytes or ASCII (see respondDenied).
  */
 void writeHeadsAsLatin1(Object sock) {
-  if (runsOnBun()) node_http.writeHeadsAsLatin1(sock);
+  node_http.writeHeadsAsLatin1(sock);
 }
 
 /**
@@ -126,15 +126,7 @@ void adjustByteBudget(ByteBudget budget, int delta) {
  * flowing before anyone reads it.
  */
 void gateSocketOnBufferedBody(Object req, int cap, [ByteBudget? budget]) {
-  node_http.gateSocketOnBufferedBody(
-    req,
-    cap,
-    hasBudget: budget != null,
-    adjustBudget: budget == null
-        ? (_) {}
-        : (delta) => adjustByteBudget(budget, delta),
-    budgetExceeded: () => budget != null && budget.used > budget.limit,
-  );
+  node_http.gateSocketOnBufferedBody(req, cap, budget);
 }
 
 final Expando<bool> _endsGracefully = Expando<bool>();
@@ -155,10 +147,8 @@ void markEndsGracefully(Object socket) {
  * destroy the request.
  */
 void endRequestAfterResponse(Object req) {
-  final dynamic request = req;
-  final Object socket = request.socket as Object;
   node_http.endRequestAfterResponse(
     req,
-    endsGracefully: _endsGracefully[socket] == true,
+    isMarkedEndsGracefully: (socket) => _endsGracefully[socket] == true,
   );
 }
