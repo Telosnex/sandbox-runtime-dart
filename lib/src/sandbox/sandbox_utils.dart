@@ -630,8 +630,9 @@ bool Function(String p) _readRuleCovers(FilesystemPathEntry entry) {
   return (p) => isAtOrUnder(p, rule);
 }
 
-/// Generate proxy environment variables for sandboxed processes
-///
+/**
+ * Generate proxy environment variables for sandboxed processes
+ */
 /// Per-tool trust-store env vars set to the TLS-termination CA cert path so
 /// HTTPS clients in the sandboxed child accept proxy-minted certs.
 const List<String> CA_TRUST_VARS = [
@@ -1096,7 +1097,7 @@ String? encodedCommandFromProxyUser(String? username) {
 ///
 /// Supported patterns:
 /// - * matches any characters except / (e.g., *.ts matches foo.ts but not foo/bar.ts)
-/// - ** matches any characters including / (e.g., src/**\/*.ts matches all .ts files in src/)
+/// - ** matches any characters including / (e.g., src/**/*.ts matches all .ts files in src/)
 /// - ? matches any single character except / (e.g., file?.txt matches file1.txt)
 /// - [abc] matches any character in the set (e.g., file[0-9].txt matches file3.txt)
 ///
@@ -1170,8 +1171,8 @@ String _globPartToRegex(String part) => part
 /// Regex for a glob used in a DENY rule: {@link globToRegex} plus an optional
 /// `/…` tail, so the deny covers everything beneath each match the way
 /// `subpath` does for literals. Callers strip a trailing `/**` before the
-/// pattern gets here (removeTrailingGlobSuffix), so `**\/secrets/**` arrives
-/// as `**\/secrets` and, matched exactly, would deny only the directory
+/// pattern gets here (removeTrailingGlobSuffix), so `**/secrets/**` arrives
+/// as `**/secrets` and, matched exactly, would deny only the directory
 /// vnode while `secrets/key` stayed readable. This is what the Linux backend
 /// already does (a deny masks the whole subtree). Only ever widens a deny.
 ///
@@ -1350,8 +1351,8 @@ List<String> expandGlobPattern(
 /// spelling only through the positions that spelling leads to, so the walk
 /// lists a real directory once per position however many names lead to it,
 /// and lists no directory that has none (`proj/*.pem` lists `proj` alone).
-/// Beneath `**\/.env` every spelling has the same positions; beneath
-/// `**\/secrets/*.pem` a directory named `secrets` has one more.
+/// Beneath `**/.env` every spelling has the same positions; beneath
+/// `**/secrets/*.pem` a directory named `secrets` has one more.
 ///
 /// {@link globToRegex} lets two things span a path separator, and each is a
 /// choice between two readings that do not:
@@ -1400,7 +1401,7 @@ class _GlobPositions {
 }
 
 /// What globToRegex makes of a pattern, piece by piece: `any` is its `.*`,
-///  `anyDirs` its `(.*\/)?`, and a `source` matches within one name. Undefined
+///  `anyDirs` its `(.*/)?`, and a `source` matches within one name. Undefined
 ///  for the patterns {@link GlobPositions} does not split.
 sealed class _GlobPiece {
   const _GlobPiece();
@@ -1691,7 +1692,7 @@ String globPatternBaseDir(String normalizedPattern) {
 }
 
 /// Whether a base from {@link globPatternBaseDir} is one no walk starts from:
-/// nothing at all, or the root, '/', from which a walk (`/**\/*.pem`) would
+/// nothing at all, or the root, '/', from which a walk (`/**/*.pem`) would
 /// list every filesystem the machine has mounted. A drive root ('C:') and the
 /// root of a UNC share ('//server/share') are bases like any other: each is
 /// one volume, which the entry names itself. Refused, every such pattern

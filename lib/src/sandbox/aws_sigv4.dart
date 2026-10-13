@@ -102,17 +102,13 @@ String? _credentialAccessKeyId(String auth) {
   return m?.group(1);
 }
 
-/**
- * Parse an `AWS4-HMAC-SHA256 Credential=..., SignedHeaders=...,
- * Signature=...` Authorization value. Returns null when any component is
- * missing or the credential scope is not the 5-part
- * `<akid>/<date>/<region>/<service>/aws4_request` form.
- */
 typedef ParsedSigv4Authorization = ({
   String accessKeyId,
+  /** Credential-scope date (yyyymmdd). */
   String date,
   String region,
   String service,
+  /** Lowercase signed header names, in the order the client listed them. */
   List<String> signedHeaders,
   String signature,
 });
@@ -272,6 +268,7 @@ class Sigv4SignInput {
    * its value comes from `hostHeader`.
    */
   IncomingHttpHeaders headers;
+  /** Host header value the upstream connection will carry. */
   String hostHeader;
   /**
    * Lowercase header names to sign. Sorted internally; every name other

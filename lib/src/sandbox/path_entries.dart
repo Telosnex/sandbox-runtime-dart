@@ -175,31 +175,29 @@ bool _isDirectoryFor(PathListKind kind, String p) {
   }
 }
 
-/**
- * The readings a caller's spelling has BESIDE the one its characters give
- * it. Empty for a spelling that is no pattern, and for a pattern none of
- * whose glob characters are part of a name on disk: that costs one `lstat`.
- *
- * A trailing slash followed by two stars is set aside first. Of the components that hold glob
- * characters, the leading ones that exist on disk as spelled are names:
- *
- * - When all of them exist, the entry is also the NAME it spells. What
- *   follows the last of them need not exist.
- * - When a pattern follows an existing one, the entry is also that pattern
- *   BENEATH the directory. There is one such reading per existing component,
- *   the longest first, so creating or removing a directory adds or removes a
- *   reading and never turns one into another.
- *
- * Whether a spelling is a pattern is decided on what the caller wrote
- * ([isPattern]); which components hold glob characters, by
- * [containsGlobChars] on every platform, since those are what the
- * pattern compiler and the walk take for syntax.
- *
- * A component exists for a deny as [mayBeThere] has it. For an allow no
- * component from the first with glob characters on may be a symbolic link
- * or beyond looking at: a name to its end, a pattern up to its first pattern
- * component, from where the walk of an allow goes through no link.
- */
+/// The readings a caller's spelling has BESIDE the one its characters give
+/// it. Empty for a spelling that is no pattern, and for a pattern none of
+/// whose glob characters are part of a name on disk: that costs one `lstat`.
+///
+/// A trailing `/**` is set aside first. Of the components that hold glob
+/// characters, the leading ones that exist on disk as spelled are names:
+///
+/// - When all of them exist, the entry is also the NAME it spells. What
+///   follows the last of them need not exist.
+/// - When a pattern follows an existing one, the entry is also that pattern
+///   BENEATH the directory. There is one such reading per existing component,
+///   the longest first, so creating or removing a directory adds or removes a
+///   reading and never turns one into another.
+///
+/// Whether a spelling is a pattern is decided on what the caller wrote
+/// (`isPattern`); which components hold glob characters, by
+/// [containsGlobChars] on every platform, since those are what the
+/// pattern compiler and the walk take for syntax.
+///
+/// A component exists for a deny as [mayBeThere] has it. For an allow
+/// no component from the first with glob characters on may be a symbolic
+/// link or beyond looking at: a name to its end, a pattern up to its first
+/// pattern component, from where the walk of an allow goes through no link.
 List<PathReading> literalReadings(
   String spelling,
   PathListKind kind, {
@@ -437,14 +435,11 @@ FsReadRestrictionConfig? readNamesOf(FsReadRestrictionConfig? config) {
   );
 }
 
-/**
- * The same for a write config; see [readNamesOf]. A string of
- * `allowOnly` that holds glob characters is kept only when it is also the
- * name of a path (see [literalReadings]). Any other is a pattern and no
- * name: resolving a name folds a `..` by the text, so a wildcard component
- * followed by `/..` would make `/home/.ssh` writable where nothing is named
- * `*`.
- */
+/// The same for a write config; see [readNamesOf]. A string of
+/// `allowOnly` that holds glob characters is kept only when it is also the
+/// name of a path (see [literalReadings]). Any other is a pattern and
+/// no name: resolving a name folds a `..` by the text, so `/home/*/../.ssh`
+/// would make `/home/.ssh` writable where nothing is named `*`.
 FsWriteRestrictionConfig? writeNamesOf(FsWriteRestrictionConfig? config) {
   if (config == null) return config;
   final literalAllowOnly = config.literalAllowOnly;

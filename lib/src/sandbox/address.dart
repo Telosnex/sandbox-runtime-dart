@@ -21,6 +21,7 @@ typedef _AddressFamily = String;
 
 // Dart has no string-literal union type; this is the same `'ipv4' | 'ipv6'`
 // pair the Node BlockList API accepts.
+/** BlockList family of an address string, or undefined if it is not an IP. */
 _AddressFamily? _ipFamily(String address) {
   final fam = net.isIP(address);
   return fam == 4

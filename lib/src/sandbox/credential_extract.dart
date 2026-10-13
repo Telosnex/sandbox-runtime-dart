@@ -61,7 +61,7 @@ class _ReplacementSpan {
  * where `i` is the zero-based index of the distinct captured value in
  * first-seen order.
  *
- * Offset-based: Dart's Match exposes capture-group offsets directly, so the
+ * Offset-based: the regex `d` flag exposes capture-group offsets, so the
  * output is built by slicing between spans and splicing the sentinel in
  * at the exact `[start, end)` of group 1. By default only the
  * regex-matched span is replaced — a captured value that coincidentally

@@ -1547,10 +1547,6 @@ void _addInertSlashedDenyGlobIssue(
 /**
  * Main configuration schema for Sandbox Runtime validation
  */
-
-/**
- * Main configuration schema for Sandbox Runtime validation
- */
 final ConfigSchema<SandboxRuntimeConfig>
 SandboxRuntimeConfigSchema = ConfigSchema((value, issues, path) {
   final obj = _object(value, path, issues);

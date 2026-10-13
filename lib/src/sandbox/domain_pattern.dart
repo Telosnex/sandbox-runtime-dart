@@ -136,7 +136,8 @@ bool hasValidIpv6Bracketing(String val) {
 
 /**
  * The check an allow-list entry gets: a domain pattern with an optional
- * `:port` suffix.
+ * `:port` suffix. Shared by the `network.allowedDomains` schema and the lists
+ * registered at run time, so neither accepts what the other refuses.
  */
 bool isValidAllowedDomainEntry(String val) =>
     hasValidIpv6Bracketing(val) &&
@@ -200,8 +201,19 @@ bool matchesDomainPatternWithPort(String hostname, int port, String pattern) {
 
 /**
  * Decide whether a per-credential `injectHosts` entry is reachable via
- * `network.allowedDomains` — every concrete host it could match must be
- * allowed by at least one entry.
+ * `network.allowedDomains` — i.e. every concrete host that could match
+ * `injectHost` is allowed by at least one entry in `allowedDomains`.
+ *
+ * For an exact `injectHost` (`api.github.com`) this is just
+ * `matchesDomainPattern` against each allowed pattern.
+ *
+ * For a wildcard `injectHost` (`*.X`), an exact allowedDomain can never
+ * cover it (it admits only one host), so coverage requires an allowed
+ * wildcard `*.Y` whose base is `X` or an ancestor of `X` — e.g.
+ * `*.api.github.com` is covered by `*.github.com`.
+ *
+ * `:port` suffixes on allowedDomains entries are ignored: injection is
+ * host-scoped, and a port-scoped allow still makes the host reachable.
  */
 bool isInjectHostCoveredByAllowedDomains(
   String injectHost,

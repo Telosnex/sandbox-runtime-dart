@@ -48,6 +48,8 @@ Future<void> listenInRange(
     try {
       doListen(range == null ? 0 : port);
       final outcome = await attempt.future;
+      // The paired 'listening' once-listener never fired; drop it
+      // so retries don't accumulate stale listeners.
       await errorSubscription.cancel();
       await listeningSubscription.cancel();
       if (outcome.listening) return;

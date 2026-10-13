@@ -120,7 +120,7 @@ class MacOSSandboxParams {
 ///
 /// Both are anchored at the cwd, and the cwd is a name on disk that may
 /// contain `[`, `*` or `?`. So the first is a literal entry, and the second
-/// carries the cwd as its anchor — only the `**\\/<name>` tail is pattern.
+/// carries the cwd as its anchor — only the `**/<name>` tail is pattern.
 /// Compiled as one glob, a cwd like `a[b/c]d` would turn into a character
 /// class and every one of these denies would match nothing.
 List<PathEntry> macGetMandatoryDenyEntries([bool allowGitConfig = false]) {
@@ -220,7 +220,7 @@ String _globRegex(_GlobPathEntry entry) => _anchorRegex(entry, globToRegex);
 /// anchor respected. That is [globToRegex] plus an optional `/…` tail,
 /// so the deny covers everything beneath each match the way `subpath` does
 /// for literals. Callers strip a trailing `/**` before the pattern gets here
-/// ([removeTrailingGlobSuffix]), so `**\\/secrets/**` arrives as `**\\/secrets`
+/// ([removeTrailingGlobSuffix]), so `**/secrets/**` arrives as `**/secrets`
 /// and, matched exactly, would deny only the directory vnode while
 /// `secrets/key` stayed readable. This is what the Linux backend already
 /// does (a deny masks the whole subtree). Only ever widens a deny.
@@ -450,14 +450,14 @@ _ResolvedReadConfig _resolveReadConfig(
 /// - A literal deny nested inside a literal allow (`~/proj/secrets` under
 ///   `~/proj`), re-emitted as-is.
 /// - Every glob deny, minus (`require-not`) each allow entry the glob's own
-///   regex covers. A leaf-shaped glob (`**\\/.env`, `/**\\/*.key`) covers no
+///   regex covers. A leaf-shaped glob (`**/.env`, `/**/*.key`) covers no
 ///   directory allow, so it comes back whole and beats the directory allows
 ///   it lands inside — the fix for globs being silently re-allowed. A
-///   region-shaped glob (`~/**\\/*` with allowRead carve-outs) covers its
+///   region-shaped glob (`~/**/*` with allowRead carve-outs) covers its
 ///   carve-outs, so they are subtracted and its behavior is unchanged. A
 ///   glob that covers a specific FILE allow (a user carve-out, or the
 ///   TLS-termination trust bundle sandbox-manager adds to allowWithinDeny,
-///   which a `/**\\/*.crt` deny would otherwise sever) keeps that one file
+///   which a `/**/*.crt` deny would otherwise sever) keeps that one file
 ///   readable without any allow being emitted after the denies.
 /// - Every credential deny, literal or glob, minus the library's own files
 ///   that it covers.
@@ -509,7 +509,7 @@ _ResolvedReadConfig _resolveReadConfig(
 }
 
 /// Directory that bounds where a glob can match: its static prefix, or "/"
-/// for a root-anchored pattern like `/**\\/*.key`.
+/// for a root-anchored pattern like `/**/*.key`.
 String _globBaseDir(String normalizedGlob) {
   final staticPrefix = normalizedGlob.split(RegExp(r'[*?\[\]]')).first;
   if (staticPrefix.isEmpty || staticPrefix == '/') return '/';
@@ -543,8 +543,8 @@ String _entryBaseDir(PathEntry entry) {
 ///
 /// - every glob deny whose region intersects a write root, minus the allow
 ///   entries and write roots the glob itself covers (a region glob like
-///   `~/**\\/*` must not re-block `rm` inside carve-outs it was already
-///   subtracting; a leaf glob like `**\\/.env` covers none of them);
+///   `~/**/*` must not re-block `rm` inside carve-outs it was already
+///   subtracting; a leaf glob like `**/.env` covers none of them);
 /// - every literal deny strictly below a write root, minus any allow entry
 ///   or write root nested strictly inside it;
 /// - the literal ancestor directories of each of those (for a glob, its
