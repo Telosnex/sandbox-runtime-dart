@@ -159,6 +159,33 @@ Repeat these translation decisions for the rest of the port:
   `Request`/`RequestInfo` types use `Object` at the stub boundary until the
   request-filter port supplies their Dart representations.
 
+### Generators that return a value (`Steps<T>`)
+
+TS `function*` generators that `return` a value and are composed with
+`const x = yield* f()` (sandbox-utils `Steps<T>`, `finish`, `finishInTurns`)
+cannot be Dart `async`, because upstream's `finish` runs them synchronously.
+Dart `sync*` cannot return a value. So, decided by /root:
+
+- `lib/src/node/generators.dart` (no upstream counterpart) defines
+  `sealed class Step<T>`, `Pause<T>` (a TS `yield` / `yield undefined`) and
+  `Done<T>(value)` (the TS `return value`), plus
+  `Iterable<Step<R>> yieldStar<T, R>(Iterable<Step<T>> steps, Box<T> into)`,
+  which re-yields each pause as `Pause<R>` and stores the `Done` value in
+  `into`. `class Box<T> { late T value; }`.
+- `sandbox_utils.dart` keeps upstream's declaration:
+  `typedef Steps<T> = Iterable<Step<T>>;` and ports `finish`/`finishInTurns`
+  to iterate until `Done`.
+- Mapping, line for line:
+  - `function* f(): Steps<T> {` → `Steps<T> f() sync* {`
+  - `yield` → `yield Pause();`
+  - `return v` → `yield Done(v); return;`
+  - `const x = yield* g()` → `final x = Box<U>(); yield* yieldStar(g(), x);`
+    then use `x.value` where upstream uses `x`.
+- A `Steps` iterable must end with exactly one `Done`. `finish` throws
+  `StateError` if it ends without one (fail closed).
+- Plain value generators (`Generator<string>`, for example
+  `properAncestors`) stay `Iterable<String> f() sync*`.
+
 ### Worked example
 
 Upstream `listenInRange(server, doListen, range, exclude)` returns a
@@ -251,6 +278,7 @@ they stay queued for those files' port steps (per the one-file test rule):
 - `mux-proxy.ts`: `test/sandbox/{mux-proxy-e2e,request-rewriting}.test.ts`.
 - `aws-sigv4.ts`: `test/sandbox/{credential-aws-pairs,credential-mask-sigv4}.test.ts`.
 - `emitted-connection.ts`: direct tests in `test/sandbox/{byte-budget,tls-terminate-runtime,tls-terminate-upload-gate,tls-terminate-relay-budget}.test.ts`; its helper `test/helpers/emitted-connections.ts` is used by `test/proxy-cli.test.ts` and `test/sandbox/{canonical-host-routing,client-abort,connect-non-tls,credential-mask-body,credential-mask-sigv4,deny-late-body,invalid-upstream-response,proxy-only-edges,proxy-only,request-filter,request-rewriting,request-target-forwarding,resolved-address-guard,response-header-bytes,tls-terminate-handshake-deadline,tls-terminate-in-process,tls-terminate-keepalive,tls-terminate-proxy,trailers-then-request}.test.ts`.
+- `sandbox-config.ts`: `test/config-validation.test.ts` is the one-to-one suite ported with this file. The other direct schema/type consumers belong to their own source/test steps and remain queued: `test/configurable-proxy-ports.test.ts`, `test/public-exports.test.ts`, and `test/sandbox/{brackets-that-spell-no-set,credential-aws-pairs,credential-deny,credential-mask-files,credential-mask-sigv4,credential-mask,filesystem-disabled,glob-expand,integration,java-proxy-agent,literal-path-entries,mux-proxy-e2e,names-with-a-backslash,own-files,proxy-env-vars,read-list-precedence,request-rewriting,resolved-address-guard,tls-terminate-runtime,update-config,winsrt,wrap-with-sandbox}.test.ts`.
 
 The upstream `src` and `test` grep for `maskedFileBinds` and
 `NetworkHostPattern` found reads and object construction only; no code mutates
