@@ -190,7 +190,7 @@ file; do not make a per-consumer file such as `fs_<consumer>.dart`.
 | `crypto` | `crypto.dart`: `createHash`, `createHmac` (sha256) |
 | `buffer` | `buffer.dart`: `Buffer.from`, `Buffer.byteLength`, `toString` |
 | `url` | `url.dart`: WHATWG host parsing, `URLSearchParams` |
-| `net`, `dns`, `tls`, `http` | `net.dart` (`isIP`, `BlockList`, `Socket`, `Server`, `connect`, `createServer`), `dns.dart`, `tls.dart` (`connect`, `TLSSocket`, `checkServerIdentity`, ClientHello peek), `http.dart` (raw HTTP/1.1; `Server` extends `net.Server`; `IncomingHttpHeaders`) |
+| `net`, `dns`, `tls`, `http` | `net.dart` (`isIP`, `BlockList`, `Socket`, `Server`, `connect`, `createServer`), `dns.dart`, `tls.dart` (`connect`, `TLSSocket` client and server, `createSecureContext`, `checkServerIdentity`), `http.dart` (raw HTTP/1.1; `Server` extends `net.Server`; `IncomingHttpHeaders`) |
 | `node-forge` | `forge.dart`, with `mozilla_roots.dart` (generated) |
 | `events` | `events.dart`: `EventEmitter`, `once` |
 | Generators that return a value | `generators.dart` (see Conventions) |
@@ -234,6 +234,19 @@ Repeat these translation decisions for the rest of the port:
   (`on`, `once`, `off`, `removeListener`, `emit`, `listenerCount`...). A
   listener gets as many of the emitted arguments as it accepts. An 'error'
   event with no listener is an uncaught error, which fails a test.
+- **TLS on a socket you hold.** Upstream's
+  `new TLSSocket(socket, { isServer: true, secureContext, ALPNProtocols })`
+  ports as `TLSSocket(socket, {'isServer': true, ...})`. It returns at once
+  and emits 'secure' or 'error'. Bytes put back with `socket.unshift(head)`
+  before it start the handshake. Afterwards `socket` only closes with it:
+  reading or writing it throws `StateError`. Node's internal
+  `tls._secureEstablished` is `tls.secureEstablished`; `getPeerFinished`
+  does not exist. `tls.servername` is null (see Known port gaps).
+- **Bun branches.** `runsOnBun()` is false. Keep each `if (runsOnBun())`
+  and port the Node side. A Bun-only body that needs a shim that does not
+  exist (a hand-made `Duplex`, as in tls-terminate-proxy
+  `duplexOverSocket`) becomes `throw UnimplementedError('Bun only')`, and
+  the file status says which helpers are not ported.
 - **Unsupported options throw.** `net.connect`, `tls.connect`,
   `net.createServer` and `server.listen` throw `UnimplementedError` for an
   option they do not handle (for example `listen({ fd })`). Add the option to
@@ -429,8 +442,20 @@ and replaces paired EventEmitter one-shot callbacks with the
   `checkServerIdentity` that would accept a name dart:io rejects gets an
   untrusted-chain error instead. Upstream's only custom check
   (tls-terminate-proxy) pins the name more strictly, so it is not affected.
-- `node/tls.dart` has no `new TLSSocket(duplex, { isServer })` yet
-  (tls-terminate-proxy); `proxy-only.ts` `listen({ fd })` is unsupported.
+- `node/tls.dart` server `TLSSocket`: dart:io cannot abort a server
+  handshake. `destroy()` during one closes both sockets at once, but the
+  connection stays open until the handshake ends, which a silent client can
+  put off until it closes. dart:io also does not report the server name, so
+  `servername` is null; upstream reads it from the ClientHello anyway.
+- `node/tls.dart` `TLSSocket` runs only over a `net.Socket`, on the server
+  side. No `Duplex` shim exists. `proxy-only.ts` `listen({ fd })` is
+  unsupported.
+- `node/net.dart` reads: dart:io reads all the kernel holds at once, so a
+  socket nobody reads can hold more than `highWaterMark` before it stops.
+  A flowing socket with no 'data' listener keeps its bytes for `read()`,
+  where Node drops them (the http shim relies on this).
+- `node/net.dart` `bytesWritten` on a socket under a TLS socket counts only
+  what was written before the TLS socket took over.
 - `node/net.dart` `unref()` records state only: Dart cannot let an open
   socket stop holding the process open.
 

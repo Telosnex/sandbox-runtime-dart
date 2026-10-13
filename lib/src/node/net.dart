@@ -205,6 +205,10 @@ class NodeSocket extends EventEmitter {
     _attach(socket);
   }
 
+  /// A socket that will run over another, already connected one; see
+  /// [startServerTlsOver]. Not connecting, as in Node.
+  NodeSocket.over({this.allowHalfOpen = false}) : _connecting = false;
+
   static const int highWaterMark = 16 * 1024;
   Socket? _socket;
   StreamSubscription<Uint8List>? _subscription;
@@ -223,8 +227,24 @@ class NodeSocket extends EventEmitter {
   bool _closed = false;
   bool _destroyed = false;
   bool _unrefed = false;
-  bool _flowing = false;
+
+  // Node's readable-side state. [_flowing] is Node's `state.flowing`: null
+  // until a consumer chooses, true when 'data' is emitted as bytes arrive,
+  // false after pause() or while a 'readable' listener pulls with read().
+  // [_paused] is an explicit pause() (Node `kPaused`).
+  bool? _flowing;
   bool _paused = false;
+  bool _readableListening = false;
+  int _queuedBytes = 0;
+  bool _subscriptionPaused = false;
+
+  // Set once a TLS socket has taken this connection over ([_wrapper]), and
+  // on that TLS socket, the socket under it ([_under]).
+  bool _handedOver = false;
+  NodeSocket? _wrapper;
+  NodeSocket? _under;
+  bool _securing = false;
+  Completer<void>? _writesSettled;
   bool? _noDelay;
   bool allowHalfOpen;
   Timer? _timeoutTimer;
@@ -255,7 +275,8 @@ class NodeSocket extends EventEmitter {
       },
       cancelOnError: false,
     );
-    if (_paused) _subscription!.pause();
+    _subscriptionPaused = false;
+    _updateReading();
     socket.done.then<void>(
       (_) {},
       onError: (Object error) {
@@ -411,24 +432,36 @@ class NodeSocket extends EventEmitter {
   bool get readableEnded => _readEnded;
   bool get closed => _closed;
   int get writableLength => _pendingBytes;
+
+  /// Node `readable.readableLength`: bytes received and not yet read.
+  int get readableLength => _queuedBytes;
   int get bytesWritten => _bytesWritten;
   bool get unrefed => _unrefed;
 
-  bool get _isUnix => _socket?.address.type == InternetAddressType.unix;
+  /// The dart:io socket for address queries: this socket's own, or, once a
+  /// TLS socket has taken the connection over, that socket's.
+  Socket? get _addressSource => _handedOver ? _wrapper?._socket : _socket;
 
   /// As in Node, these are null for a Unix-domain socket or before connect.
-  String? get remoteAddress =>
-      _socket == null || _isUnix ? null : _socket!.remoteAddress.address;
-  int? get remotePort =>
-      _socket == null || _isUnix ? null : _socket!.remotePort;
-  String? get remoteFamily => _socket == null || _isUnix
-      ? null
-      : (_socket!.remoteAddress.type == InternetAddressType.IPv6
-            ? 'IPv6'
-            : 'IPv4');
-  String? get localAddress =>
-      _socket == null || _isUnix ? null : _socket!.address.address;
-  int? get localPort => _socket == null || _isUnix ? null : _socket!.port;
+  String? get remoteAddress => _addressed((s) => s.remoteAddress.address);
+  int? get remotePort => _addressed((s) => s.remotePort);
+  String? get remoteFamily => _addressed(
+    (s) => s.remoteAddress.type == InternetAddressType.IPv6 ? 'IPv6' : 'IPv4',
+  );
+  String? get localAddress => _addressed((s) => s.address.address);
+  int? get localPort => _addressed((s) => s.port);
+
+  T? _addressed<T>(T Function(Socket socket) read) {
+    final socket = _addressSource;
+    if (socket == null || socket.address.type == InternetAddressType.unix) {
+      return null;
+    }
+    try {
+      return read(socket);
+    } on SocketException {
+      return null; // Closed.
+    }
+  }
 
   /// A 'data' listener puts the readable side in flowing mode, as in Node; a
   /// 'readable' listener can pull with [read].
@@ -453,20 +486,69 @@ class NodeSocket extends EventEmitter {
     return this;
   }
 
+  // As Node's Readable.on: a 'readable' listener stops the flow and lets
+  // the listener pull; a 'data' listener starts the flow unless the stream
+  // was paused.
   void _listenerAdded(String event) {
-    if (event == 'data') {
+    if (event == 'readable') {
+      _readableListening = true;
+      _flowing = false;
+      _updateReading();
+      if (_readQueue.isNotEmpty) scheduleMicrotask(() => emit('readable'));
+    } else if (event == 'data' && _flowing != false) {
       _flowing = true;
       _deliverQueued();
-    }
-    if (event == 'readable' && _readQueue.isNotEmpty) {
-      scheduleMicrotask(() => emit('readable'));
+      _updateReading();
     }
   }
 
   @override
   NodeSocket off(String event, Function listener) {
     super.off(event, listener);
+    if (event == 'data') _updateReading();
+    // As Node's updateReadableListening, when the last 'readable' listener
+    // goes.
+    if (event == 'readable' &&
+        _readableListening &&
+        listenerCount('readable') == 0) {
+      _readableListening = false;
+      if (listenerCount('data') > 0 && !_paused) {
+        resume();
+      } else if (!_paused) {
+        _flowing = null;
+      }
+      _updateReading();
+    }
     return this;
+  }
+
+  /// Whether to take bytes from the connection now. While flowing, always;
+  /// else until [highWaterMark] bytes wait to be read, as Node does. An
+  /// explicit pause() with no 'readable' listener stops reading at once, so
+  /// unread bytes stay in the kernel.
+  bool get _shouldRead {
+    if (_handedOver || _destroyed) return false;
+    if (_emitsData) return true;
+    if (_paused && !_readableListening) return false;
+    return _queuedBytes < highWaterMark;
+  }
+
+  /// Flowing, with a 'data' listener to take the bytes. Node drops the bytes
+  /// of a flowing stream with no 'data' listener; this keeps them for
+  /// read(), which the http shim uses under its own pause() and resume().
+  bool get _emitsData => _flowing == true && listenerCount('data') > 0;
+
+  void _updateReading() {
+    final subscription = _subscription;
+    if (subscription == null) return;
+    final want = _shouldRead;
+    if (want && _subscriptionPaused) {
+      _subscriptionPaused = false;
+      subscription.resume();
+    } else if (!want && !_subscriptionPaused) {
+      _subscriptionPaused = true;
+      subscription.pause();
+    }
   }
 
   @override
@@ -476,10 +558,12 @@ class NodeSocket extends EventEmitter {
   void _received(Uint8List bytes) {
     if (bytes.isEmpty || _destroyed) return;
     final copy = Uint8List.fromList(bytes);
-    if (_flowing && !_paused) {
+    if (_emitsData && _readQueue.isEmpty) {
       emit('data', copy);
     } else {
       _readQueue.add(copy);
+      _queuedBytes += copy.length;
+      _updateReading();
       emit('readable');
     }
     _resetTimeout();
@@ -487,7 +571,15 @@ class NodeSocket extends EventEmitter {
 
   /// Read up to [size] bytes synchronously, or null when no byte is ready.
   Uint8List? read([int? size]) {
+    _checkNotHandedOver();
     if (_readQueue.isEmpty) return null;
+    final bytes = _take(size);
+    _queuedBytes -= bytes.length;
+    _updateReading();
+    return bytes;
+  }
+
+  Uint8List _take(int? size) {
     if (size == null || size <= 0) {
       final parts = <Uint8List>[];
       while (_readQueue.isNotEmpty) {
@@ -520,17 +612,20 @@ class NodeSocket extends EventEmitter {
 
   /// Put bytes back at the head of the readable queue (Node `unshift`).
   void unshift(List<int> bytes) {
+    _checkNotHandedOver();
     if (bytes.isEmpty || _destroyed) return;
     if (_readQueue.isEmpty) {
       _readQueue.insert(0, Uint8List.fromList(bytes));
       _readOffset = 0;
     } else {
-      final current = read();
+      final current = _take(null);
       _readQueue
         ..clear()
-        ..add(Uint8List.fromList([...bytes, if (current != null) ...current]));
+        ..add(Uint8List.fromList([...bytes, ...current]));
       _readOffset = 0;
     }
+    _queuedBytes += bytes.length;
+    _updateReading();
     emit('readable');
   }
 
@@ -538,6 +633,7 @@ class NodeSocket extends EventEmitter {
   /// contract; callers must wait for `drain` before resuming after false.
   /// A string is written as Latin-1 bytes.
   bool write(Object data, [Function? callback]) {
+    _checkNotHandedOver();
     if (_destroyed) {
       // Node passes ERR_STREAM_DESTROYED to the callback and emits nothing.
       final error = NodeError(
@@ -619,11 +715,17 @@ class NodeSocket extends EventEmitter {
       } else if (_writeEnded && _pendingBytes == 0) {
         _shutdownWrite();
       }
+      if (!_flushing && _writeQueue.isEmpty) {
+        final settled = _writesSettled;
+        _writesSettled = null;
+        settled?.complete();
+      }
     }
   }
 
   /// Flush [data] then half-close the write direction while retaining reads.
   NodeSocket end([Object? data, Function? callback]) {
+    _checkNotHandedOver();
     if (data != null) write(data);
     if (callback != null) once('finish', callback);
     if (!_writeEnded) {
@@ -659,8 +761,22 @@ class NodeSocket extends EventEmitter {
       _hadError = true;
       emit('error', error);
     }
-    _socket?.destroy();
-    _subscription?.cancel();
+    final wrapper = _wrapper;
+    if (_handedOver && wrapper != null) {
+      // The connection is the TLS socket's now; as in Node, destroying the
+      // socket under it destroys it too.
+      wrapper.destroy();
+    } else {
+      _socket?.destroy();
+      _subscription?.cancel();
+      final under = _under;
+      if (under != null && _socket == null && !_securing) {
+        // A TLS socket whose handshake has not begun: the connection is
+        // still the socket under it.
+        under._socket?.destroy();
+        under._subscription?.cancel();
+      }
+    }
     _finishClose();
     return this;
   }
@@ -671,33 +787,123 @@ class NodeSocket extends EventEmitter {
     _destroyed = true;
     _timeoutTimer?.cancel();
     emit('close', _hadError);
+    // A TLS socket and the socket under it share one connection: when one
+    // closes, so does the other.
+    final under = _under;
+    if (under != null) {
+      under._destroyed = true;
+      under._finishClose();
+    }
+    final wrapper = _wrapper;
+    if (wrapper != null && !wrapper._closed) wrapper.destroy();
   }
 
   NodeSocket pause() {
-    if (!_paused) _subscription?.pause();
     _paused = true;
+    _flowing = false;
+    _updateReading();
     return this;
   }
 
   NodeSocket resume() {
-    final wasPaused = _paused;
     _paused = false;
-    if (_flowing) _deliverQueued();
-    if (wasPaused) _subscription?.resume();
+    _flowing = !_readableListening;
+    _deliverQueued();
+    _updateReading();
     return this;
   }
 
   void _deliverQueued() {
-    while (_flowing && !_paused && _readQueue.isNotEmpty) {
+    while (_emitsData && _readQueue.isNotEmpty) {
       final data = read();
       if (data == null || data.isEmpty) break;
       emit('data', data);
     }
   }
 
+  void _checkNotHandedOver() {
+    if (_handedOver) {
+      throw StateError(
+        'This socket is under a TLSSocket; read and write the TLSSocket.',
+      );
+    }
+  }
+
+  /// Node `new tls.TLSSocket(socket, { isServer: true })`, for node/tls.dart:
+  /// run this socket as the server side of TLS over [under], which must be
+  /// connected.
+  ///
+  /// [under] stops reading at once. Once its queued writes have gone out,
+  /// its connection and every byte it holds unread (bytes put back with
+  /// `unshift` first) go to [secure], which does the handshake. Then this
+  /// socket emits 'secure' and reads and writes the decrypted stream; writes
+  /// made before then are queued. A failed handshake is an 'error'.
+  ///
+  /// Afterwards [under] is a view of this socket, as in Node: its 'close'
+  /// follows this socket's, destroying it destroys this socket, and writing
+  /// to it is a [StateError].
+  void startServerTlsOver(
+    NodeSocket under,
+    Future<Socket> Function(Socket raw, Uint8List buffered) secure,
+  ) {
+    if (under._socket == null || under._destroyed) {
+      throw StateError('A TLSSocket needs a connected socket under it');
+    }
+    if (under._handedOver) {
+      throw StateError('This socket is already under a TLSSocket');
+    }
+    if (under._writeEnded) {
+      throw UnimplementedError('TLSSocket over a socket that has ended');
+    }
+    under
+      .._handedOver = true
+      .._wrapper = this
+      .._updateReading();
+    _under = under;
+    unawaited(_serverTlsOver(under, secure));
+  }
+
+  Future<void> _serverTlsOver(
+    NodeSocket under,
+    Future<Socket> Function(Socket raw, Uint8List buffered) secure,
+  ) async {
+    try {
+      if (under._flushing || under._writeQueue.isNotEmpty) {
+        await (under._writesSettled ??= Completer<void>()).future;
+      }
+      if (_destroyed) return;
+      final buffered = under._take(null);
+      under._queuedBytes = 0;
+      final raw = under._socket!;
+      final Socket secured;
+      _securing = true;
+      try {
+        // Gap: dart:io offers no way to abort a server handshake. destroy()
+        // during it closes both sockets at once, but the connection itself
+        // stays open until the handshake ends, which a silent client can
+        // put off until it closes its side.
+        secured = await secure(raw, buffered);
+      } finally {
+        // dart:io has detached the connection from [raw]; the subscription
+        // on [raw] gets nothing more.
+        unawaited(under._subscription?.cancel());
+        under._subscription = null;
+      }
+      if (_destroyed) {
+        secured.destroy();
+        return;
+      }
+      _attach(secured);
+      emit('secure');
+    } catch (error) {
+      if (_destroyed) return;
+      destroy(error is SocketException ? socketError(error, 'read') : error);
+    }
+  }
+
   NodeSocket setNoDelay([bool noDelay = true]) {
     _noDelay = noDelay;
-    _socket?.setOption(SocketOption.tcpNoDelay, noDelay);
+    if (!_handedOver) _socket?.setOption(SocketOption.tcpNoDelay, noDelay);
     return this;
   }
 

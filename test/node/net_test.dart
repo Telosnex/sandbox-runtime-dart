@@ -34,6 +34,69 @@ Future<int> _closedPort() async {
 
 void main() {
   group('net Socket', () {
+    test('a socket nobody reads stops reading past highWaterMark', () async {
+      const sent = 16 << 20;
+      final server = net.createServer();
+      final accepted = Completer<net.NodeSocket>();
+      server.on('connection', accepted.complete);
+      final port = await _listen(server);
+      final client = net.connect(port, '127.0.0.1');
+      client.on('error', (Object _) {});
+      for (var i = 0; i < sent ~/ (64 * 1024); i++) {
+        client.write(Uint8List(64 * 1024));
+      }
+      final socket = await accepted.future.timeout(_wait);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      final held = socket.readableLength;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      // dart:io reads whatever the kernel holds at once, so one read can go
+      // well past the mark; then reading stops and the rest waits.
+      expect(held, greaterThanOrEqualTo(net.NodeSocket.highWaterMark));
+      expect(socket.readableLength, held);
+      expect(held, lessThan(sent ~/ 4));
+      var total = 0;
+      socket.on('data', (List<int> bytes) => total += bytes.length);
+      final end = Completer<void>();
+      socket.on('end', end.complete);
+      client.end();
+      await end.future.timeout(_wait);
+      expect(total, sent);
+      socket.destroy();
+      await _close(server);
+    });
+
+    test('a readable listener reads on after pause(), as in Node', () async {
+      final server = net.createServer();
+      final pulled = Completer<List<int>>();
+      server.on('connection', (net.NodeSocket socket) {
+        late void Function(Object?) onData;
+        onData = (Object? first) {
+          socket.pause();
+          socket.off('data', onData);
+          final all = [...first! as List<int>];
+          void pull() {
+            Uint8List? chunk;
+            while ((chunk = socket.read()) != null) {
+              all.addAll(chunk!);
+            }
+            if (all.length >= 6 && !pulled.isCompleted) pulled.complete(all);
+          }
+
+          socket.on('readable', pull);
+          pull();
+        };
+        socket.on('data', onData);
+      });
+      final port = await _listen(server);
+      final client = net.connect(port, '127.0.0.1');
+      client.write([1, 2, 3]);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      client.write([4, 5, 6]);
+      expect(await pulled.future.timeout(_wait), [1, 2, 3, 4, 5, 6]);
+      client.destroy();
+      await _close(server);
+    });
+
     test('read(1) followed by unshift restores the byte', () async {
       final server = net.createServer();
       final received = Completer<List<int>>();

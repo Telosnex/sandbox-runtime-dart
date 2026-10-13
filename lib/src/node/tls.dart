@@ -1,7 +1,6 @@
 // Node-compatible TLS helpers required by sandbox-runtime's MITM proxy.
 // The checked-in Mozilla bundle is generated from curl's dated cacert.pem;
 // no platform trust store is consulted by rootCertificates/trustedRootContext.
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -50,123 +49,73 @@ SecurityContext trustedRootContext() {
   return context;
 }
 
-/// Bytes consumed while inspecting a TLS ClientHello. Keep the paused
-/// subscription alive until [secureServer] takes ownership of the socket.
-final class ClientHelloPeek {
-  ClientHelloPeek({
-    required this.serverName,
-    required this.bufferedData,
-    required this.subscription,
-  });
-
-  final String? serverName;
-  final Uint8List bufferedData;
-  final StreamSubscription<List<int>> subscription;
-}
-
-/// Read a bounded ClientHello without losing any encrypted bytes. The socket
-/// subscription is paused upon completion; callers must pass the returned
-/// bytes to [secureServer], which replays them before reading the socket again.
-Future<ClientHelloPeek> peekClientHello(
-  Socket socket, {
-  int maxClientHelloBytes = 64 * 1024,
-  int maxRecords = 32,
-  Duration timeout = const Duration(seconds: 10),
-}) async {
-  if (maxClientHelloBytes < 1024 || maxRecords < 1) {
-    throw ArgumentError('ClientHello limits are too small');
-  }
-  final consumed = BytesBuilder(copy: false);
-  final completer = Completer<ClientHelloPeek>();
-  late StreamSubscription<List<int>> subscription;
-  subscription = socket.listen(
-    (chunk) {
-      if (completer.isCompleted) return;
-      if (consumed.length + chunk.length > maxClientHelloBytes) {
-        completer.completeError(
-          const FormatException(
-            'TLS ClientHello exceeds configured size limit',
-          ),
-        );
-        subscription.pause();
-        return;
-      }
-      consumed.add(chunk);
-      try {
-        final bytes = consumed.toBytes();
-        final hello = _parseClientHello(bytes, maxClientHelloBytes, maxRecords);
-        if (hello != null) {
-          subscription.pause();
-          completer.complete(
-            ClientHelloPeek(
-              serverName: hello.serverName,
-              bufferedData: Uint8List.fromList(bytes),
-              subscription: subscription,
-            ),
-          );
-        }
-      } on Object catch (error, stack) {
-        subscription.pause();
-        completer.completeError(error, stack);
-      }
-    },
-    onError: (Object error, StackTrace stack) {
-      if (!completer.isCompleted) completer.completeError(error, stack);
-    },
-    onDone: () {
-      if (!completer.isCompleted) {
-        completer.completeError(
-          const SocketException('EOF before complete TLS ClientHello'),
-        );
-      }
-    },
-  );
-  try {
-    return await completer.future.timeout(timeout);
-  } catch (_) {
-    await subscription.cancel();
-    socket.destroy();
-    rethrow;
-  }
-}
-
-/// Parse the ClientHello SNI from TLS handshake records. Returns `null` when
-/// the supplied bytes do not complete a hello or a complete hello has no
-/// host_name extension; malformed messages throw and must not be routed as TLS.
-String? parseClientHelloSni(
-  List<int> bufferedData, {
-  int maxClientHelloBytes = 64 * 1024,
-  int maxRecords = 32,
-}) => _parseClientHello(
-  bufferedData,
-  maxClientHelloBytes,
-  maxRecords,
-)?.serverName;
-
-/// Wrap the original socket after a caller has selected an SNI context.
-/// Bytes consumed by the bounded peek are replayed through `bufferedData`.
-Future<SecureSocket> secureServer(
-  Socket socket,
-  SecureContext context,
-  ClientHelloPeek hello, {
-  List<String> protocols = const ['http/1.1'],
-  bool requestClientCertificate = false,
-  bool requireClientCertificate = false,
-}) async {
-  context.setAlpnProtocols(protocols, true);
-  return SecureSocket.secureServer(
-    socket,
-    context,
-    bufferedData: hello.bufferedData,
-    supportedProtocols: protocols,
-    requestClientCertificate: requestClientCertificate,
-    requireClientCertificate: requireClientCertificate,
-  );
-}
-
-/// Node `tls.TLSSocket`, as returned by [connect].
+/// Node `tls.TLSSocket`: returned by [connect], or made over a connected
+/// socket with `TLSSocket(socket, {'isServer': true, ...})`.
 class TLSSocket extends net.NodeSocket {
   TLSSocket.pending({super.allowHalfOpen}) : super.pending();
+
+  /// Node `new tls.TLSSocket(socket, options)`. Only the server side is
+  /// supported: `isServer: true`, with the certificate in `secureContext`
+  /// (see [createSecureContext]) and optional `ALPNProtocols`.
+  ///
+  /// Returns at once. Bytes [socket] holds unread, such as a ClientHello
+  /// put back with `unshift`, are the start of the handshake. The socket
+  /// emits 'secure' when the handshake is done, or 'error' then 'close';
+  /// writes made before then are queued. [socket] stays a view of the
+  /// connection, as in Node: see [net.NodeSocket.startServerTlsOver].
+  ///
+  /// Gap: [servername] stays null, since dart:io does not report the
+  /// server name a client asked for. Read it from the ClientHello.
+  TLSSocket(net.NodeSocket socket, [Map<Object?, Object?> options = const {}])
+    // As in Node, not the socket's own setting.
+    : super.over(allowHalfOpen: false) {
+    final opts = Map<Object?, Object?>.of(options)
+      ..removeWhere((key, value) => value == null);
+    for (final key in opts.keys) {
+      if (!_tlsSocketOptions.contains(key)) {
+        throw UnimplementedError('tls.TLSSocket option "$key"');
+      }
+    }
+    if (opts['isServer'] != true) {
+      throw UnimplementedError('tls.TLSSocket on the client side');
+    }
+    final context = opts['secureContext'];
+    if (context is! SecurityContext) {
+      throw ArgumentError.value(
+        context,
+        'secureContext',
+        'A server TLSSocket needs a SecureContext with its certificate',
+      );
+    }
+    final protocols = (opts['ALPNProtocols'] as List?)?.cast<String>();
+    // dart:io's server selects a protocol only from the context's list.
+    if (protocols != null) context.setAlpnProtocols(protocols, true);
+    startServerTlsOver(socket, (raw, buffered) async {
+      final SecureSocket secured;
+      try {
+        secured = await SecureSocket.secureServer(
+          raw,
+          context,
+          bufferedData: buffered,
+          supportedProtocols: protocols,
+        );
+      } on HandshakeException catch (error) {
+        throw NodeError(error.message, code: 'ERR_SSL_HANDSHAKE_FAILURE');
+      } on TlsException catch (error) {
+        throw NodeError(error.message, code: 'ERR_SSL_HANDSHAKE_FAILURE');
+      }
+      _setPeer(secured);
+      secureEstablished = true;
+      return secured;
+    });
+  }
+
+  /// Node `tlsSocket.encrypted`.
+  bool get encrypted => true;
+
+  /// True once the handshake is done (Node's internal
+  /// `_secureEstablished`, which upstream reads).
+  bool secureEstablished = false;
 
   /// True when the peer certificate was verified, as in Node.
   bool authorized = false;
@@ -184,6 +133,8 @@ class TLSSocket extends net.NodeSocket {
   /// dart:io certificate).
   X509Certificate? getPeerCertificate() => _peer;
 }
+
+const _tlsSocketOptions = {'isServer', 'secureContext', 'ALPNProtocols'};
 
 const _tlsConnectOptions = {
   'host',
@@ -275,6 +226,7 @@ TLSSocket connect(Map<Object?, Object?> options, [Function? listener]) {
             );
       }
       socket._setPeer(secured);
+      socket.secureEstablished = true;
       failure ??= applyIdentity(identity, name, secured.peerCertificate);
       socket.authorized = failure == null;
       socket.authorizationError = failure;
@@ -490,138 +442,3 @@ bool _sameBytes(List<int> left, List<int> right) =>
       left.length,
       (i) => left[i] ^ right[i],
     ).every((b) => b == 0);
-
-_ParsedHello? _parseClientHello(List<int> data, int maxBytes, int maxRecords) {
-  if (data.length > maxBytes) {
-    throw const FormatException(
-      'TLS ClientHello exceeds configured size limit',
-    );
-  }
-  var offset = 0;
-  var recordCount = 0;
-  final handshake = <int>[];
-  while (offset + 5 <= data.length) {
-    if (++recordCount > maxRecords) {
-      throw const FormatException('TLS ClientHello has too many records');
-    }
-    final contentType = data[offset];
-    final major = data[offset + 1];
-    final length = (data[offset + 3] << 8) | data[offset + 4];
-    if (contentType != 22 || major != 3 || length == 0 || length > 18432) {
-      throw const FormatException('Invalid TLS handshake record');
-    }
-    if (offset + 5 + length > data.length) return null;
-    handshake.addAll(data.sublist(offset + 5, offset + 5 + length));
-    offset += 5 + length;
-    final bytes = handshake;
-    if (bytes.length < 4) continue;
-    if (bytes[0] != 1) {
-      throw const FormatException('Expected TLS ClientHello handshake');
-    }
-    final helloLength = (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
-    if (helloLength + 4 > maxBytes) {
-      throw const FormatException(
-        'TLS ClientHello exceeds configured size limit',
-      );
-    }
-    if (bytes.length < helloLength + 4) continue;
-    return _ParsedHello(_decodeSni(bytes.sublist(4, helloLength + 4)));
-  }
-  return null;
-}
-
-final class _ParsedHello {
-  const _ParsedHello(this.serverName);
-  final String? serverName;
-}
-
-String? _decodeSni(List<int> body) {
-  var cursor = 0;
-  void need(int amount) {
-    if (amount < 0 || cursor + amount > body.length) {
-      throw const FormatException('Truncated TLS ClientHello');
-    }
-  }
-
-  need(34); // legacy_version + random
-  cursor += 34;
-  need(1);
-  final sessionLength = body[cursor++];
-  need(sessionLength);
-  cursor += sessionLength;
-  need(2);
-  final cipherLength = (body[cursor] << 8) | body[cursor + 1];
-  cursor += 2;
-  if (cipherLength == 0 || cipherLength.isOdd) {
-    throw const FormatException('Invalid ClientHello cipher suites');
-  }
-  need(cipherLength);
-  cursor += cipherLength;
-  need(1);
-  final compressionLength = body[cursor++];
-  if (compressionLength == 0) {
-    throw const FormatException('Empty ClientHello compression methods');
-  }
-  need(compressionLength);
-  cursor += compressionLength;
-  if (cursor == body.length) return null; // ClientHello without extensions.
-  need(2);
-  final extensionsLength = (body[cursor] << 8) | body[cursor + 1];
-  cursor += 2;
-  if (cursor + extensionsLength != body.length) {
-    throw const FormatException('Invalid ClientHello extension length');
-  }
-  final end = cursor + extensionsLength;
-  String? serverName;
-  var sawSniExtension = false;
-  while (cursor < end) {
-    if (cursor + 4 > end) {
-      throw const FormatException('Truncated ClientHello extension');
-    }
-    final type = (body[cursor] << 8) | body[cursor + 1];
-    final length = (body[cursor + 2] << 8) | body[cursor + 3];
-    cursor += 4;
-    if (cursor + length > end) {
-      throw const FormatException('Truncated ClientHello extension data');
-    }
-    if (type == 0) {
-      if (sawSniExtension) {
-        throw const FormatException('Duplicate SNI extension');
-      }
-      sawSniExtension = true;
-      final listLength = length >= 2
-          ? (body[cursor] << 8) | body[cursor + 1]
-          : -1;
-      if (listLength != length - 2) {
-        throw const FormatException('Invalid SNI server-name list');
-      }
-      var nameCursor = cursor + 2;
-      final namesEnd = cursor + length;
-      while (nameCursor < namesEnd) {
-        if (nameCursor + 3 > namesEnd) {
-          throw const FormatException('Truncated SNI name');
-        }
-        final kind = body[nameCursor];
-        final size = (body[nameCursor + 1] << 8) | body[nameCursor + 2];
-        nameCursor += 3;
-        if (nameCursor + size > namesEnd) {
-          throw const FormatException('Truncated SNI hostname');
-        }
-        if (kind == 0) {
-          if (serverName != null) {
-            throw const FormatException('Duplicate SNI hostname');
-          }
-          if (size == 0) throw const FormatException('Empty SNI hostname');
-          final nameBytes = body.sublist(nameCursor, nameCursor + size);
-          if (nameBytes.any((b) => b < 0x21 || b > 0x7e)) {
-            throw const FormatException('SNI hostname is not printable ASCII');
-          }
-          serverName = ascii.decode(nameBytes);
-        }
-        nameCursor += size;
-      }
-    }
-    cursor += length;
-  }
-  return serverName;
-}
