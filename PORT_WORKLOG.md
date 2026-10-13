@@ -167,8 +167,10 @@ and replaces paired EventEmitter one-shot callbacks with the
 | `src/sandbox/credential-extract.ts` | `lib/src/sandbox/credential_extract.dart` | — | Ported; no matching standalone test file; direct extraction tests in `credential-mask-files.test.ts` remain queued; exact capture offsets use the instrumented RegExp shim |
 | `src/sandbox/emitted-connection.ts` | `lib/src/sandbox/emitted_connection.dart` | — | **Partial: blocked on HTTP shim**; no matching upstream test file; byte-budget/runtime tests are deferred; unsupported HTTP/parser/socket operations throw rather than no-op |
 | `src/sandbox/mux-proxy.ts` | `lib/src/sandbox/mux_proxy.dart` | `test/sandbox/mux_proxy_test.dart` | **Partial: blocked on HTTP/socket shim**; all 8 direct tests are skipped; no rawHeaders or CONNECT-head dependency |
+| `src/sandbox/aws-sigv4.ts` | `lib/src/sandbox/aws_sigv4.dart` | `test/sandbox/aws_sigv4_test.dart` | Ported; 15 pass, 22 official test-suite vector cases skip because fixtures are not vendored |
 | — (Node shims) | `lib/src/node/{errno,events,fs,net,process}.dart` | — | No upstream counterparts; small compatibility layer for these files |
 | — (Node shims) | `lib/src/node/{abort,emitted_http,regexp}.dart` | `test/node/{emitted_http,regexp}_test.dart` | No upstream counterparts; AbortSignal, fail-closed HTTP/socket boundary, and exact supported RegExp-with-indices instrumentation |
+| — (Node shims) | `lib/src/node/{aws_crypto,incoming_http_headers,url_search_params}.dart` | — | No upstream counterparts; Node crypto Buffer/HMAC, HTTP headers, and URLSearchParams used by `aws-sigv4.ts` |
 
 ### Known port gaps
 
@@ -181,6 +183,8 @@ and replaces paired EventEmitter one-shot callbacks with the
   listener/socket/sniff-timer `unref`, and the Node HTTP server's Unix-socket
   listen/close lifecycle. The mux does not parse `rawHeaders` or CONNECT
   `head`; CONNECT request parsing is delegated to its HTTP backend.
+- `aws-sigv4.test.ts`: the 22 official aws-sig-v4-test-suite vector cases
+  skip because `test/fixtures/aws-sigv4-suite` is not vendored in the Dart repo.
 
 ### Related upstream tests not ported in this batch
 
@@ -190,6 +194,7 @@ they stay queued for those files' port steps (per the one-file test rule):
 - `credential-extract.ts`: `test/sandbox/credential-mask-files.test.ts`.
 - `sandbox-schemas.ts`: `test/sandbox/{macos-seatbelt,symlink-boundary,macos-profile-size,allow-read,read-list-precedence,macos-pty}.test.ts`.
 - `mux-proxy.ts`: `test/sandbox/{mux-proxy-e2e,request-rewriting}.test.ts`.
+- `aws-sigv4.ts`: `test/sandbox/{credential-aws-pairs,credential-mask-sigv4}.test.ts`.
 - `emitted-connection.ts`: direct tests in `test/sandbox/{byte-budget,tls-terminate-runtime,tls-terminate-upload-gate,tls-terminate-relay-budget}.test.ts`; its helper `test/helpers/emitted-connections.ts` is used by `test/proxy-cli.test.ts` and `test/sandbox/{canonical-host-routing,client-abort,connect-non-tls,credential-mask-body,credential-mask-sigv4,deny-late-body,invalid-upstream-response,proxy-only-edges,proxy-only,request-filter,request-rewriting,request-target-forwarding,resolved-address-guard,response-header-bytes,tls-terminate-handshake-deadline,tls-terminate-in-process,tls-terminate-keepalive,tls-terminate-proxy,trailers-then-request}.test.ts`.
 
 The upstream `src` and `test` grep for `maskedFileBinds` and
