@@ -198,7 +198,12 @@ String stripExtendedPathPrefix(String p) {
  * `\\.\UNC\server\share\…` (all any casing, either separator).
  */
 bool isUncPath(String p) {
-  final normalized = p.replaceAll('/', r'\');
+  final winPath = path.Context(
+    style: path.Style.windows,
+    current: process.cwd(),
+  );
+  final absolute = winPath.isAbsolute(p) ? p : winPath.absolute(p);
+  final normalized = winPath.normalize(absolute).replaceAll('/', r'\');
   final lower = normalized.toLowerCase();
   String? body;
   if (lower.startsWith(r'\\?\unc\') || lower.startsWith(r'\\.\unc\')) {
@@ -496,10 +501,13 @@ List<String> generateProxyEnvVars([
       : '';
   final envVars = <String>['SANDBOX_RUNTIME=1'];
   if (skipTmpdir != true) {
-    final tmpdir =
-        process.env['CLAUDE_CODE_TMPDIR'] ??
-        process.env['CLAUDE_TMPDIR'] ??
-        '/tmp/claude';
+    final currentTmpdir = process.env['CLAUDE_CODE_TMPDIR'] ?? '';
+    final legacyTmpdir = process.env['CLAUDE_TMPDIR'] ?? '';
+    final tmpdir = currentTmpdir.isNotEmpty
+        ? currentTmpdir
+        : legacyTmpdir.isNotEmpty
+        ? legacyTmpdir
+        : '/tmp/claude';
     envVars.add('TMPDIR=$tmpdir');
   }
   if (caCertPath != null && caCertPath.isNotEmpty) {

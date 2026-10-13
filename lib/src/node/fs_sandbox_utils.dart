@@ -28,8 +28,11 @@ class Stats {
 /// The lstat `isDirectory()` query needed when a Dirent has no known type.
 bool isDirectorySync(String path, {bool followLinks = false}) {
   try {
-    return FileSystemEntity.typeSync(path, followLinks: followLinks) ==
-        FileSystemEntityType.directory;
+    final type = FileSystemEntity.typeSync(path, followLinks: followLinks);
+    if (type == FileSystemEntityType.notFound) {
+      throw nodeError('ENOENT', 'lstat', path);
+    }
+    return type == FileSystemEntityType.directory;
   } on FileSystemException catch (error) {
     throw _nodeFsError(error, 'lstat', path);
   }
@@ -51,7 +54,11 @@ List<Dirent> readdirSync(String path, {bool withFileTypes = true}) {
 /// Node's synchronous `statSync(path)` subset.
 Stats statSync(String path) {
   try {
-    return Stats(FileSystemEntity.typeSync(path, followLinks: true));
+    final type = FileSystemEntity.typeSync(path, followLinks: true);
+    if (type == FileSystemEntityType.notFound) {
+      throw nodeError('ENOENT', 'stat', path);
+    }
+    return Stats(type);
   } on FileSystemException catch (error) {
     throw _nodeFsError(error, 'stat', path);
   }
