@@ -654,6 +654,19 @@ class NodeHttpServer {
         );
         final response = ServerResponse._(socket, request);
         pendingResponses.add(response.done);
+        final connectionTokens = request.headers['connection']
+            ?.toString()
+            .toLowerCase()
+            .split(',')
+            .map((token) => token.trim())
+            .toSet();
+        if (listenerCount('upgrade') != 0 &&
+            request.headers.containsKey('upgrade') &&
+            (connectionTokens?.contains('upgrade') ?? false)) {
+          final buffered = socket.read() ?? Uint8List(0);
+          emit('upgrade', request, socket, buffered);
+          return;
+        }
         if (request.method == 'CONNECT') {
           _idleConnections.remove(socket);
           final buffered = socket.read() ?? Uint8List(0);

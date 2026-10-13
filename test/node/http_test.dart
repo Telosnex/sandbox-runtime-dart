@@ -140,6 +140,41 @@ void main() {
       await close();
     });
 
+    test('upgrade receives the raw socket and exact buffered head', () async {
+      final upgradeHead = Completer<List<int>>();
+      final server = http.createServer();
+      server.on('upgrade', (
+        http.IncomingMessage request,
+        net.NodeSocket socket,
+        Uint8List head,
+      ) {
+        expect(request.url, '/chat');
+        upgradeHead.complete(head);
+        socket.write(
+          ascii.encode(
+            'HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n',
+          ),
+        );
+        socket.end();
+      });
+      final (port, close) = await _listen(server);
+      final response = await _rawExchange(
+        port,
+        ascii.encode(
+          'GET /chat HTTP/1.1\r\nHost: example.test\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\npayload',
+        ),
+      );
+      expect(
+        await upgradeHead.future.timeout(const Duration(seconds: 3)),
+        ascii.encode('payload'),
+      );
+      expect(
+        latin1.decode(response),
+        startsWith('HTTP/1.1 101 Switching Protocols\r\n'),
+      );
+      await close();
+    });
+
     test('an unlistened server accepts a connection handed in by emit', () async {
       final served = Completer<void>();
       final httpServer = http.createServer();
