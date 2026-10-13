@@ -1,6 +1,8 @@
-// Small Node fsSync compatibility shim for real-path.dart. POSIX calls use
-// libc directly so that failures retain errno/code before dart:io translates
-// them to a lossy FileSystemException.
+// Node `fs` compatibility: the synchronous calls the ported files make.
+// No upstream counterpart. POSIX calls go to libc directly, so a failure keeps
+// its errno (and so Node's `code`); dart:io would turn it into a lossy
+// FileSystemException. File types come from dart:io once the libc call has
+// succeeded; only the test-only statIdentitySync reads `struct stat` fields.
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
@@ -45,31 +47,97 @@ int Function()? _errnoFunction() {
 
 final int Function()? _readErrno = _errnoFunction();
 
-/// The only lstat field needed by realPathOf: whether the final name is a link.
-class NodeFileStat {
-  const NodeFileStat(this._isSymbolicLink);
-  final bool _isSymbolicLink;
+/// Node's `fs.Stats` predicates. A `statSync` result never answers
+/// `isSymbolicLink()`, since stat follows links.
+class Stats {
+  const Stats(this._type);
+  final FileSystemEntityType _type;
 
-  bool isSymbolicLink() => _isSymbolicLink;
+  bool isFile() => _type == FileSystemEntityType.file;
+  bool isDirectory() => _type == FileSystemEntityType.directory;
+  bool isSymbolicLink() => _type == FileSystemEntityType.link;
+  bool isFIFO() => _type == FileSystemEntityType.pipe;
+  bool isSocket() => _type == FileSystemEntityType.unixDomainSock;
 }
 
-/// Optional observation hook used by the `what it asks` real-path tests.
+/// Node's `fs.Dirent`, as `readdirSync(p, {withFileTypes: true})` returns it.
+/// dart:io does not tell character and block devices from files, so those
+/// two predicates always answer false.
+class Dirent {
+  const Dirent(this.name, this._type);
+  final String name;
+  final FileSystemEntityType _type;
+
+  bool isFile() => _type == FileSystemEntityType.file;
+  bool isDirectory() => _type == FileSystemEntityType.directory;
+  bool isSymbolicLink() => _type == FileSystemEntityType.link;
+  bool isFIFO() => _type == FileSystemEntityType.pipe;
+  bool isSocket() => _type == FileSystemEntityType.unixDomainSock;
+  bool isCharacterDevice() => false;
+  bool isBlockDevice() => false;
+}
+
+/// Test hook: sees `<call> <path>` for each lstatSync, statSync,
+/// realpathSync and readlinkSync (the real-path `what it asks` tests).
 void Function(String call)? fsCallObserver;
 
 void _observe(String call, String path) => fsCallObserver?.call('$call $path');
 
-/// Reproduce `fs.lstatSync(path)` and its Node `Stats.isSymbolicLink()` use.
-NodeFileStat lstatSync(String path) {
+/// Reproduce `fs.lstatSync(path)`.
+Stats lstatSync(String path) {
   _observe('lstatSync', path);
+  return _stat(path, 'lstat', followLinks: false);
+}
+
+/// Reproduce `fs.statSync(path)`.
+Stats statSync(String path) {
+  _observe('statSync', path);
+  return _stat(path, 'stat', followLinks: true);
+}
+
+/// Reproduce `fs.existsSync(path)`: true when `stat` succeeds, so a dangling
+/// symbolic link does not exist.
+bool existsSync(String path) {
+  try {
+    _stat(path, 'stat', followLinks: true);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/// Reproduce `fs.readdirSync(path, {withFileTypes: true})`.
+List<Dirent> readdirSync(String path, {bool withFileTypes = true}) {
+  if (!withFileTypes) {
+    throw UnimplementedError('readdirSync without withFileTypes');
+  }
+  try {
+    return Directory(path).listSync(followLinks: false).map((entity) {
+      final type = FileSystemEntity.typeSync(entity.path, followLinks: false);
+      final name = entity.path.replaceAll('\\', '/').split('/').last;
+      return Dirent(name, type);
+    }).toList();
+  } on FileSystemException catch (error) {
+    throw nodeError(
+      _codeFromIoError(error),
+      'scandir',
+      path,
+      message: error.message,
+    );
+  }
+}
+
+Stats _stat(String path, String syscall, {required bool followLinks}) {
   final libc = _libc;
   if (libc != null) {
-    final lstat = libc.lookupFunction<_LstatNative, _LstatDart>('lstat');
+    final call = libc.lookupFunction<_LstatNative, _LstatDart>(syscall);
     final nativePath = path.toNativeUtf8(allocator: calloc);
     final statBuffer = calloc<Uint8>(512);
     try {
-      if (lstat(nativePath.cast(), statBuffer.cast()) != 0) {
+      if (call(nativePath.cast(), statBuffer.cast()) != 0) {
+        // Read errno before any other native call can overwrite it.
         final errno = _readErrno?.call() ?? 0;
-        throw nodeError(codeForErrno(errno), 'lstat', path);
+        throw nodeError(codeForErrno(errno), syscall, path);
       }
     } finally {
       calloc.free(nativePath);
@@ -77,15 +145,15 @@ NodeFileStat lstatSync(String path) {
     }
   }
   try {
-    final type = FileSystemEntity.typeSync(path, followLinks: false);
+    final type = FileSystemEntity.typeSync(path, followLinks: followLinks);
     if (type == FileSystemEntityType.notFound) {
-      throw nodeError('ENOENT', 'lstat', path);
+      throw nodeError('ENOENT', syscall, path);
     }
-    return NodeFileStat(type == FileSystemEntityType.link);
+    return Stats(type);
   } on NodeError {
     rethrow;
   } on FileSystemException catch (error) {
-    throw nodeError(_codeFromIoError(error), 'lstat', path);
+    throw nodeError(_codeFromIoError(error), syscall, path);
   }
 }
 

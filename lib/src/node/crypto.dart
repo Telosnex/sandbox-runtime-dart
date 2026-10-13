@@ -1,13 +1,11 @@
-// A small `node:crypto` compatibility surface for aws-sigv4.dart.
-// This file has no upstream counterpart.
+// Node `crypto` compatibility: createHash and createHmac (sha256), as
+// aws-sigv4.ts uses them. No upstream counterpart. A digest without an
+// encoding is a Node Buffer, which is a Uint8List here.
 
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as crypto;
-
-/// Node's byte-oriented Buffer value used by the aws-sigv4 port.
-typedef Buffer = Uint8List;
 
 /// The subset of Node's Hash API used by aws-sigv4.dart.
 class Hash {

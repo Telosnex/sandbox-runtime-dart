@@ -1,5 +1,6 @@
 // Node process values reproduced for the ported files. Overrides let tests
 // model upstream tests which temporarily replace process.platform/env/cwd.
+import 'dart:ffi';
 import 'dart:io';
 
 String? _platformOverride;
@@ -16,6 +17,9 @@ String get platform =>
         : Platform.isWindows
         ? 'win32'
         : Platform.operatingSystem);
+
+/// The Node `process.arch` spelling (`x64`, `arm64`, `ia32`, ...).
+String get arch => Abi.current().toString().split('_').last;
 
 /// Node's live `process.env` map, unless a test has supplied an override.
 Map<String, String> get env => _envOverride ?? Platform.environment;

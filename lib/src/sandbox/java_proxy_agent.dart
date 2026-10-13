@@ -6,7 +6,7 @@ import 'dart:isolate';
 
 import 'package:path/path.dart' as path;
 
-import '../node/fs_exists.dart' as fs;
+import '../node/fs.dart' as fs;
 import '../utils/debug.dart';
 import 'generate_seccomp_filter.dart' show getGlobalNpmPathsAsync;
 

@@ -4,7 +4,7 @@
 
 import 'package:path/path.dart' as path;
 
-import '../node/fs_path_entries.dart' as fs;
+import '../node/fs.dart' as fs;
 import '../node/generators.dart';
 import '../node/process.dart' as process;
 import '../utils/platform.dart';

@@ -21,6 +21,10 @@ class NodeHttpError implements Exception {
   String toString() => 'Error: $message';
 }
 
+/// Node's `IncomingHttpHeaders`: header values by lowercase name; a
+/// repeated header is a list.
+typedef IncomingHttpHeaders = Map<String, Object?>;
+
 /// A Node IncomingMessage-like request or response message.
 class IncomingMessage {
   IncomingMessage._({

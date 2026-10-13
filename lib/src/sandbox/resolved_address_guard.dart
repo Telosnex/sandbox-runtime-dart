@@ -8,7 +8,7 @@ import 'dart:convert';
 import '../node/dns.dart' as dns;
 import '../node/errno.dart';
 import '../node/net.dart' as net;
-import '../node/os_network_interfaces.dart' as os;
+import '../node/os.dart' as os;
 import '../utils/debug.dart';
 import 'address.dart';
 import 'domain_pattern.dart' as domain_pattern;

@@ -8,7 +8,7 @@ import 'dart:math' as math;
 
 import 'package:path/path.dart' as path;
 
-import '../node/child_process_macos.dart';
+import '../node/child_process.dart';
 import '../node/process.dart' as process;
 import '../utils/debug.dart';
 import '../utils/shell_quote.dart';

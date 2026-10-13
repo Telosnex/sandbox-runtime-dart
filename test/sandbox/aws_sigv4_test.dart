@@ -4,7 +4,7 @@
 import 'dart:io';
 
 import 'package:path/path.dart' as path;
-import 'package:sandbox_runtime/src/node/incoming_http_headers.dart';
+import 'package:sandbox_runtime/src/node/http.dart' show IncomingHttpHeaders;
 import 'package:sandbox_runtime/src/sandbox/aws_sigv4.dart';
 import 'package:test/test.dart';
 

@@ -1,9 +1,11 @@
 // Ported from sandbox-runtime src/sandbox/aws-sigv4.ts @ 24eb39e.
 // ignore_for_file: constant_identifier_names, dangling_library_doc_comments, slash_for_doc_comments
 
-import '../node/aws_crypto.dart' as node_crypto;
-import '../node/incoming_http_headers.dart' show IncomingHttpHeaders;
-import '../node/url_search_params.dart' as node_url;
+import 'dart:typed_data';
+
+import '../node/crypto.dart' as node_crypto;
+import '../node/http.dart' show IncomingHttpHeaders;
+import '../node/url.dart' as node_url;
 
 /**
  * AWS Signature Version 4 protocol code for the TLS-terminating proxy.
@@ -340,7 +342,7 @@ String buildStringToSign(
 }
 
 /** kSigning = HMAC-chain(AWS4+secret, date, region, service, terminator). */
-node_crypto.Buffer deriveSigningKey(
+Uint8List deriveSigningKey(
   String secretAccessKey,
   ({String date, String region, String service}) scope,
 ) {
@@ -402,9 +404,9 @@ String sha256Hex(Object data) {
   return node_crypto.createHash('sha256').update(data).digest('hex') as String;
 }
 
-node_crypto.Buffer _hmac(Object key, String data) {
+Uint8List _hmac(Object key, String data) {
   return node_crypto.createHmac('sha256', key).update(data, 'utf8').digest()
-      as node_crypto.Buffer;
+      as Uint8List;
 }
 
 /** First value of a possibly-repeated header, or undefined. */

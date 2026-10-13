@@ -12,7 +12,6 @@ import '../node/abort.dart';
 import '../node/buffer.dart';
 import '../node/errno.dart';
 import '../node/fs.dart' as fs;
-import '../node/fs_sandbox_utils.dart' as fs_walk;
 import '../node/generators.dart';
 import '../node/os.dart' show homedir;
 import '../node/process.dart' as process;
@@ -1851,7 +1850,7 @@ Steps<GlobWalk> walkGlobPatternSteps(
         realLinkPath,
         linkPath,
         (p) => _FoundLinkTarget(
-          isDirectory: fs_walk.statSync(p).isDirectory(),
+          isDirectory: fs.statSync(p).isDirectory(),
           real: realPathOf(p),
           unread: false,
         ),
@@ -1878,7 +1877,7 @@ Steps<GlobWalk> walkGlobPatternSteps(
   ///  and taken at its word a directory would be passed over with all the
   ///  pattern matches beneath it. So it is asked for, at the cost of one call;
   /// an entry that was listed with a type costs none.
-  _GlobWalkEntry withType(fs_walk.Dirent entry, String listedAs, String real) {
+  _GlobWalkEntry withType(fs.Dirent entry, String listedAs, String real) {
     if (entry.isFile() ||
         entry.isDirectory() ||
         entry.isSymbolicLink() ||
@@ -1897,15 +1896,15 @@ Steps<GlobWalk> walkGlobPatternSteps(
     var type = 'other';
     try {
       final stats = fs.lstatSync(spelled);
-      if (stats.isSymbolicLink()) {
-        type = 'link';
-      } else if (fs_walk.isDirectorySync(spelled)) {
+      if (stats.isDirectory()) {
         type = 'directory';
+      } else if (stats.isSymbolicLink()) {
+        type = 'link';
       }
     } catch (_) {
       try {
         // Where it leads can still tell: only a link leads away from its place.
-        final isDirectory = fs_walk.statSync(spelled).isDirectory();
+        final isDirectory = fs.statSync(spelled).isDirectory();
         if (realPathOf(spelled) != path.join(real, name)) {
           type = 'link';
         } else if (isDirectory) {
@@ -1989,7 +1988,7 @@ Steps<GlobWalk> walkGlobPatternSteps(
           : onRealPath(
               real,
               frame.short,
-              (p) => fs_walk
+              (p) => fs
                   .readdirSync(p, withFileTypes: true)
                   .map((entry) => withType(entry, p, real))
                   .toList(),
