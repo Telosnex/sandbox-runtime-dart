@@ -1,4 +1,4 @@
-// Ported from test/sandbox/macos-glob-deny-reemit.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/macos-glob-deny-reemit.test.ts @ 24eb39e.
 // ignore_for_file: constant_identifier_names
 import 'dart:convert';
 import 'dart:io';

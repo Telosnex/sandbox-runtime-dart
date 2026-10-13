@@ -1,3 +1,5 @@
+// Ported from sandbox-runtime test/utils/ripgrep.test.ts @ 24eb39e.
+
 import 'dart:io';
 
 import 'package:path/path.dart' as path;

@@ -13,7 +13,7 @@ import '../../lib/src/sandbox/sandbox_utils.dart';
 /// spelling is resolved against it, and a cwd may contain `[`, `*` or `?`.
 /// Compiled as a glob, `a[b/c]d` turns into a one-character class and the
 /// filter stops matching the directory it was built from, so the deny
-/// covers nothing. The `**\\/.git/hooks/**` pattern does not make up for
+/// covers nothing. The `**/.git/hooks/**` pattern does not make up for
 /// it: it covers what is inside the directory, never the directory vnode,
 /// which is what `mv` and `ln -s` operate on.
 ///
