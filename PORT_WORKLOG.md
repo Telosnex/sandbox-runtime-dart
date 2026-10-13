@@ -240,11 +240,13 @@ and replaces paired EventEmitter one-shot callbacks with the
 | `src/sandbox/mux-proxy.ts` | `lib/src/sandbox/mux_proxy.dart` | `test/sandbox/mux_proxy_test.dart` | **Partial: blocked on HTTP/socket shim**; all 8 direct tests are skipped; no rawHeaders or CONNECT-head dependency |
 | `src/sandbox/aws-sigv4.ts` | `lib/src/sandbox/aws_sigv4.dart` | `test/sandbox/aws_sigv4_test.dart` | Ported; 38 pass, including all 22 official test-suite vectors |
 | `src/sandbox/sandbox-config.ts` | `lib/src/sandbox/sandbox_config.dart` | `test/config_validation_test.dart` | Ported; config classes and hand-written validators; direct tests being ported |
-| `src/sandbox/domain-pattern.ts` | `lib/src/sandbox/domain_pattern.dart` | — | Stub; declarations required by sandbox-config; no matching standalone test file |
+| `src/sandbox/domain-pattern.ts` | `lib/src/sandbox/domain_pattern.dart` | `test/sandbox/domain_pattern_test.dart` | Ported; all 16 direct tests pass |
+| `src/sandbox/parent-proxy.ts` | `lib/src/sandbox/parent_proxy.dart` | — | **Partial:** `stripBrackets` and `canonicalizeHost` ported for domain-pattern; rest of the module remains unported |
 | `src/sandbox/request-filter.ts` | `lib/src/sandbox/request_filter.dart` | — | Stub; `FilterRequestCallback` declaration required by sandbox-config |
 | `src/sandbox/sandbox-utils.ts` | `lib/src/sandbox/sandbox_utils.dart` | — | Stub; `containsGlobCharsForPlatform` declaration required by sandbox-config |
 | `src/sandbox/sandbox-violation-store.ts` | `lib/src/sandbox/sandbox_violation_store.dart` | — | Ported; no one-to-one upstream test file; related assertions are in `command-text-registry.test.ts` |
 | — (Node shims) | `lib/src/node/{errno,events,fs,net,process}.dart` | — | No upstream counterparts; small compatibility layer for these files |
+| — (Node shim) | `lib/src/node/url.dart` | `test/node/url_test.dart` | WHATWG URL host parsing subset for `canonicalizeHost`; seven Node v22.16.0 golden tests pass; unsupported IDNA fails closed |
 | — (Node shims) | `lib/src/node/{abort,emitted_http,regexp}.dart` | `test/node/{emitted_http,regexp}_test.dart` | No upstream counterparts; AbortSignal, fail-closed HTTP/socket boundary, and exact supported RegExp-with-indices instrumentation |
 | — (Node shims) | `lib/src/node/{aws_crypto,incoming_http_headers,url_search_params}.dart` | — | No upstream counterparts; Node crypto Buffer/HMAC, HTTP headers, and URLSearchParams used by `aws-sigv4.ts` |
 | — (Node shims) | `lib/src/node/{forge,tls}.dart` | `test/node/{forge,tls}_test.dart` | Pure-Dart forge subset; Mozilla root bundle `2025-02-25` SHA-256 `50a6277e…55386cef`; bounded ClientHello replay and ALPN; raw `dart:io` socket boundary pending HTTP shim wiring |
@@ -266,6 +268,10 @@ and replaces paired EventEmitter one-shot callbacks with the
   rather than guessing. `checkServerIdentity` returns a mismatch error. Complex
   multi-valued user-CA RDNs are normalized when re-encoded for CRLs, matching
   node-forge's documented limitation.
+- WHATWG URL host parsing: `node/url.dart` supports ASCII, IPv4 inet_aton
+  forms, IPv6, percent decoding, Latin-1 Punycode, fullwidth ASCII and mapped
+  dot separators. Full UTS-46/NFC IDNA behavior is not implemented; unsupported
+  Unicode throws so `canonicalizeHost` returns null rather than guessing.
 
 ### Related upstream tests not ported in this batch
 
