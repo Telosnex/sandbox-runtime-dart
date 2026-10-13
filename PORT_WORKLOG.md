@@ -91,6 +91,9 @@ Repeat these translation decisions for the rest of the port:
   condition. A conditional assertion in a test body remains an early return,
   not a skipped test. Use Dart `test(..., skip: reason)` for an upstream case
   whose behavior cannot be run faithfully.
+- **Assertions in test declarations.** Bun permits `expect(...)` directly in a
+  `describe` callback; `package:test` does not. Move the assertion into a
+  `test` at the same position, titled for what it checks.
 - **Property tests.** `fast-check` properties use deterministic, seeded
   `Random` loops with the upstream sample counts and bounds. Keep the test
   title and timeout. Generate only values representable by the downstream
@@ -167,7 +170,7 @@ and replaces paired EventEmitter one-shot callbacks with the
 | `src/sandbox/credential-extract.ts` | `lib/src/sandbox/credential_extract.dart` | — | Ported; no matching standalone test file; direct extraction tests in `credential-mask-files.test.ts` remain queued; exact capture offsets use the instrumented RegExp shim |
 | `src/sandbox/emitted-connection.ts` | `lib/src/sandbox/emitted_connection.dart` | — | **Partial: blocked on HTTP shim**; no matching upstream test file; byte-budget/runtime tests are deferred; unsupported HTTP/parser/socket operations throw rather than no-op |
 | `src/sandbox/mux-proxy.ts` | `lib/src/sandbox/mux_proxy.dart` | `test/sandbox/mux_proxy_test.dart` | **Partial: blocked on HTTP/socket shim**; all 8 direct tests are skipped; no rawHeaders or CONNECT-head dependency |
-| `src/sandbox/aws-sigv4.ts` | `lib/src/sandbox/aws_sigv4.dart` | `test/sandbox/aws_sigv4_test.dart` | Ported; 15 pass, 22 official test-suite vector cases skip because fixtures are not vendored |
+| `src/sandbox/aws-sigv4.ts` | `lib/src/sandbox/aws_sigv4.dart` | `test/sandbox/aws_sigv4_test.dart` | Ported; 38 pass, including all 22 official test-suite vectors |
 | — (Node shims) | `lib/src/node/{errno,events,fs,net,process}.dart` | — | No upstream counterparts; small compatibility layer for these files |
 | — (Node shims) | `lib/src/node/{abort,emitted_http,regexp}.dart` | `test/node/{emitted_http,regexp}_test.dart` | No upstream counterparts; AbortSignal, fail-closed HTTP/socket boundary, and exact supported RegExp-with-indices instrumentation |
 | — (Node shims) | `lib/src/node/{aws_crypto,incoming_http_headers,url_search_params}.dart` | — | No upstream counterparts; Node crypto Buffer/HMAC, HTTP headers, and URLSearchParams used by `aws-sigv4.ts` |
@@ -183,8 +186,6 @@ and replaces paired EventEmitter one-shot callbacks with the
   listener/socket/sniff-timer `unref`, and the Node HTTP server's Unix-socket
   listen/close lifecycle. The mux does not parse `rawHeaders` or CONNECT
   `head`; CONNECT request parsing is delegated to its HTTP backend.
-- `aws-sigv4.test.ts`: the 22 official aws-sig-v4-test-suite vector cases
-  skip because `test/fixtures/aws-sigv4-suite` is not vendored in the Dart repo.
 
 ### Related upstream tests not ported in this batch
 

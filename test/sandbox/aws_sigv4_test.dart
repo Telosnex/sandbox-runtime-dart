@@ -126,31 +126,6 @@ List<_Vector> _loadVectors(String dir, [List<_Vector>? out]) {
   return out;
 }
 
-const _officialVectorNames = [
-  'get-header-key-duplicate',
-  'get-header-value-trim',
-  'get-unreserved',
-  'get-utf8',
-  'get-vanilla',
-  'get-vanilla-query',
-  'get-vanilla-query-order-key-case',
-  'get-vanilla-query-unreserved',
-  'get-vanilla-with-session-token',
-  'get-relative',
-  'get-relative-relative',
-  'get-slash',
-  'get-slash-dot-slash',
-  'get-slash-pointless-dot',
-  'get-slashes',
-  'get-space',
-  'get-special-character',
-  'post-sts-header-after',
-  'post-sts-header-before',
-  'post-vanilla',
-  'post-vanilla-query',
-  'post-x-www-form-urlencoded',
-];
-
 void main() {
   group('SigV4 signer against the official aws-sig-v4-test-suite', () {
     final vectors = _loadVectors(SUITE_DIR);
@@ -161,74 +136,64 @@ void main() {
     // vary header order and key case (get-header-value-order,
     // post-header-key-sort, post-header-key-case) are not vendored; the
     // second signing pass in each test below covers what they exercise.
-    if (vectors.isNotEmpty) expect(vectors.length, 22);
 
-    final vectorNames = vectors.isEmpty
-        ? _officialVectorNames
-        : vectors.map((vector) => vector.name).toList();
-    for (final name in vectorNames) {
-      final matchingVectors = vectors.where((v) => v.name == name);
-      final vector = matchingVectors.isEmpty ? null : matchingVectors.first;
-      test(
-        name,
-        () {
-          final v = vector!;
-          final headers = {...v.headers};
-          final signedHeaders = headers.keys.toList();
-          if (v.name == 'get-vanilla-with-session-token') {
-            headers['x-amz-security-token'] = SUITE_SESSION_TOKEN;
-            signedHeaders.add('x-amz-security-token');
-          }
-          final input = Sigv4SignInput(
-            method: v.method,
-            requestTarget: v.requestTarget,
-            headers: headers,
-            hostHeader: headers['host'].toString(),
-            signedHeaders: signedHeaders,
-            payloadHash: sha256Hex(v.body),
-            amzDate: headers['x-amz-date'].toString(),
-            scope: (
-              date: SUITE_DATE,
-              region: SUITE_REGION,
-              service: SUITE_SERVICE,
-            ),
-          );
-          input.accessKeyId = SUITE_AKID;
-          input.secretAccessKey = SUITE_SECRET;
-          final result = signSigv4(input);
-          expect(result.canonicalRequest, v.creq);
-          expect(result.stringToSign, v.sts);
-          expect(result.authorization, v.authz);
+    test('loads exactly 22 official test-suite vectors', () {
+      expect(vectors.length, 22);
+    });
+    for (final v in vectors) {
+      test(v.name, () {
+        final headers = {...v.headers};
+        final signedHeaders = headers.keys.toList();
+        if (v.name == 'get-vanilla-with-session-token') {
+          headers['x-amz-security-token'] = SUITE_SESSION_TOKEN;
+          signedHeaders.add('x-amz-security-token');
+        }
+        final input = Sigv4SignInput(
+          method: v.method,
+          requestTarget: v.requestTarget,
+          headers: headers,
+          hostHeader: headers['host'].toString(),
+          signedHeaders: signedHeaders,
+          payloadHash: sha256Hex(v.body),
+          amzDate: headers['x-amz-date'].toString(),
+          scope: (
+            date: SUITE_DATE,
+            region: SUITE_REGION,
+            service: SUITE_SERVICE,
+          ),
+        );
+        input.accessKeyId = SUITE_AKID;
+        input.secretAccessKey = SUITE_SECRET;
+        final result = signSigv4(input);
+        expect(result.canonicalRequest, v.creq);
+        expect(result.stringToSign, v.sts);
+        expect(result.authorization, v.authz);
 
-          // Every .req lists its headers lowercase and already sorted, so the
-          // pass above never leaves the order and case the signer normalizes
-          // to. Signing the same request with the set reversed and upper-cased
-          // must produce the same three strings.
-          final renamed = Sigv4SignInput(
-            method: input.method,
-            requestTarget: input.requestTarget,
-            headers: input.headers,
-            hostHeader: input.hostHeader,
-            signedHeaders: signedHeaders
-                .map((h) => h.toUpperCase())
-                .toList()
-                .reversed
-                .toList(),
-            payloadHash: input.payloadHash,
-            amzDate: input.amzDate,
-            scope: input.scope,
-            accessKeyId: SUITE_AKID,
-            secretAccessKey: SUITE_SECRET,
-          );
-          final renamedResult = signSigv4(renamed);
-          expect(renamedResult.canonicalRequest, v.creq);
-          expect(renamedResult.stringToSign, v.sts);
-          expect(renamedResult.authorization, v.authz);
-        },
-        skip: vector == null
-            ? 'official aws-sig-v4-test-suite fixtures are not vendored in the Dart port'
-            : false,
-      );
+        // Every .req lists its headers lowercase and already sorted, so the
+        // pass above never leaves the order and case the signer normalizes
+        // to. Signing the same request with the set reversed and upper-cased
+        // must produce the same three strings.
+        final renamed = Sigv4SignInput(
+          method: input.method,
+          requestTarget: input.requestTarget,
+          headers: input.headers,
+          hostHeader: input.hostHeader,
+          signedHeaders: signedHeaders
+              .map((h) => h.toUpperCase())
+              .toList()
+              .reversed
+              .toList(),
+          payloadHash: input.payloadHash,
+          amzDate: input.amzDate,
+          scope: input.scope,
+          accessKeyId: SUITE_AKID,
+          secretAccessKey: SUITE_SECRET,
+        );
+        final renamedResult = signSigv4(renamed);
+        expect(renamedResult.canonicalRequest, v.creq);
+        expect(renamedResult.stringToSign, v.sts);
+        expect(renamedResult.authorization, v.authz);
+      });
     }
   });
 
