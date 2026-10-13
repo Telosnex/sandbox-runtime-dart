@@ -8,6 +8,8 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:test/test.dart';
+import 'package:sandbox_runtime/src/sandbox/macos_sandbox_utils.dart';
+import 'package:sandbox_runtime/src/sandbox/sandbox_schemas.dart';
 import 'package:sandbox_runtime/src/utils/shell_quote.dart';
 
 /**
@@ -35,11 +37,23 @@ void main() {
       expect(quoted, isNot(contains(r'\!')));
     });
 
-    test(
-      'the assembled macOS wrapper never contains a backslash-bang',
-      () {},
-      skip: 'wrapCommandWithSandboxMacOS is outside the Step 1 port boundary.',
-    );
+    test('the assembled macOS wrapper never contains a backslash-bang', () {
+      // End to end through the real wrapper builder: the input has no `\!`,
+      // and correct POSIX quoting never needs to introduce one.
+      final wrapped = wrapCommandWithSandboxMacOS(
+        MacOSSandboxParams(
+          command: "node -e 'if (!ok) throw new Error(\"bad\")'",
+          needsNetworkRestriction: false,
+          readConfig: null,
+          writeConfig: FsWriteRestrictionConfig(
+            allowOnly: ['/tmp'],
+            denyWithinAllow: [],
+          ),
+        ),
+      );
+      expect(wrapped, contains('!ok'));
+      expect(wrapped, isNot(contains(r'\!')));
+    });
 
     test('leaves shell-safe words bare and single-quotes the rest', () {
       expect(
