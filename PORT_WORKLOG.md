@@ -21,6 +21,9 @@ able to put an upstream file next to its Dart file and diff them by eye.
   Node API that the Dart code does not use.
 - **Tests.** Port every `it`/`test`/`describe` with the same title, in the same
   order. A test that cannot be ported stays as a `skip:` test with the reason.
+- **Standalone Node tests.** A standalone `test/<dir>/<name>.mjs` is kept as a
+  separate `test/<dir>/<name>_test.dart` file, with `-` changed to `_`; do not
+  fold it into a sibling `*.test.ts` suite.
 - **No improvements.** Port bugs too. Note a suspected bug here instead.
 - **Each Dart file starts with:**
   `// Ported from sandbox-runtime src/<path>.ts @ <commit>.`
@@ -99,6 +102,10 @@ Repeat these translation decisions for the rest of the port:
   than rebuilding it in a ported file. `NodeError` carries `code`, `syscall`,
   and `path`; its FFI operation captures errno before another native call can
   overwrite it. Use `NodeException` for generic Node `Error` stringification.
+  Dart's RegExp omits Node's `d`-flag capture offsets; the `node/regexp.dart`
+  shim maps captures to their first occurrence in the full match. This is
+  exact for the current upstream patterns but ambiguous if a user-supplied
+  pattern repeats group 1's value earlier in its overall match.
 - **`process` overrides.** Import the shim as `process`; read its `platform`,
   `env`, and `cwd()` getters at the point of use. Tests that patch Node globals
   call `setPlatformForTesting`, `setEnvForTesting`, or `setCwdForTesting` and
@@ -146,4 +153,23 @@ and replaces paired EventEmitter one-shot callbacks with the
 | `src/sandbox/listen-in-range.ts` | `lib/src/sandbox/listen_in_range.dart` | — | Ported; no matching upstream test file; Stream adapter is in `node/events.dart` |
 | `src/utils/debug.ts` | `lib/src/utils/debug.dart` | — | Ported as a downstream dependency; no matching upstream test file |
 | `src/utils/platform.ts` | `lib/src/utils/platform.dart` | `test/utils/platform_test.dart` | Ported |
+| `src/utils/which.ts` | `lib/src/utils/which.dart` | `test/utils/which_test.dart`, `test/utils/which_node_test.dart` | Ported; 7 pass, 2 skipped (Bun-only); Node fallback script kept separate; Dart's synchronous process API has no spawn timeout |
+| `src/utils/ripgrep.ts` | `lib/src/utils/ripgrep.dart` | `test/utils/ripgrep_test.dart` | Ported; real `rg` process; six tests pass on this host; POSIX argv0 uses Bash `exec -a`; Windows argv0 case skips because Dart cannot override argv[0] |
+| `src/sandbox/sandbox-schemas.ts` | `lib/src/sandbox/sandbox_schemas.dart` | — | Ported; no matching standalone test file; six other sandbox tests import it (listed below) |
+| `src/sandbox/credential-extract.ts` | `lib/src/sandbox/credential_extract.dart` | — | Ported; no matching standalone test file; its direct extraction tests in `credential-mask-files.test.ts` remain for a later step; capture offsets use the RegExp shim approximation above |
+| `src/sandbox/emitted-connection.ts` | `lib/src/sandbox/emitted_connection.dart` | — | Ported; no matching standalone test file; byte-budget and runtime/proxy tests are deferred; Dart has no Node emitted-connection parser/server API, so header-batch and encoding functions are no-ops, while gate/end need Node-shaped request/socket objects at the shim boundary |
 | — (Node shims) | `lib/src/node/{errno,events,fs,net,process}.dart` | — | No upstream counterparts; small compatibility layer for these files |
+| — (Node shims) | `lib/src/node/{abort,emitted_http,regexp}.dart` | — | No upstream counterparts; AbortSignal, emitted HTTP/socket, and RegExp-with-indices boundaries for this batch |
+
+### Related upstream tests not ported in this batch
+
+These exercise the listed modules but belong to other source/test files, so
+they stay queued for those files' port steps (per the one-file test rule):
+
+- `credential-extract.ts`: `test/sandbox/credential-mask-files.test.ts`.
+- `sandbox-schemas.ts`: `test/sandbox/{macos-seatbelt,symlink-boundary,macos-profile-size,allow-read,read-list-precedence,macos-pty}.test.ts`.
+- `emitted-connection.ts`: direct tests in `test/sandbox/{byte-budget,tls-terminate-runtime,tls-terminate-upload-gate,tls-terminate-relay-budget}.test.ts`; its helper `test/helpers/emitted-connections.ts` is used by `test/proxy-cli.test.ts` and `test/sandbox/{canonical-host-routing,client-abort,connect-non-tls,credential-mask-body,credential-mask-sigv4,deny-late-body,invalid-upstream-response,proxy-only-edges,proxy-only,request-filter,request-rewriting,request-target-forwarding,resolved-address-guard,response-header-bytes,tls-terminate-handshake-deadline,tls-terminate-in-process,tls-terminate-keepalive,tls-terminate-proxy,trailers-then-request}.test.ts`.
+
+The sandbox schema port uses Dart named records for nested object-shaped
+values (`maskedFileBinds` and `NetworkHostPattern`); unlike upstream plain
+objects, records cannot be reassigned field-by-field.
