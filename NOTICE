@@ -1,0 +1,9 @@
+sandbox_runtime (Dart)
+
+This product is a port to Dart of Anthropic Sandbox Runtime
+(https://github.com/anthropics/sandbox-runtime), Copyright Anthropic PBC,
+licensed under the Apache License, Version 2.0.
+
+Modifications: the TypeScript sources were translated to Dart. The upstream
+commit each file was ported from is recorded in PORT_WORKLOG.md. Files under
+vendor/ are copied from upstream without change unless a file says otherwise.
