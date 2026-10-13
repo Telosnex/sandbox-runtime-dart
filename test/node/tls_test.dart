@@ -9,11 +9,11 @@ void main() {
   group('node:tls compatibility', () {
     test('uses the pinned Mozilla root bundle', () {
       expect(node_tls.rootCertificates, isNotEmpty);
-      expect(node_tls.rootCertificates.length, 150);
-      expect(node_tls.mozillaRootBundleVersion, '2025-02-25');
+      expect(node_tls.rootCertificates.length, 121);
+      expect(node_tls.mozillaRootBundleVersion, '2026-09-25');
       expect(
         node_tls.mozillaRootBundleSha256,
-        '50a6277ec69113f00c5fd45f09e8b97a4b3e32daa35d3a95ab30137a55386cef',
+        'a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505',
       );
       expect(
         node_tls.rootCertificates.first,
