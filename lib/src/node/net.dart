@@ -8,10 +8,11 @@ import 'dns.dart' as dns;
 
 /// Node's net.connect DNS callback contract. `options` describes the requested
 /// family/order and callback receives NodeLookupError plus a LookupResult.
+typedef LookupCallback = void Function(dns.NodeLookupError? err, dns.LookupResult? address, [int? family]);
 typedef LookupFunction = void Function(
   String hostname,
   dns.LookupOptions options,
-  Function callback,
+  LookupCallback callback,
 );
 
 /// Node `net.isIP`: 4 for strict dotted-decimal IPv4, 6 for an IPv6 literal,
@@ -187,6 +188,7 @@ class NodeSocket {
           _readEnded = true;
           _emit('end');
           _emit('readable');
+          if (!allowHalfOpen && !_writeEnded) end();
         }
         _finishClose();
       },
@@ -197,6 +199,13 @@ class NodeSocket {
       _finishClose();
     });
     if (!connecting) scheduleMicrotask(() => _emit('connect'));
+  }
+
+  /// Adopt an already-connected TCP/TLS socket (used by the raw HTTP server).
+  factory NodeSocket.fromSocket(Socket socket, {bool allowHalfOpen = false}) {
+    final wrapped = NodeSocket._(socket, connecting: false);
+    wrapped.allowHalfOpen = allowHalfOpen;
+    return wrapped;
   }
 
   static const int highWaterMark = 16 * 1024;
@@ -215,6 +224,7 @@ class NodeSocket {
   bool _unrefed = false;
   bool _flowing = false;
   bool _paused = false;
+  bool allowHalfOpen = false;
   Timer? _timeoutTimer;
   int _timeoutMs = 0;
 
@@ -234,13 +244,11 @@ class NodeSocket {
       );
     }
     final result = Completer<InternetAddress>();
-    lookup(hostname, dns.LookupOptions(family: 0), (Object? error, Object? value, [Object? family]) {
+    lookup(hostname, dns.LookupOptions(family: 0), (dns.NodeLookupError? error, dns.LookupResult? value, [int? family]) {
       if (error != null) {
         result.completeError(error);
       } else if (value is dns.LookupResultAddress) {
         result.complete(InternetAddress(value.address));
-      } else if (value is String) {
-        result.complete(InternetAddress(value));
       } else if (value is dns.LookupResultAll && value.addresses.isNotEmpty) {
         result.complete(InternetAddress(value.addresses.first.address));
       } else {
@@ -327,7 +335,6 @@ class NodeSocket {
 
   /// Read up to [size] bytes synchronously, or null when no byte is ready.
   Uint8List? read([int? size]) {
-    if (_flowing) _flowing = false;
     if (_readQueue.isEmpty) return null;
     if (size == null || size <= 0) {
       final parts = <Uint8List>[];
@@ -462,7 +469,10 @@ class NodeSocket {
     if (_destroyed) return this;
     _destroyed = true;
     _timeoutTimer?.cancel();
-    if (error != null) _emit('error', error);
+    if (error != null) {
+      _hadError = true;
+      _emit('error', error);
+    }
     _socket.destroy();
     _subscription.cancel();
     _finishClose();
@@ -609,8 +619,12 @@ class NodeServer {
     }
   }
 
-  Future<void> listen(Object address, [String? host, Function? callback]) async {
+  int listenerCount(String event) => _listeners[event]?.length ?? 0;
+
+  Future<void> listen(Object address, [Object? hostOrCallback, Function? callback]) async {
     if (_listening) throw StateError('Server is already listening');
+    final host = hostOrCallback is String ? hostOrCallback : null;
+    callback ??= hostOrCallback is Function ? hostOrCallback : null;
     if (address is String) {
       _unixPath = address;
       if (Platform.isWindows) {
@@ -619,6 +633,11 @@ class NodeServer {
         _port = server.port;
         _host = '127.0.0.1';
       } else {
+        try {
+          await File(address).delete();
+        } on FileSystemException {
+          // No stale Unix socket is present.
+        }
         final socketAddress = InternetAddress(address, type: InternetAddressType.unix);
         _tcp = await ServerSocket.bind(socketAddress, 0);
         _port = null;
