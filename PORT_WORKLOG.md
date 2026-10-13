@@ -28,6 +28,35 @@ able to put an upstream file next to its Dart file and diff them by eye.
 - **Each Dart file starts with:**
   `// Ported from sandbox-runtime src/<path>.ts @ <commit>.`
 
+## Rule 1a: who ports a test file
+
+Upstream test files are named for a behaviour, not a source file. So:
+
+- A test file is always ported whole, as one Dart file named after it.
+- The agent porting source file X ports the test files whose tests exercise X
+  and otherwise only already-ported modules or modules in X's current batch.
+- A test that needs a module that is not ported yet keeps its full body and
+  gets `skip: 'pending port: <upstream file>.ts'`, in exactly that format, so
+  one grep finds them all later.
+- A test file where most tests need modules outside the current batch (for
+  example sandbox-manager) is not ported yet. List it under "Related upstream
+  tests not ported in this batch" with the modules it waits for.
+
+## Rule 1b: partial files
+
+A file may be created before its owner ports it, to supply declarations that
+another file needs:
+
+- **Stub:** declarations only, bodies `throw UnimplementedError('pending port
+  of src/<path>.ts')`, header `// STUB: pending port of src/<path>.ts @ <commit>.`
+- **Partial:** some declarations ported faithfully (with their upstream
+  comments, in upstream order relative to each other), the rest absent.
+  Header `// PARTIAL: ported <names>; pending port of the rest of
+  src/<path>.ts @ <commit>.` Allowed only when /root approves it.
+
+The agent that later ports the whole file replaces either kind, keeping any
+faithful declarations that are already there.
+
 ## Rule 2: Node API shims
 
 Upstream leans on Node behavior: error codes, `BlockList`, `isIP`, `rawHeaders`.
