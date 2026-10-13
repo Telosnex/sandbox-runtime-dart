@@ -272,6 +272,8 @@ void main() {
         Directory(tree.root).deleteSync(recursive: true);
       });
 
+      // Used by the two tests pending credential-mask-files.ts.
+      // ignore: unused_element
       String wrapMasked({
         List<({String realPath, String fakePath})>? maskedFileBinds,
         List<String>? degradeToDenyPaths,
