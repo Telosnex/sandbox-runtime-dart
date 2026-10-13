@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/sandbox/emitted-connection.ts @ 24eb39e.
+// PARTIAL: ported every declaration; the bodies of keepFlushedHeaderBatches, writeHeadsAsLatin1, gateSocketOnBufferedBody and endRequestAfterResponse live in node/emitted_http.dart and move back here with the proxy port; pending port of the rest of src/sandbox/emitted-connection.ts @ 24eb39e.
 // ignore_for_file: slash_for_doc_comments, dangling_library_doc_comments
 
 import 'dart:io';

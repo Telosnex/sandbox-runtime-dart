@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/sandbox/mux-proxy.ts @ 24eb39e.
+// PARTIAL: ported SOCKS_FIRST_BYTES, MuxProxyOptions, MuxProxyServer, DEFAULT_FIRST_BYTE_TIMEOUT_MS, backendSeq, unixSocketPath; createMuxProxyServer throws pending the net/http shim; pending port of the rest of src/sandbox/mux-proxy.ts @ 24eb39e.
 // ignore_for_file: slash_for_doc_comments, dangling_library_doc_comments, unused_element, constant_identifier_names, non_constant_identifier_names
 
 import 'dart:io' show Directory, HttpServer, ServerSocket, Socket, pid;
