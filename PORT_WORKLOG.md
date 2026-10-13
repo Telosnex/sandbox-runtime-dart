@@ -236,8 +236,8 @@ and replaces paired EventEmitter one-shot callbacks with the
 | `src/utils/ripgrep.ts` | `lib/src/utils/ripgrep.dart` | `test/utils/ripgrep_test.dart` | Ported; real `rg` process; six tests pass on this host; POSIX argv0 uses Bash `exec -a`; Windows argv0 case skips because Dart cannot override argv[0] |
 | `src/sandbox/sandbox-schemas.ts` | `lib/src/sandbox/sandbox_schemas.dart` | — | Ported; no matching standalone test file; six other sandbox tests import it (listed below) |
 | `src/sandbox/credential-extract.ts` | `lib/src/sandbox/credential_extract.dart` | — | Ported; no matching standalone test file; direct extraction tests in `credential-mask-files.test.ts` remain queued; exact capture offsets use the instrumented RegExp shim |
-| `src/sandbox/emitted-connection.ts` | `lib/src/sandbox/emitted_connection.dart` | — | **Partial: blocked on HTTP shim**; no matching upstream test file; byte-budget/runtime tests are deferred; unsupported HTTP/parser/socket operations throw rather than no-op |
-| `src/sandbox/mux-proxy.ts` | `lib/src/sandbox/mux_proxy.dart` | `test/sandbox/mux_proxy_test.dart` | **Partial: blocked on HTTP/socket shim**; all 8 direct tests are skipped; no rawHeaders or CONNECT-head dependency |
+| `src/sandbox/emitted-connection.ts` | `lib/src/sandbox/emitted_connection.dart` | — | **Partial:** HTTP/socket core is now available; no matching upstream test file; TLS termination wiring and byte-budget/runtime tests remain deferred; unsupported paths stay fail-closed |
+| `src/sandbox/mux-proxy.ts` | `lib/src/sandbox/mux_proxy.dart` | `test/sandbox/mux_proxy_test.dart` | **Partial:** net/HTTP shim dependencies are now present; source port remains partial and all 8 direct tests still skip pending that port |
 | `src/sandbox/aws-sigv4.ts` | `lib/src/sandbox/aws_sigv4.dart` | `test/sandbox/aws_sigv4_test.dart` | Ported; 38 pass, including all 22 official test-suite vectors |
 | `src/sandbox/sandbox-config.ts` | `lib/src/sandbox/sandbox_config.dart` | `test/config_validation_test.dart` | Ported; 151 config-validation cases pass, with hand-written typed validators |
 | `src/sandbox/domain-pattern.ts` | `lib/src/sandbox/domain_pattern.dart` | `test/sandbox/domain_pattern_test.dart` | Ported; all 16 direct tests pass |
@@ -246,23 +246,20 @@ and replaces paired EventEmitter one-shot callbacks with the
 | `src/sandbox/sandbox-utils.ts` | `lib/src/sandbox/sandbox_utils.dart` | `test/sandbox/{sandbox_env_tmpdir_test,glob_walk_property_test}.dart` | Ported; 6 direct tests pass; no one-to-one utility suite exists upstream; Node shims `os.dart`, `buffer.dart`, `fs_sandbox_utils.dart` |
 | `src/sandbox/path-entries.ts` | `lib/src/sandbox/path_entries.dart` | — | Ported; `literal-path-entries.test.ts` waits on sandbox-manager and Linux/macOS wrapper modules |
 | `src/sandbox/sandbox-violation-store.ts` | `lib/src/sandbox/sandbox_violation_store.dart` | — | Ported; no one-to-one upstream test file; related assertions are in `command-text-registry.test.ts` |
-| — (Node shims) | `lib/src/node/{errno,events,fs,net,process}.dart` | — | No upstream counterparts; small compatibility layer for these files |
+| — (Node shims) | `lib/src/node/{errno,events,fs,http,net,process}.dart` | `test/node/{http,net}_test.dart` | No upstream counterparts; raw HTTP/1.1/socket subset with byte-preserving headers, body/trailer framing, CONNECT, keep-alive, and TCP/Unix listeners; 16 focused tests pass |
 | — (Node shim) | `lib/src/node/url.dart` | `test/node/url_test.dart` | WHATWG URL host parsing subset for `canonicalizeHost`; seven Node v22.16.0 golden tests pass; unsupported IDNA fails closed |
-| — (Node shims) | `lib/src/node/{abort,emitted_http,regexp}.dart` | `test/node/{emitted_http,regexp}_test.dart` | No upstream counterparts; AbortSignal, fail-closed HTTP/socket boundary, and exact supported RegExp-with-indices instrumentation |
+| — (Node shims) | `lib/src/node/{abort,emitted_http,regexp}.dart` | `test/node/{emitted_http,regexp}_test.dart` | No upstream counterparts; AbortSignal, emitted-connection adapter over raw HTTP/socket shim, and exact supported RegExp-with-indices instrumentation |
 | — (Node shims) | `lib/src/node/{aws_crypto,incoming_http_headers,url_search_params}.dart` | — | No upstream counterparts; Node crypto Buffer/HMAC, HTTP headers, and URLSearchParams used by `aws-sigv4.ts` |
-| — (Node shims) | `lib/src/node/{forge,tls}.dart` | `test/node/{forge,tls}_test.dart` | Pure-Dart forge subset; Mozilla root bundle `2026-09-25` SHA-256 `a41b5d35…37d00505`; bounded ClientHello replay and ALPN; raw `dart:io` socket boundary pending HTTP shim wiring |
+| — (Node shims) | `lib/src/node/{forge,tls}.dart` | `test/node/{forge,tls}_test.dart` | Pure-Dart forge subset; Mozilla root bundle `2026-09-25` SHA-256 `a41b5d35…37d00505`; bounded ClientHello replay and ALPN; secure client HTTP uses the raw socket shim |
 
 ### Known port gaps
 
 - `which.ts`: Dart's synchronous `Process.runSync` has no `spawnSync` timeout;
   the upstream one-second timeout cannot be reproduced synchronously.
-- `emitted-connection.ts`: blocked on the raw HTTP/1.1 parser/socket shim;
-  unsupported operations throw as recorded above.
-- `mux-proxy.ts`: blocked on Node net first-byte `read(1)`/`unshift`, duplex
-  socket `pipe` backpressure/end behavior, `connect`/`close`/`error` ordering,
-  listener/socket/sniff-timer `unref`, and the Node HTTP server's Unix-socket
-  listen/close lifecycle. The mux does not parse `rawHeaders` or CONNECT
-  `head`; CONNECT request parsing is delegated to its HTTP backend.
+- `emitted-connection.ts`: HTTP/socket parser and event adapters now exist;
+  full TLS tunnel wiring and runtime/body-budget integration remain deferred.
+- `mux-proxy.ts`: raw net stream/server and HTTP shim dependencies are present;
+  inherited-FD listener support and the source port/test suite remain pending.
 - TLS: malformed, oversized, or timed-out ClientHello inspection throws and
   destroys the raw socket; no-SNI is returned explicitly for caller policy.
   Unsupported forge extensions, non-RSA PEM keys, and signing algorithms throw

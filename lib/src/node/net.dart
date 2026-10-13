@@ -8,12 +8,18 @@ import 'dns.dart' as dns;
 
 /// Node's net.connect DNS callback contract. `options` describes the requested
 /// family/order and callback receives NodeLookupError plus a LookupResult.
-typedef LookupCallback = void Function(dns.NodeLookupError? err, dns.LookupResult? address, [int? family]);
-typedef LookupFunction = void Function(
-  String hostname,
-  dns.LookupOptions options,
-  LookupCallback callback,
-);
+typedef LookupCallback =
+    void Function(
+      dns.NodeLookupError? err,
+      dns.LookupResult? address, [
+      int? family,
+    ]);
+typedef LookupFunction =
+    void Function(
+      String hostname,
+      dns.LookupOptions options,
+      LookupCallback callback,
+    );
 
 /// Node `net.isIP`: 4 for strict dotted-decimal IPv4, 6 for an IPv6 literal,
 /// and 0 otherwise. The regexes mirror Node's internal/net.js expressions.
@@ -180,6 +186,7 @@ class NodeSocket {
     _subscription = _socket.listen(
       _received,
       onError: (Object error, StackTrace stack) {
+        _hadError = true;
         _emit('error', error);
         _finishClose();
       },
@@ -190,15 +197,19 @@ class NodeSocket {
           _emit('readable');
           if (!allowHalfOpen && !_writeEnded) end();
         }
-        _finishClose();
+        if (_writeShutdownComplete) _finishClose();
       },
       cancelOnError: false,
     );
-    _socket.done.then<void>((_) => _finishClose(), onError: (Object error) {
-      _emit('error', error);
-      _finishClose();
-    });
-    if (!connecting) scheduleMicrotask(() => _emit('connect'));
+    _socket.done.then<void>(
+      (_) {},
+      onError: (Object error) {
+        _hadError = true;
+        _emit('error', error);
+        _finishClose();
+      },
+    );
+    if (!connecting) Timer.run(() => _emit('connect'));
   }
 
   /// Adopt an already-connected TCP/TLS socket (used by the raw HTTP server).
@@ -217,6 +228,9 @@ class NodeSocket {
   int _pendingBytes = 0;
   int _bytesWritten = 0;
   bool _flushing = false;
+  final List<_PendingWrite> _writeQueue = [];
+  bool _writeShutdownStarted = false;
+  bool _writeShutdownComplete = false;
   bool _readEnded = false;
   bool _writeEnded = false;
   bool _closed = false;
@@ -230,21 +244,41 @@ class NodeSocket {
 
   /// Create a socket connected to a TCP endpoint or a Unix-domain path.
   static Future<NodeSocket> connect(
-    Object pathOrPort, [String? host, LookupFunction? lookup]) async {
+    Object pathOrPort, [
+    String? host,
+    LookupFunction? lookup,
+  ]) async {
+    return NodeSocket._(
+      await connectRaw(pathOrPort, host, lookup),
+      connecting: false,
+    );
+  }
+
+  /// Open the underlying raw socket without adopting its readable stream.
+  /// TLS clients must wrap it with SecureSocket before NodeSocket listens.
+  static Future<Socket> connectRaw(
+    Object pathOrPort, [
+    String? host,
+    LookupFunction? lookup,
+  ]) async {
     if (pathOrPort is String) {
-      final address = InternetAddress(pathOrPort, type: InternetAddressType.unix);
-      return NodeSocket._(await Socket.connect(address, 0), connecting: false);
+      final address = InternetAddress(
+        pathOrPort,
+        type: InternetAddressType.unix,
+      );
+      return Socket.connect(address, 0);
     }
     final port = pathOrPort as int;
     final hostname = host ?? 'localhost';
     if (lookup == null) {
-      return NodeSocket._(
-        await Socket.connect(hostname, port),
-        connecting: false,
-      );
+      return Socket.connect(hostname, port);
     }
     final result = Completer<InternetAddress>();
-    lookup(hostname, dns.LookupOptions(family: 0), (dns.NodeLookupError? error, dns.LookupResult? value, [int? family]) {
+    lookup(hostname, dns.LookupOptions(family: 0), (
+      dns.NodeLookupError? error,
+      dns.LookupResult? value, [
+      int? family,
+    ]) {
       if (error != null) {
         result.completeError(error);
       } else if (value is dns.LookupResultAddress) {
@@ -256,10 +290,7 @@ class NodeSocket {
       }
     });
     final address = await result.future;
-    return NodeSocket._(
-      await Socket.connect(address, port),
-      connecting: false,
-    );
+    return Socket.connect(address, port);
   }
 
   bool get connecting => false;
@@ -289,12 +320,18 @@ class NodeSocket {
     if (event == 'readable' && _readQueue.isNotEmpty) {
       scheduleMicrotask(() => _emit('readable'));
     }
+    if (event == 'end' && _readEnded) {
+      scheduleMicrotask(() => Function.apply(listener, const []));
+    }
+    if (event == 'close' && _closed) {
+      scheduleMicrotask(() => Function.apply(listener, [_hadError]));
+    }
     return this;
   }
 
   NodeSocket once(String event, Function listener) {
     late Function wrapped;
-    wrapped = (Object? value) {
+    wrapped = ([Object? value]) {
       off(event, wrapped);
       Function.apply(listener, value == null ? const [] : [value]);
     };
@@ -306,7 +343,8 @@ class NodeSocket {
     return this;
   }
 
-  NodeSocket removeListener(String event, Function listener) => off(event, listener);
+  NodeSocket removeListener(String event, Function listener) =>
+      off(event, listener);
 
   int listenerCount(String event) => _listeners[event]?.length ?? 0;
 
@@ -386,7 +424,10 @@ class NodeSocket {
   /// contract; callers must wait for `drain` before resuming after false.
   bool write(Object data, [Function? callback]) {
     if (!writable) {
-      final error = SocketException('write after end', osError: const OSError('Broken pipe', 32));
+      final error = SocketException(
+        'write after end',
+        osError: const OSError('Broken pipe', 32),
+      );
       if (callback != null) scheduleMicrotask(() => callback(error));
       _emit('error', error);
       return false;
@@ -395,23 +436,14 @@ class NodeSocket {
         ? Uint8List.fromList(data.codeUnits.map((c) => c & 0xff).toList())
         : Uint8List.fromList(data as List<int>);
     if (bytes.isEmpty) {
-      if (callback != null) scheduleMicrotask(() => Function.apply(callback, const []));
+      if (callback != null) {
+        scheduleMicrotask(() => Function.apply(callback, const []));
+      }
       return _pendingBytes < highWaterMark;
     }
     _pendingBytes += bytes.length;
     _bytesWritten += bytes.length;
-    try {
-      _socket.add(bytes);
-    } catch (error) {
-      _emit('error', error);
-      destroy(error);
-      return false;
-    }
-    if (callback != null) {
-      _socket.flush().then<void>((_) => callback(), onError: (Object error) {
-        callback(error);
-      });
-    }
+    _writeQueue.add(_PendingWrite(bytes, callback));
     _flushWrites();
     _resetTimeout();
     return _pendingBytes < highWaterMark;
@@ -420,21 +452,46 @@ class NodeSocket {
   void _flushWrites() {
     if (_flushing || _closed) return;
     _flushing = true;
-    final snapshot = _pendingBytes;
-    _socket.flush().then<void>((_) {
-      final previous = _pendingBytes;
-      _pendingBytes = (_pendingBytes - snapshot).clamp(0, 1 << 62);
-      if (previous >= highWaterMark && _pendingBytes < highWaterMark) {
-        _emit('drain');
+    unawaited(_pumpWrites());
+  }
+
+  Future<void> _pumpWrites() async {
+    try {
+      while (!_closed && _writeQueue.isNotEmpty) {
+        final batch = List<_PendingWrite>.of(_writeQueue);
+        _writeQueue.clear();
+        for (final write in batch) {
+          _socket.add(write.bytes);
+        }
+        await _socket.flush();
+        final previous = _pendingBytes;
+        for (final write in batch) {
+          _pendingBytes = (_pendingBytes - write.bytes.length).clamp(
+            0,
+            1 << 62,
+          );
+          if (write.callback != null) Function.apply(write.callback!, const []);
+        }
+        if (previous >= highWaterMark && _pendingBytes < highWaterMark) {
+          _emit('drain');
+        }
       }
-      _flushing = false;
-      if (_pendingBytes > 0) _flushWrites();
-      if (_writeEnded && _pendingBytes == 0) _shutdownWrite();
-    }, onError: (Object error) {
-      _flushing = false;
+    } catch (error) {
+      for (final write in _writeQueue) {
+        if (write.callback != null) Function.apply(write.callback!, [error]);
+      }
+      _writeQueue.clear();
+      _hadError = true;
       _emit('error', error);
       destroy(error);
-    });
+    } finally {
+      _flushing = false;
+      if (_writeQueue.isNotEmpty) {
+        _flushWrites();
+      } else if (_writeEnded && _pendingBytes == 0) {
+        _shutdownWrite();
+      }
+    }
   }
 
   /// Flush [data] then half-close the write direction while retaining reads.
@@ -449,15 +506,21 @@ class NodeSocket {
   }
 
   void _shutdownWrite() {
-    if (_closed) return;
+    if (_closed || _writeShutdownStarted) return;
+    _writeShutdownStarted = true;
     try {
       // dart:io Socket.close() flushes, then shuts down only the send side.
-      _socket.close().then<void>((_) {
-        _emit('finish');
-      }, onError: (Object error) {
-        _emit('error', error);
-        destroy(error);
-      });
+      _socket.close().then<void>(
+        (_) {
+          _writeShutdownComplete = true;
+          _emit('finish');
+          if (_readEnded) _finishClose();
+        },
+        onError: (Object error) {
+          _emit('error', error);
+          destroy(error);
+        },
+      );
     } catch (error) {
       _emit('error', error);
       destroy(error);
@@ -574,14 +637,25 @@ class NodeSocket {
 
   Uint8List _concat(List<Uint8List> parts) {
     final builder = BytesBuilder(copy: false);
-    for (final part in parts) { builder.add(part); }
+    for (final part in parts) {
+      builder.add(part);
+    }
     return builder.takeBytes();
   }
 }
 
+class _PendingWrite {
+  const _PendingWrite(this.bytes, this.callback);
+  final Uint8List bytes;
+  final Function? callback;
+}
+
 /// Node-like net.Server for TCP and Unix-domain listeners.
 class NodeServer {
-  NodeServer({this.allowHalfOpen = false, this.highWaterMark = NodeSocket.highWaterMark});
+  NodeServer({
+    this.allowHalfOpen = false,
+    this.highWaterMark = NodeSocket.highWaterMark,
+  });
 
   final bool allowHalfOpen;
   final int highWaterMark;
@@ -589,7 +663,10 @@ class NodeServer {
   ServerSocket? _tcp;
   bool _listening = false;
   bool _closed = false;
+  bool _closeEmitted = false;
   bool _unrefed = false;
+  final Set<NodeSocket> _connections = {};
+  Completer<void>? _closeCompleter;
   String? _unixPath;
   int? _port;
   String? _host;
@@ -600,6 +677,7 @@ class NodeServer {
     (_listeners[event] ??= []).add(listener);
     return this;
   }
+
   NodeServer once(String event, Function listener) {
     late Function wrapped;
     wrapped = ([Object? value]) {
@@ -608,11 +686,14 @@ class NodeServer {
     };
     return on(event, wrapped);
   }
+
   NodeServer off(String event, Function listener) {
     _listeners[event]?.remove(listener);
     return this;
   }
-  NodeServer removeListener(String event, Function listener) => off(event, listener);
+
+  NodeServer removeListener(String event, Function listener) =>
+      off(event, listener);
   void _emit(String event, [Object? value]) {
     for (final listener in List<Function>.of(_listeners[event] ?? const [])) {
       Function.apply(listener, value == null ? const [] : [value]);
@@ -621,7 +702,11 @@ class NodeServer {
 
   int listenerCount(String event) => _listeners[event]?.length ?? 0;
 
-  Future<void> listen(Object address, [Object? hostOrCallback, Function? callback]) async {
+  Future<void> listen(
+    Object address, [
+    Object? hostOrCallback,
+    Function? callback,
+  ]) async {
     if (_listening) throw StateError('Server is already listening');
     final host = hostOrCallback is String ? hostOrCallback : null;
     callback ??= hostOrCallback is Function ? hostOrCallback : null;
@@ -633,12 +718,11 @@ class NodeServer {
         _port = server.port;
         _host = '127.0.0.1';
       } else {
-        try {
-          await File(address).delete();
-        } on FileSystemException {
-          // No stale Unix socket is present.
-        }
-        final socketAddress = InternetAddress(address, type: InternetAddressType.unix);
+        await _removeStaleUnixSocket(address);
+        final socketAddress = InternetAddress(
+          address,
+          type: InternetAddressType.unix,
+        );
         _tcp = await ServerSocket.bind(socketAddress, 0);
         _port = null;
       }
@@ -649,13 +733,24 @@ class NodeServer {
       _port = _tcp!.port;
     }
     _closed = false;
+    _closeEmitted = false;
+    _closeCompleter = null;
     _listening = true;
-    _tcp!.listen((socket) {
-      final wrapped = NodeSocket._(socket, connecting: false);
-      _emit('connection', wrapped);
-    }, onError: (Object error) => _emit('error', error), onDone: () {
-      if (_closed) _emit('close');
-    });
+    _tcp!.listen(
+      (socket) {
+        final wrapped = NodeSocket._(socket, connecting: false);
+        _connections.add(wrapped);
+        wrapped.once('close', ([Object? _]) {
+          _connections.remove(wrapped);
+          if (_closed && _connections.isEmpty) _emitClose();
+        });
+        _emit('connection', wrapped);
+      },
+      onError: (Object error) => _emit('error', error),
+      onDone: () {
+        if (_closed && _connections.isEmpty) _emitClose();
+      },
+    );
     scheduleMicrotask(() {
       _emit('listening');
       if (callback != null) callback();
@@ -669,21 +764,76 @@ class NodeServer {
 
   Future<void> close([Function? callback]) async {
     if (_closed) {
+      await _closeCompleter?.future;
       callback?.call();
       return;
     }
     _closed = true;
     _listening = false;
+    _closeCompleter = Completer<void>();
     await _tcp?.close();
     if (_unixPath != null && !Platform.isWindows) {
-      try { await File(_unixPath!).delete(); } on FileSystemException {} 
+      try {
+        await File(_unixPath!).delete();
+      } on FileSystemException {
+        // Another listener may already have unlinked the endpoint.
+      }
     }
-    _emit('close');
+    if (_connections.isEmpty) _emitClose();
+    await _closeCompleter!.future;
     callback?.call();
   }
 
-  NodeServer unref() { _unrefed = true; return this; }
-  NodeServer ref() { _unrefed = false; return this; }
+  void _emitClose() {
+    if (_closeEmitted) return;
+    _closeEmitted = true;
+    _emit('close');
+    if (_closeCompleter != null && !_closeCompleter!.isCompleted) {
+      _closeCompleter!.complete();
+    }
+  }
+
+  NodeServer unref() {
+    _unrefed = true;
+    return this;
+  }
+
+  NodeServer ref() {
+    _unrefed = false;
+    return this;
+  }
+}
+
+Future<void> _removeStaleUnixSocket(String path) async {
+  final type = FileSystemEntity.typeSync(path, followLinks: false);
+  if (type == FileSystemEntityType.notFound) return;
+  if (type != FileSystemEntityType.unixDomainSock) {
+    throw SocketException(
+      'Unix socket path is occupied by a non-socket: $path',
+    );
+  }
+
+  var active = false;
+  try {
+    final probe = await Socket.connect(
+      InternetAddress(path, type: InternetAddressType.unix),
+      0,
+      timeout: const Duration(milliseconds: 250),
+    );
+    active = true;
+    probe.destroy();
+  } on SocketException catch (error) {
+    // Only ECONNREFUSED means the path is a stale socket inode. Unknown
+    // failures (including a probe timeout) leave the path untouched.
+    final refused =
+        error.message.contains('Connection refused') ||
+        (error.osError?.message.contains('Connection refused') ?? false);
+    if (!refused) rethrow;
+  }
+  if (active) {
+    throw SocketException('Unix socket path is already in use: $path');
+  }
+  await File(path).delete();
 }
 
 class NodeAddress {
@@ -693,7 +843,10 @@ class NodeAddress {
   final String family = 'IPv4';
 }
 
-NodeServer createServer([Function? connectionListener, bool allowHalfOpen = false]) {
+NodeServer createServer([
+  Function? connectionListener,
+  bool allowHalfOpen = false,
+]) {
   final server = NodeServer(allowHalfOpen: allowHalfOpen);
   if (connectionListener != null) server.on('connection', connectionListener);
   return server;
@@ -711,3 +864,10 @@ Future<NodeSocket> connect(Object portOrOptions, [String? host]) {
   if (target == null) throw ArgumentError('net.connect requires port or path');
   return NodeSocket.connect(target, host, lookup);
 }
+
+/// Open an unwrapped socket for TLS layering while honoring the same lookup.
+Future<Socket> connectRaw(
+  Object hostOrPort, [
+  String? host,
+  LookupFunction? lookup,
+]) => NodeSocket.connectRaw(hostOrPort, host, lookup);
