@@ -21,9 +21,6 @@ import '../utils/real_path.dart' show realPathOf;
 import 'sandbox_config.dart'
     show FilesystemPathEntry, FilesystemPathLiteral, FilesystemPathSpelling;
 
-/// Work that can be left between two steps and taken up again.
-typedef Steps<T> = Iterable<Step<T>>;
-
 /**
  * Dangerous files that should be protected from writes.
  * These files can be used for code execution or data exfiltration.
@@ -550,7 +547,7 @@ List<String> generateProxyEnvVars([
       final basic = Buffer.from('$userRaw:$proxyAuthToken').toString('base64');
       envVars.addAll([
         'SRT_SSH_PROXY_COMMAND=${sshConnectScript(socksProxyPort, basic)}',
-        'GIT_SSH_COMMAND=ssh $sshMuxOverride -o ProxyCommand="/bin/sh -c '
+        "GIT_SSH_COMMAND=ssh $sshMuxOverride -o ProxyCommand=\"/bin/sh -c '"
             r'''eval \"\${SRT_SSH_PROXY_COMMAND:?unset, but GIT_SSH_COMMAND needs it}\"' sh '%h' %p''',
       ]);
     } else if (platform == 'macos') {
@@ -570,7 +567,9 @@ List<String> generateProxyEnvVars([
     envVars.add('FTP_PROXY=socks5h://${auth}localhost:$socksProxyPort');
     envVars.add('ftp_proxy=socks5h://${auth}localhost:$socksProxyPort');
     envVars.add('RSYNC_PROXY=localhost:$socksProxyPort');
-    final dockerPort = httpProxyPort ?? socksProxyPort;
+    final dockerPort = httpProxyPort != null && httpProxyPort != 0
+        ? httpProxyPort
+        : socksProxyPort;
     envVars.add('DOCKER_HTTP_PROXY=http://${auth}localhost:$dockerPort');
     envVars.add('DOCKER_HTTPS_PROXY=http://${auth}localhost:$dockerPort');
     if (httpProxyPort != null && httpProxyPort != 0) {
@@ -817,6 +816,9 @@ class GlobWalkOptions extends ExpandGlobOptions {
   final bool followSymlinkedDirectories;
   final GlobWalkListings? listings;
 }
+
+/// Work that can be left between two steps and taken up again.
+typedef Steps<T> = Iterable<Step<T>>;
 
 /** Runs `steps` to the end, on the spot. */
 T finish<T>(Steps<T> steps) {
