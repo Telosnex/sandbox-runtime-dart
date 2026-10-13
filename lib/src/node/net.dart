@@ -1,10 +1,21 @@
-// Minimal `node:net` equivalents for address.dart: Node's strict isIP result
-// and the subnet/IPv4-mapped matching behavior used by net.BlockList.
+// `node:net`: isIP, BlockList, Socket, Server, connect and createServer.
+//
+// Socket and Server keep Node's call shape. `connect` returns the socket at
+// once, in the connecting state; it emits 'connect' (or 'error' then
+// 'close') later, and writes made before then are queued. `listen` and
+// `close` return the server at once; the result arrives as a 'listening',
+// 'error' or 'close' event. Use `events.once(socket, 'connect')` where
+// upstream awaits a Promise that wraps those events.
+//
+// Socket errors are NodeError values with Node's `code`, `syscall`,
+// `address` and `port` (see errno.dart `socketError`).
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'dns.dart' as dns;
+import 'errno.dart';
+import 'events.dart';
 
 /// Node's net.connect DNS callback contract. `options` describes the requested
 /// family/order and callback receives NodeLookupError plus a LookupResult.
@@ -181,48 +192,23 @@ bool _matches(List<int> address, List<int> network, int prefix) {
 
 /// Node-like byte duplex over dart:io Socket. This is intentionally limited
 /// to the event and stream operations consumed by the sandbox proxies.
-class NodeSocket {
-  NodeSocket._(this._socket, {required bool connecting}) {
-    _subscription = _socket.listen(
-      _received,
-      onError: (Object error, StackTrace stack) {
-        _hadError = true;
-        _emit('error', error);
-        _finishClose();
-      },
-      onDone: () {
-        if (!_readEnded) {
-          _readEnded = true;
-          _emit('end');
-          _emit('readable');
-          if (!allowHalfOpen && !_writeEnded) end();
-        }
-        if (_writeShutdownComplete) _finishClose();
-      },
-      cancelOnError: false,
-    );
-    _socket.done.then<void>(
-      (_) {},
-      onError: (Object error) {
-        _hadError = true;
-        _emit('error', error);
-        _finishClose();
-      },
-    );
-    if (!connecting) Timer.run(() => _emit('connect'));
-  }
+/// Node `net.Socket`.
+class NodeSocket extends EventEmitter {
+  /// A socket with no connection yet. `net.connect` and `tls.connect` create
+  /// one and then call [startConnect].
+  NodeSocket.pending({this.allowHalfOpen = false}) : _connecting = true;
 
-  /// Adopt an already-connected TCP/TLS socket (used by the raw HTTP server).
-  factory NodeSocket.fromSocket(Socket socket, {bool allowHalfOpen = false}) {
-    final wrapped = NodeSocket._(socket, connecting: false);
-    wrapped.allowHalfOpen = allowHalfOpen;
-    return wrapped;
+  /// Adopt a connected dart:io socket, as a server does with an accepted
+  /// connection. No 'connect' event is emitted, as in Node.
+  NodeSocket.fromSocket(Socket socket, {this.allowHalfOpen = false})
+    : _connecting = false {
+    _attach(socket);
   }
 
   static const int highWaterMark = 16 * 1024;
-  final Socket _socket;
-  late final StreamSubscription<Uint8List> _subscription;
-  final Map<String, List<Function>> _listeners = {};
+  Socket? _socket;
+  StreamSubscription<Uint8List>? _subscription;
+  ConnectionTask<Socket>? _task;
   final List<Uint8List> _readQueue = [];
   int _readOffset = 0;
   int _pendingBytes = 0;
@@ -231,6 +217,7 @@ class NodeSocket {
   final List<_PendingWrite> _writeQueue = [];
   bool _writeShutdownStarted = false;
   bool _writeShutdownComplete = false;
+  bool _connecting;
   bool _readEnded = false;
   bool _writeEnded = false;
   bool _closed = false;
@@ -238,62 +225,184 @@ class NodeSocket {
   bool _unrefed = false;
   bool _flowing = false;
   bool _paused = false;
-  bool allowHalfOpen = false;
+  bool? _noDelay;
+  bool allowHalfOpen;
   Timer? _timeoutTimer;
   int _timeoutMs = 0;
+  bool _hadError = false;
 
-  /// Create a socket connected to a TCP endpoint or a Unix-domain path.
-  static Future<NodeSocket> connect(
-    Object pathOrPort, [
-    String? host,
-    LookupFunction? lookup,
-  ]) async {
-    return NodeSocket._(
-      await connectRaw(pathOrPort, host, lookup),
-      connecting: false,
+  void _attach(Socket socket) {
+    _socket = socket;
+    _connecting = false;
+    if (_noDelay != null) {
+      socket.setOption(SocketOption.tcpNoDelay, _noDelay!);
+    }
+    _subscription = socket.listen(
+      _received,
+      onError: (Object error, StackTrace stack) {
+        _hadError = true;
+        emit('error', socketError(error, 'read'));
+        _finishClose();
+      },
+      onDone: () {
+        if (!_readEnded) {
+          _readEnded = true;
+          emit('end');
+          emit('readable');
+          if (!allowHalfOpen && !_writeEnded) end();
+        }
+        if (_writeShutdownComplete) _finishClose();
+      },
+      cancelOnError: false,
     );
+    if (_paused) _subscription!.pause();
+    socket.done.then<void>(
+      (_) {},
+      onError: (Object error) {
+        _hadError = true;
+        emit('error', socketError(error, 'write'));
+        _finishClose();
+      },
+    );
+    if (_writeQueue.isNotEmpty) {
+      _flushWrites();
+    } else if (_writeEnded && _pendingBytes == 0) {
+      _shutdownWrite();
+    }
   }
 
-  /// Open the underlying raw socket without adopting its readable stream.
-  /// TLS clients must wrap it with SecureSocket before NodeSocket listens.
-  static Future<Socket> connectRaw(
-    Object pathOrPort, [
-    String? host,
+  /// Open the connection for a [NodeSocket.pending] socket. [secure], when
+  /// given, wraps the connected socket in TLS: 'connect' is emitted when TCP
+  /// connects, and 'secureConnect' when the handshake is done.
+  void startConnect({
+    String? path,
+    int? port,
+    String host = 'localhost',
     LookupFunction? lookup,
-  ]) async {
-    if (pathOrPort is String) {
-      final address = InternetAddress(
-        pathOrPort,
-        type: InternetAddressType.unix,
-      );
-      return Socket.connect(address, 0);
+    Future<Socket> Function(Socket raw)? secure,
+  }) {
+    unawaited(_connect(path, port, host, lookup, secure));
+  }
+
+  Future<void> _connect(
+    String? path,
+    int? port,
+    String host,
+    LookupFunction? lookup,
+    Future<Socket> Function(Socket raw)? secure,
+  ) async {
+    try {
+      Socket? raw;
+      if (path != null) {
+        raw =
+            await _dial(
+              InternetAddress(path, type: InternetAddressType.unix),
+              0,
+            ).catchError(
+              (Object e) => throw socketError(e, 'connect', address: path),
+            );
+      } else {
+        final addresses = await _resolve(host, lookup);
+        if (_destroyed) return;
+        emit(
+          'lookup',
+          null,
+          addresses.first.address,
+          addresses.first.family,
+          host,
+        );
+        Object? lastError;
+        for (final candidate in addresses) {
+          try {
+            raw = await _dial(InternetAddress(candidate.address), port!);
+            break;
+          } catch (e) {
+            if (_destroyed) return;
+            lastError = socketError(
+              e,
+              'connect',
+              address: candidate.address,
+              port: port,
+            );
+          }
+        }
+        if (raw == null) throw lastError!;
+      }
+      if (_destroyed) {
+        raw.destroy();
+        return;
+      }
+      if (secure == null) {
+        _attach(raw);
+        emit('connect');
+        emit('ready');
+        return;
+      }
+      _connecting = false;
+      emit('connect');
+      final secured = await secure(raw);
+      if (_destroyed) {
+        secured.destroy();
+        return;
+      }
+      _attach(secured);
+      emit('secureConnect');
+    } catch (error) {
+      if (_destroyed) return;
+      destroy(error is SocketException ? socketError(error, 'connect') : error);
     }
-    final port = pathOrPort as int;
-    final hostname = host ?? 'localhost';
-    if (lookup == null) {
-      return Socket.connect(hostname, port);
+  }
+
+  Future<Socket> _dial(InternetAddress address, int port) async {
+    final task = await Socket.startConnect(address, port);
+    _task = task;
+    try {
+      return await task.socket;
+    } finally {
+      _task = null;
     }
-    final result = Completer<InternetAddress>();
-    lookup(hostname, dns.LookupOptions(family: 0), (
+  }
+
+  Future<List<dns.LookupAddress>> _resolve(
+    String host,
+    LookupFunction? lookup,
+  ) {
+    final family = isIP(host);
+    if (family != 0) {
+      return Future.value([dns.LookupAddress(address: host, family: family)]);
+    }
+    final result = Completer<List<dns.LookupAddress>>();
+    // Node's default lookup is dns.lookup. With autoSelectFamily (the
+    // default since Node 20) it asks for every address and tries each.
+    final fn = lookup ?? dns.lookup;
+    fn(host, dns.LookupAllOptions(family: 0), (
       dns.NodeLookupError? error,
       dns.LookupResult? value, [
       int? family,
     ]) {
+      if (result.isCompleted) return;
       if (error != null) {
         result.completeError(error);
-      } else if (value is dns.LookupResultAddress) {
-        result.complete(InternetAddress(value.address));
       } else if (value is dns.LookupResultAll && value.addresses.isNotEmpty) {
-        result.complete(InternetAddress(value.addresses.first.address));
+        result.complete(value.addresses);
+      } else if (value is dns.LookupResultAddress) {
+        result.complete([
+          dns.LookupAddress(
+            address: value.address,
+            family: family ?? isIP(value.address),
+          ),
+        ]);
       } else {
-        result.completeError(StateError('lookup returned no address'));
+        result.completeError(
+          dns.NodeLookupError('ENOTFOUND', 'getaddrinfo ENOTFOUND $host'),
+        );
       }
     });
-    final address = await result.future;
-    return Socket.connect(address, port);
+    return result.future;
   }
 
-  bool get connecting => false;
+  bool get connecting => _connecting;
+  bool get pending => _socket == null;
   bool get destroyed => _destroyed;
   bool get readable => !_readEnded && !_destroyed;
   bool get writable => !_writeEnded && !_destroyed;
@@ -303,70 +412,75 @@ class NodeSocket {
   bool get closed => _closed;
   int get writableLength => _pendingBytes;
   int get bytesWritten => _bytesWritten;
-  InternetAddress get remoteAddress => _socket.remoteAddress;
-  int get remotePort => _socket.remotePort;
-  InternetAddress get localAddress => _socket.address;
-  int get localPort => _socket.port;
   bool get unrefed => _unrefed;
 
-  /// Install an event listener. `data` listeners put the readable side in
-  /// flowing mode; `readable` listeners can pull with [read].
+  bool get _isUnix => _socket?.address.type == InternetAddressType.unix;
+
+  /// As in Node, these are null for a Unix-domain socket or before connect.
+  String? get remoteAddress =>
+      _socket == null || _isUnix ? null : _socket!.remoteAddress.address;
+  int? get remotePort =>
+      _socket == null || _isUnix ? null : _socket!.remotePort;
+  String? get remoteFamily => _socket == null || _isUnix
+      ? null
+      : (_socket!.remoteAddress.type == InternetAddressType.IPv6
+            ? 'IPv6'
+            : 'IPv4');
+  String? get localAddress =>
+      _socket == null || _isUnix ? null : _socket!.address.address;
+  int? get localPort => _socket == null || _isUnix ? null : _socket!.port;
+
+  /// A 'data' listener puts the readable side in flowing mode, as in Node; a
+  /// 'readable' listener can pull with [read].
+  @override
   NodeSocket on(String event, Function listener) {
-    (_listeners[event] ??= []).add(listener);
+    super.on(event, listener);
+    _listenerAdded(event);
+    return this;
+  }
+
+  @override
+  NodeSocket once(String event, Function listener) {
+    super.once(event, listener);
+    _listenerAdded(event);
+    return this;
+  }
+
+  @override
+  NodeSocket prependListener(String event, Function listener) {
+    super.prependListener(event, listener);
+    _listenerAdded(event);
+    return this;
+  }
+
+  void _listenerAdded(String event) {
     if (event == 'data') {
       _flowing = true;
       _deliverQueued();
     }
     if (event == 'readable' && _readQueue.isNotEmpty) {
-      scheduleMicrotask(() => _emit('readable'));
+      scheduleMicrotask(() => emit('readable'));
     }
-    if (event == 'end' && _readEnded) {
-      scheduleMicrotask(() => Function.apply(listener, const []));
-    }
-    if (event == 'close' && _closed) {
-      scheduleMicrotask(() => Function.apply(listener, [_hadError]));
-    }
-    return this;
   }
 
-  NodeSocket once(String event, Function listener) {
-    late Function wrapped;
-    wrapped = ([Object? value]) {
-      off(event, wrapped);
-      Function.apply(listener, value == null ? const [] : [value]);
-    };
-    return on(event, wrapped);
-  }
-
+  @override
   NodeSocket off(String event, Function listener) {
-    _listeners[event]?.remove(listener);
+    super.off(event, listener);
     return this;
   }
 
+  @override
   NodeSocket removeListener(String event, Function listener) =>
       off(event, listener);
-
-  int listenerCount(String event) => _listeners[event]?.length ?? 0;
-
-  void _emit(String event, [Object? value]) {
-    for (final listener in List<Function>.of(_listeners[event] ?? const [])) {
-      try {
-        Function.apply(listener, value == null ? const [] : [value]);
-      } catch (error, stack) {
-        scheduleMicrotask(() => Zone.current.handleUncaughtError(error, stack));
-      }
-    }
-  }
 
   void _received(Uint8List bytes) {
     if (bytes.isEmpty || _destroyed) return;
     final copy = Uint8List.fromList(bytes);
-    _bytesWritten += 0;
     if (_flowing && !_paused) {
-      _emit('data', copy);
+      emit('data', copy);
     } else {
       _readQueue.add(copy);
-      _emit('readable');
+      emit('readable');
     }
     _resetTimeout();
   }
@@ -417,19 +531,33 @@ class NodeSocket {
         ..add(Uint8List.fromList([...bytes, if (current != null) ...current]));
       _readOffset = 0;
     }
-    _emit('readable');
+    emit('readable');
   }
 
   /// Write a byte/string chunk. The boolean mirrors Node's high-water mark
   /// contract; callers must wait for `drain` before resuming after false.
+  /// A string is written as Latin-1 bytes.
   bool write(Object data, [Function? callback]) {
-    if (!writable) {
-      final error = SocketException(
-        'write after end',
-        osError: const OSError('Broken pipe', 32),
+    if (_destroyed) {
+      // Node passes ERR_STREAM_DESTROYED to the callback and emits nothing.
+      final error = NodeError(
+        'Cannot call write after a stream was destroyed',
+        code: 'ERR_STREAM_DESTROYED',
       );
-      if (callback != null) scheduleMicrotask(() => callback(error));
-      _emit('error', error);
+      if (callback != null) {
+        scheduleMicrotask(() => applyListener(callback, [error]));
+      }
+      return false;
+    }
+    if (_writeEnded) {
+      final error = NodeError(
+        'write after end',
+        code: 'ERR_STREAM_WRITE_AFTER_END',
+      );
+      if (callback != null) {
+        scheduleMicrotask(() => applyListener(callback, [error]));
+      }
+      scheduleMicrotask(() => emit('error', error));
       return false;
     }
     final bytes = data is String
@@ -437,7 +565,7 @@ class NodeSocket {
         : Uint8List.fromList(data as List<int>);
     if (bytes.isEmpty) {
       if (callback != null) {
-        scheduleMicrotask(() => Function.apply(callback, const []));
+        scheduleMicrotask(() => applyListener(callback, const []));
       }
       return _pendingBytes < highWaterMark;
     }
@@ -450,40 +578,40 @@ class NodeSocket {
   }
 
   void _flushWrites() {
-    if (_flushing || _closed) return;
+    if (_flushing || _closed || _socket == null) return;
     _flushing = true;
     unawaited(_pumpWrites());
   }
 
   Future<void> _pumpWrites() async {
+    final socket = _socket!;
     try {
       while (!_closed && _writeQueue.isNotEmpty) {
         final batch = List<_PendingWrite>.of(_writeQueue);
         _writeQueue.clear();
         for (final write in batch) {
-          _socket.add(write.bytes);
+          socket.add(write.bytes);
         }
-        await _socket.flush();
+        await socket.flush();
         final previous = _pendingBytes;
         for (final write in batch) {
           _pendingBytes = (_pendingBytes - write.bytes.length).clamp(
             0,
             1 << 62,
           );
-          if (write.callback != null) Function.apply(write.callback!, const []);
+          if (write.callback != null) applyListener(write.callback!, const []);
         }
         if (previous >= highWaterMark && _pendingBytes < highWaterMark) {
-          _emit('drain');
+          emit('drain');
         }
       }
     } catch (error) {
+      final nodeError = socketError(error, 'write');
       for (final write in _writeQueue) {
-        if (write.callback != null) Function.apply(write.callback!, [error]);
+        if (write.callback != null) applyListener(write.callback!, [nodeError]);
       }
       _writeQueue.clear();
-      _hadError = true;
-      _emit('error', error);
-      destroy(error);
+      destroy(nodeError);
     } finally {
       _flushing = false;
       if (_writeQueue.isNotEmpty) {
@@ -506,38 +634,33 @@ class NodeSocket {
   }
 
   void _shutdownWrite() {
-    if (_closed || _writeShutdownStarted) return;
+    if (_closed || _writeShutdownStarted || _socket == null) return;
     _writeShutdownStarted = true;
     try {
       // dart:io Socket.close() flushes, then shuts down only the send side.
-      _socket.close().then<void>(
-        (_) {
-          _writeShutdownComplete = true;
-          _emit('finish');
-          if (_readEnded) _finishClose();
-        },
-        onError: (Object error) {
-          _emit('error', error);
-          destroy(error);
-        },
-      );
+      _socket!.close().then<void>((_) {
+        _writeShutdownComplete = true;
+        emit('finish');
+        if (_readEnded) _finishClose();
+      }, onError: (Object error) => destroy(socketError(error, 'shutdown')));
     } catch (error) {
-      _emit('error', error);
-      destroy(error);
+      destroy(socketError(error, 'shutdown'));
     }
   }
 
-  /// Abruptly close the descriptor. Error is emitted before close.
+  /// Close the descriptor at once. With [error], 'error' is emitted before
+  /// 'close'. A connection still being opened is abandoned.
   NodeSocket destroy([Object? error]) {
     if (_destroyed) return this;
     _destroyed = true;
     _timeoutTimer?.cancel();
+    _task?.cancel();
     if (error != null) {
       _hadError = true;
-      _emit('error', error);
+      emit('error', error);
     }
-    _socket.destroy();
-    _subscription.cancel();
+    _socket?.destroy();
+    _subscription?.cancel();
     _finishClose();
     return this;
   }
@@ -547,21 +670,20 @@ class NodeSocket {
     _closed = true;
     _destroyed = true;
     _timeoutTimer?.cancel();
-    _emit('close', _hadError);
+    emit('close', _hadError);
   }
 
-  bool _hadError = false;
-
   NodeSocket pause() {
+    if (!_paused) _subscription?.pause();
     _paused = true;
-    _subscription.pause();
     return this;
   }
 
   NodeSocket resume() {
+    final wasPaused = _paused;
     _paused = false;
     if (_flowing) _deliverQueued();
-    _subscription.resume();
+    if (wasPaused) _subscription?.resume();
     return this;
   }
 
@@ -569,15 +691,17 @@ class NodeSocket {
     while (_flowing && !_paused && _readQueue.isNotEmpty) {
       final data = read();
       if (data == null || data.isEmpty) break;
-      _emit('data', data);
+      emit('data', data);
     }
   }
 
   NodeSocket setNoDelay([bool noDelay = true]) {
-    _socket.setOption(SocketOption.tcpNoDelay, noDelay);
+    _noDelay = noDelay;
+    _socket?.setOption(SocketOption.tcpNoDelay, noDelay);
     return this;
   }
 
+  /// As in Node, the idle timer also runs while the socket is connecting.
   NodeSocket setTimeout(int milliseconds, [Function? callback]) {
     _timeoutMs = milliseconds;
     if (callback != null) once('timeout', callback);
@@ -589,7 +713,7 @@ class NodeSocket {
     _timeoutTimer?.cancel();
     if (_timeoutMs > 0 && !_closed) {
       _timeoutTimer = Timer(Duration(milliseconds: _timeoutMs), () {
-        _emit('timeout');
+        emit('timeout');
       });
     }
   }
@@ -625,7 +749,7 @@ class NodeSocket {
       if (end) destination.end();
     }
 
-    void onClose(Object? _) {
+    void onClose() {
       if (blocked && !destination.destroyed) destination.destroy();
     }
 
@@ -650,147 +774,214 @@ class _PendingWrite {
   final Function? callback;
 }
 
-/// Node-like net.Server for TCP and Unix-domain listeners.
-class NodeServer {
-  NodeServer({
-    this.allowHalfOpen = false,
-    this.highWaterMark = NodeSocket.highWaterMark,
-  });
+/// Node `net.Server` for TCP and Unix-domain listeners.
+class NodeServer extends EventEmitter {
+  NodeServer({this.allowHalfOpen = false});
 
   final bool allowHalfOpen;
-  final int highWaterMark;
-  final Map<String, List<Function>> _listeners = {};
   ServerSocket? _tcp;
   bool _listening = false;
-  bool _closed = false;
-  bool _closeEmitted = false;
+  bool _binding = false;
+  bool _closeEmitted = true;
   bool _unrefed = false;
   final Set<NodeSocket> _connections = {};
-  Completer<void>? _closeCompleter;
   String? _unixPath;
   int? _port;
   String? _host;
 
   bool get listening => _listening;
   bool get unrefed => _unrefed;
+
+  @override
   NodeServer on(String event, Function listener) {
-    (_listeners[event] ??= []).add(listener);
+    super.on(event, listener);
     return this;
   }
 
+  @override
   NodeServer once(String event, Function listener) {
-    late Function wrapped;
-    wrapped = ([Object? value]) {
-      off(event, wrapped);
-      Function.apply(listener, value == null ? const [] : [value]);
-    };
-    return on(event, wrapped);
-  }
-
-  NodeServer off(String event, Function listener) {
-    _listeners[event]?.remove(listener);
+    super.once(event, listener);
     return this;
   }
 
+  @override
+  NodeServer off(String event, Function listener) {
+    super.off(event, listener);
+    return this;
+  }
+
+  @override
   NodeServer removeListener(String event, Function listener) =>
       off(event, listener);
-  void _emit(String event, [Object? value]) {
-    for (final listener in List<Function>.of(_listeners[event] ?? const [])) {
-      Function.apply(listener, value == null ? const [] : [value]);
+
+  /// Node's forms: `listen(port[, host][, backlog][, cb])`,
+  /// `listen(path[, cb])`, `listen({port, host, path}[, cb])` and
+  /// `listen([cb])` (port 0). The result is a 'listening' or 'error' event.
+  NodeServer listen([Object? a, Object? b, Object? c, Object? d]) {
+    if (_listening || _binding) {
+      throw NodeError(
+        'Listen method has been called more than once without closing.',
+        code: 'ERR_SERVER_ALREADY_LISTEN',
+      );
     }
-  }
-
-  int listenerCount(String event) => _listeners[event]?.length ?? 0;
-
-  Future<void> listen(
-    Object address, [
-    Object? hostOrCallback,
-    Function? callback,
-  ]) async {
-    if (_listening) throw StateError('Server is already listening');
-    final host = hostOrCallback is String ? hostOrCallback : null;
-    callback ??= hostOrCallback is Function ? hostOrCallback : null;
-    if (address is String) {
-      _unixPath = address;
-      if (Platform.isWindows) {
-        final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-        _tcp = server;
-        _port = server.port;
-        _host = '127.0.0.1';
-      } else {
-        await _removeStaleUnixSocket(address);
-        final socketAddress = InternetAddress(
-          address,
-          type: InternetAddressType.unix,
-        );
-        _tcp = await ServerSocket.bind(socketAddress, 0);
-        _port = null;
+    final args = [a, b, c, d].where((x) => x != null).toList();
+    final callback = args.isNotEmpty && args.last is Function
+        ? args.removeLast() as Function
+        : null;
+    String? path;
+    int? port;
+    String? host;
+    final first = args.isEmpty ? null : args.first;
+    if (first is Map) {
+      for (final key in first.keys) {
+        if (!const {'port', 'host', 'path'}.contains(key)) {
+          throw UnimplementedError('net.Server.listen option "$key"');
+        }
       }
-    } else {
-      _port = address as int;
-      _host = host ?? '0.0.0.0';
-      _tcp = await ServerSocket.bind(_host!, _port!);
-      _port = _tcp!.port;
+      path = first['path'] as String?;
+      port = first['port'] as int?;
+      host = first['host'] as String?;
+    } else if (first is String) {
+      path = first;
+    } else if (first is int) {
+      port = first;
+      if (args.length > 1 && args[1] is String) host = args[1] as String;
+    } else if (first != null) {
+      throw ArgumentError.value(first, 'listen');
     }
-    _closed = false;
-    _closeEmitted = false;
-    _closeCompleter = null;
-    _listening = true;
-    _tcp!.listen(
-      (socket) {
-        final wrapped = NodeSocket._(socket, connecting: false);
-        _connections.add(wrapped);
-        wrapped.once('close', ([Object? _]) {
-          _connections.remove(wrapped);
-          if (_closed && _connections.isEmpty) _emitClose();
-        });
-        _emit('connection', wrapped);
-      },
-      onError: (Object error) => _emit('error', error),
-      onDone: () {
-        if (_closed && _connections.isEmpty) _emitClose();
-      },
-    );
-    scheduleMicrotask(() {
-      _emit('listening');
-      if (callback != null) callback();
-    });
+    if (callback != null) once('listening', callback);
+    _binding = true;
+    unawaited(_bind(path, port ?? 0, host));
+    return this;
   }
 
-  /// Node `server.address()` subset. Unix listeners return their path.
-  Object? address() => _unixPath != null && !Platform.isWindows
-      ? _unixPath
-      : (_port == null ? null : NodeAddress(_host ?? '127.0.0.1', _port!));
-
-  Future<void> close([Function? callback]) async {
-    if (_closed) {
-      await _closeCompleter?.future;
-      callback?.call();
+  Future<void> _bind(String? path, int port, String? host) async {
+    try {
+      if (path != null) {
+        _unixPath = path;
+        if (Platform.isWindows) {
+          // Windows has no Unix-domain listener here: bind loopback TCP.
+          _tcp = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+          _port = _tcp!.port;
+          _host = '127.0.0.1';
+        } else {
+          _tcp =
+              await ServerSocket.bind(
+                InternetAddress(path, type: InternetAddressType.unix),
+                0,
+              ).catchError(
+                (Object e) => throw socketError(e, 'listen', address: path),
+              );
+          _port = null;
+        }
+      } else if (host == null) {
+        // Node binds the IPv6 wildcard, dual-stack, and falls back to IPv4.
+        try {
+          _tcp = await ServerSocket.bind(
+            InternetAddress.anyIPv6,
+            port,
+            v6Only: false,
+          );
+          _host = '::';
+        } on SocketException {
+          _tcp = await ServerSocket.bind(InternetAddress.anyIPv4, port)
+              .catchError(
+                (Object e) => throw socketError(
+                  e,
+                  'listen',
+                  address: '0.0.0.0',
+                  port: port,
+                ),
+              );
+          _host = '0.0.0.0';
+        }
+        _port = _tcp!.port;
+      } else {
+        _tcp = await ServerSocket.bind(host, port).catchError(
+          (Object e) =>
+              throw socketError(e, 'listen', address: host, port: port),
+        );
+        _host = _tcp!.address.address;
+        _port = _tcp!.port;
+      }
+    } catch (error) {
+      _binding = false;
+      _unixPath = null;
+      emit('error', socketError(error, 'listen'));
       return;
     }
-    _closed = true;
-    _listening = false;
-    _closeCompleter = Completer<void>();
-    await _tcp?.close();
-    if (_unixPath != null && !Platform.isWindows) {
-      try {
-        await File(_unixPath!).delete();
-      } on FileSystemException {
-        // Another listener may already have unlinked the endpoint.
-      }
-    }
-    if (_connections.isEmpty) _emitClose();
-    await _closeCompleter!.future;
-    callback?.call();
+    _binding = false;
+    _listening = true;
+    _closeEmitted = false;
+    _tcp!.listen((socket) {
+      final wrapped = NodeSocket.fromSocket(
+        socket,
+        allowHalfOpen: allowHalfOpen,
+      );
+      _connections.add(wrapped);
+      wrapped.once('close', () {
+        _connections.remove(wrapped);
+        _emitCloseIfDrained();
+      });
+      emit('connection', wrapped);
+    }, onError: (Object error) => emit('error', socketError(error, 'accept')));
+    emit('listening');
   }
 
-  void _emitClose() {
-    if (_closeEmitted) return;
-    _closeEmitted = true;
-    _emit('close');
-    if (_closeCompleter != null && !_closeCompleter!.isCompleted) {
-      _closeCompleter!.complete();
+  /// Node `server.address()`: the path for a Unix-domain listener.
+  Object? address() => !_listening
+      ? null
+      : _unixPath != null && !Platform.isWindows
+      ? _unixPath
+      : NodeAddress(_host ?? '127.0.0.1', _port!);
+
+  /// Stop accepting. 'close' is emitted once every open connection has
+  /// closed. [callback] gets ERR_SERVER_NOT_RUNNING when the server was not
+  /// listening, as in Node.
+  NodeServer close([Function? callback]) {
+    if (callback != null) {
+      if (!_listening) {
+        once(
+          'close',
+          () => applyListener(callback, [
+            NodeError('Server is not running.', code: 'ERR_SERVER_NOT_RUNNING'),
+          ]),
+        );
+      } else {
+        once('close', callback);
+      }
     }
+    if (_listening) {
+      _listening = false;
+      final tcp = _tcp!;
+      final unixPath = _unixPath;
+      _tcp = null;
+      _unixPath = null;
+      unawaited(
+        tcp.close().then((_) async {
+          // libuv unlinks a Unix-domain listener's path on close.
+          if (unixPath != null && !Platform.isWindows) {
+            try {
+              await File(unixPath).delete();
+            } on FileSystemException {
+              // Another process may already have removed it.
+            }
+          }
+          _emitCloseIfDrained();
+        }),
+      );
+    } else {
+      _closeEmitted = false;
+      scheduleMicrotask(_emitCloseIfDrained);
+    }
+    return this;
+  }
+
+  void _emitCloseIfDrained() {
+    if (_listening || _tcp != null || _closeEmitted) return;
+    if (_connections.isNotEmpty) return;
+    _closeEmitted = true;
+    emit('close');
   }
 
   NodeServer unref() {
@@ -804,70 +995,80 @@ class NodeServer {
   }
 }
 
-Future<void> _removeStaleUnixSocket(String path) async {
-  final type = FileSystemEntity.typeSync(path, followLinks: false);
-  if (type == FileSystemEntityType.notFound) return;
-  if (type != FileSystemEntityType.unixDomainSock) {
-    throw SocketException(
-      'Unix socket path is occupied by a non-socket: $path',
-    );
-  }
-
-  var active = false;
-  try {
-    final probe = await Socket.connect(
-      InternetAddress(path, type: InternetAddressType.unix),
-      0,
-      timeout: const Duration(milliseconds: 250),
-    );
-    active = true;
-    probe.destroy();
-  } on SocketException catch (error) {
-    // Only ECONNREFUSED means the path is a stale socket inode. Unknown
-    // failures (including a probe timeout) leave the path untouched.
-    final refused =
-        error.message.contains('Connection refused') ||
-        (error.osError?.message.contains('Connection refused') ?? false);
-    if (!refused) rethrow;
-  }
-  if (active) {
-    throw SocketException('Unix socket path is already in use: $path');
-  }
-  await File(path).delete();
-}
-
 class NodeAddress {
   const NodeAddress(this.address, this.port);
   final String address;
   final int port;
-  final String family = 'IPv4';
+  String get family => isIP(address) == 6 ? 'IPv6' : 'IPv4';
 }
 
-NodeServer createServer([
-  Function? connectionListener,
-  bool allowHalfOpen = false,
-]) {
+/// Node `net.createServer([options][, connectionListener])`.
+NodeServer createServer([Object? optionsOrListener, Function? listener]) {
+  var allowHalfOpen = false;
+  if (optionsOrListener is Function) {
+    listener = optionsOrListener;
+  } else if (optionsOrListener is Map) {
+    for (final key in optionsOrListener.keys) {
+      if (key != 'allowHalfOpen') {
+        throw UnimplementedError('net.createServer option "$key"');
+      }
+    }
+    allowHalfOpen = optionsOrListener['allowHalfOpen'] == true;
+  }
   final server = NodeServer(allowHalfOpen: allowHalfOpen);
-  if (connectionListener != null) server.on('connection', connectionListener);
+  if (listener != null) server.on('connection', listener);
   return server;
 }
 
-/// Node-style net.connect helper; a String means Unix socket path.
-Future<NodeSocket> connect(Object portOrOptions, [String? host]) {
-  Object? target = portOrOptions;
-  LookupFunction? lookup;
-  if (portOrOptions is Map) {
-    target = portOrOptions['path'] ?? portOrOptions['port'];
-    host = portOrOptions['host'] as String? ?? host;
-    lookup = portOrOptions['lookup'] as LookupFunction?;
+const _connectOptions = {
+  'port',
+  'host',
+  'path',
+  'lookup',
+  'timeout',
+  'allowHalfOpen',
+  'noDelay',
+};
+
+/// Node `net.connect` / `net.createConnection`. Forms: `connect(options[,
+/// listener])`, `connect(path[, listener])`, `connect(port[, host][,
+/// listener])`. Returns the socket at once; [listener] is added for
+/// 'connect'.
+NodeSocket connect(Object portPathOrOptions, [Object? b, Object? c]) {
+  final options = portPathOrOptions is Map
+      ? Map<Object?, Object?>.of(portPathOrOptions)
+      : <Object?, Object?>{
+          if (portPathOrOptions is String) 'path': portPathOrOptions,
+          if (portPathOrOptions is int) 'port': portPathOrOptions,
+          if (b is String) 'host': b,
+        };
+  final listener = c is Function ? c : (b is Function ? b : null);
+  options.removeWhere((key, value) => value == null);
+  for (final key in options.keys) {
+    if (!_connectOptions.contains(key)) {
+      throw UnimplementedError('net.connect option "$key"');
+    }
   }
-  if (target == null) throw ArgumentError('net.connect requires port or path');
-  return NodeSocket.connect(target, host, lookup);
+  final socket = NodeSocket.pending(
+    allowHalfOpen: options['allowHalfOpen'] == true,
+  );
+  if (options['noDelay'] == true) socket.setNoDelay();
+  if (options['timeout'] is int) socket.setTimeout(options['timeout'] as int);
+  if (listener != null) socket.once('connect', listener);
+  final path = options['path'] as String?;
+  final port = options['port'] as int?;
+  if (path == null && port == null) {
+    throw ArgumentError('net.connect requires a port or a path');
+  }
+  socket.startConnect(
+    path: path,
+    port: port,
+    host: options['host'] as String? ?? 'localhost',
+    lookup: options['lookup'] as LookupFunction?,
+  );
+  return socket;
 }
 
-/// Open an unwrapped socket for TLS layering while honoring the same lookup.
-Future<Socket> connectRaw(
-  Object hostOrPort, [
-  String? host,
-  LookupFunction? lookup,
-]) => NodeSocket.connectRaw(hostOrPort, host, lookup);
+/// Node `net.createConnection`, the same function as [connect].
+NodeSocket createConnection(Object portPathOrOptions, [Object? b, Object? c]) =>
+    connect(portPathOrOptions, b, c);

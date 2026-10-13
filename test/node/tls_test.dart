@@ -1,9 +1,69 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:sandbox_runtime/src/node/errno.dart';
+import 'package:sandbox_runtime/src/node/events.dart' as events;
 import 'package:sandbox_runtime/src/node/forge.dart';
 import 'package:sandbox_runtime/src/node/tls.dart' as node_tls;
 import 'package:test/test.dart';
+
+/// A self-signed certificate for [name], and a TLS echo server that uses it.
+Future<({String certPem, int port, Future<void> Function() close})> _server(
+  String name,
+) async {
+  final keys = forge.pki.rsa.generateKeyPair(2048);
+  final cert = forge.pki.createCertificate()
+    ..publicKey = keys.publicKey
+    ..serialNumber = '500102030405060708090a0b0c0d0e0f'
+    ..validity.notBefore = DateTime.now().toUtc().subtract(
+      const Duration(days: 1),
+    )
+    ..validity.notAfter = DateTime.now().toUtc().add(const Duration(days: 30))
+    ..setSubject([
+      {'name': 'commonName', 'value': name},
+    ])
+    ..setIssuer([
+      {'name': 'commonName', 'value': name},
+    ])
+    ..setExtensions([
+      {'name': 'basicConstraints', 'cA': false, 'critical': true},
+      {
+        'name': 'keyUsage',
+        'digitalSignature': true,
+        'keyEncipherment': true,
+        'critical': true,
+      },
+      {'name': 'extKeyUsage', 'serverAuth': true},
+      {'name': 'subjectKeyIdentifier'},
+      {
+        'name': 'subjectAltName',
+        'altNames': [
+          {'type': 2, 'value': name},
+        ],
+      },
+    ]);
+  cert.sign(keys.privateKey);
+  final certPem = forge.pki.certificateToPem(cert);
+  final context = node_tls.createSecureContext(
+    cert: certPem,
+    key: forge.pki.privateKeyToPem(keys.privateKey),
+  );
+  final listener = await SecureServerSocket.bind(
+    InternetAddress.loopbackIPv4,
+    0,
+    context,
+    supportedProtocols: const ['http/1.1'],
+  );
+  listener.listen(
+    (socket) => socket.listen(
+      socket.add,
+      onDone: socket.close,
+      onError: (Object _) => socket.destroy(),
+    ),
+    onError: (Object _) {},
+  );
+  return (certPem: certPem, port: listener.port, close: listener.close);
+}
 
 void main() {
   group('node:tls compatibility', () {
@@ -130,6 +190,81 @@ void main() {
         await listener.close();
       },
     );
+    group('connect', () {
+      late ({String certPem, int port, Future<void> Function() close}) server;
+      setUpAll(() async => server = await _server('tls.example.test'));
+      tearDownAll(() => server.close());
+
+      test('returns at once, queues writes, emits secureConnect', () async {
+        final order = <String>[];
+        final socket = node_tls.connect({
+          'host': '127.0.0.1',
+          'port': server.port,
+          'servername': 'tls.example.test',
+          'ca': server.certPem,
+          'ALPNProtocols': ['http/1.1'],
+        }, () => order.add('cb'));
+        expect(socket.connecting, isTrue);
+        socket.on('connect', () => order.add('connect'));
+        socket.on('secureConnect', () => order.add('secureConnect'));
+        socket.write('ping');
+        final echoed = await events
+            .once(socket, 'data')
+            .timeout(const Duration(seconds: 5));
+        expect(echoed.single, 'ping'.codeUnits);
+        expect(order, ['connect', 'cb', 'secureConnect']);
+        expect(socket.authorized, isTrue);
+        expect(socket.alpnProtocol, 'http/1.1');
+        expect(socket.getPeerCertificate(), isNotNull);
+        socket.destroy();
+      });
+
+      test('an untrusted certificate is an error', () async {
+        final socket = node_tls.connect({
+          'host': '127.0.0.1',
+          'port': server.port,
+          'servername': 'tls.example.test',
+        });
+        await expectLater(
+          events.once(socket, 'secureConnect'),
+          throwsA(isA<NodeError>()),
+        );
+      });
+
+      test('a hostname mismatch is ERR_TLS_CERT_ALTNAME_INVALID', () async {
+        final socket = node_tls.connect({
+          'host': '127.0.0.1',
+          'port': server.port,
+          'servername': 'other.example.test',
+          'ca': server.certPem,
+        });
+        Object? error;
+        try {
+          await events.once(socket, 'secureConnect');
+        } catch (e) {
+          error = e;
+        }
+        expect(error, isA<node_tls.NodeTlsIdentityError>(), reason: '$error');
+      });
+
+      test(
+        'rejectUnauthorized: false connects with authorized false',
+        () async {
+          final socket = node_tls.connect({
+            'host': '127.0.0.1',
+            'port': server.port,
+            'servername': 'tls.example.test',
+            'rejectUnauthorized': false,
+          });
+          await events
+              .once(socket, 'secureConnect')
+              .timeout(const Duration(seconds: 5));
+          expect(socket.authorized, isFalse);
+          expect(socket.authorizationError, isNotNull);
+          socket.destroy();
+        },
+      );
+    });
   });
 }
 

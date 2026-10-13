@@ -100,12 +100,10 @@ file after normalizing `{@link X}` to `[X]` and `**\/` to `**/`.
 - Vendor: srt-win and java-proxy-agent sources and their build scripts in
   Dart. CI.
 
-Open decisions for the founder: whether to port windows-sandbox-utils, and
-whether the proxy stack (domain allowlist) comes before sandbox-manager.
-
-Open design decision before the proxy ports: `net.connect` in `node/net.dart`
-returns a `Future`, where Node returns the socket at once. Decide how
-http-proxy and socks-proxy keep their upstream line structure with that.
+Founder decisions (2026-10-13): the Linux sandbox and sandbox-manager come
+before the proxy stack. windows-sandbox-utils: pending; the recommendation is
+to skip it, because Telosnex ADR D6 rejects its model (a separate Windows user
+account, machine-wide firewall filters, an administrator install step).
 
 **Telosnex follow-ups (outside this repo):** update
 `docs/design/ADR_tool_execution_sandbox.md` to use this port; wire
@@ -192,9 +190,9 @@ file; do not make a per-consumer file such as `fs_<consumer>.dart`.
 | `crypto` | `crypto.dart`: `createHash`, `createHmac` (sha256) |
 | `buffer` | `buffer.dart`: `Buffer.from`, `Buffer.byteLength`, `toString` |
 | `url` | `url.dart`: WHATWG host parsing, `URLSearchParams` |
-| `net`, `dns`, `tls`, `http` | `net.dart` (`isIP`, `BlockList`, sockets, servers), `dns.dart`, `tls.dart`, `http.dart` (raw HTTP/1.1, `IncomingHttpHeaders`) |
+| `net`, `dns`, `tls`, `http` | `net.dart` (`isIP`, `BlockList`, `Socket`, `Server`, `connect`, `createServer`), `dns.dart`, `tls.dart` (`connect`, `TLSSocket`, `checkServerIdentity`, ClientHello peek), `http.dart` (raw HTTP/1.1; `Server` extends `net.Server`; `IncomingHttpHeaders`) |
 | `node-forge` | `forge.dart`, with `mozilla_roots.dart` (generated) |
-| `EventEmitter`-style callbacks | `events.dart`; Dart `Stream`/`Future`; keep the upstream function boundaries |
+| `events` | `events.dart`: `EventEmitter`, `once` |
 | Generators that return a value | `generators.dart` (see Conventions) |
 
 ## Rule 3: third-party packages
@@ -216,6 +214,30 @@ are copied unchanged. Their `build.ts` scripts become Dart under `tool/`.
 ## Conventions
 
 Repeat these translation decisions for the rest of the port:
+
+- **Node I/O keeps Node's call shape.** `net.connect`, `net.createConnection`
+  and `tls.connect` return the socket at once, in the connecting state, as
+  Node does. It emits 'connect' (TLS: then 'secureConnect'), or 'error' then
+  'close'; writes made before then are queued. `server.listen` and
+  `server.close` return the server; the result is a 'listening', 'error' or
+  'close' event. So an upstream line such as
+  `const s = netConnect({ port, host, lookup })` ports as one line, and the
+  listeners that follow it port unchanged. Where upstream awaits a Promise
+  built from those events, port the Promise as written (a `Completer`), or use
+  `events.once(emitter, name)` where upstream does. Never `await` a connect
+  or listen call, and never add a Dart-only `Future` variant.
+- **Errors are Node's.** Socket errors are `NodeError` with Node's `code`
+  (`ECONNREFUSED`, `EADDRINUSE`, `ENOENT`...), `syscall`, `address`, `port`
+  and message text. Upstream checks such as `err.code === 'EADDRINUSE'` port
+  as `err is NodeError && err.code == 'EADDRINUSE'`.
+- **Every emitter extends `events.EventEmitter`.** It has Node's methods
+  (`on`, `once`, `off`, `removeListener`, `emit`, `listenerCount`...). A
+  listener gets as many of the emitted arguments as it accepts. An 'error'
+  event with no listener is an uncaught error, which fails a test.
+- **Unsupported options throw.** `net.connect`, `tls.connect`,
+  `net.createServer` and `server.listen` throw `UnimplementedError` for an
+  option they do not handle (for example `listen({ fd })`). Add the option to
+  the shim; never drop it in the ported file.
 
 - **Option objects.** Flatten a TS final options object into Dart named
   parameters; keep arguments that are positional in TS positional in Dart.
@@ -401,6 +423,16 @@ and replaces paired EventEmitter one-shot callbacks with the
 | — (Node shims) | `lib/src/node/{forge,tls}.dart` | `test/node/{forge,tls}_test.dart` | Pure-Dart forge subset; Mozilla root bundle `2026-09-25` SHA-256 `a41b5d35…37d00505`; bounded ClientHello replay and ALPN; secure client HTTP uses the raw socket shim |
 
 ### Known port gaps
+
+- `node/tls.dart` `connect`: dart:io checks the server name itself during the
+  handshake and does not say which check failed. A custom
+  `checkServerIdentity` that would accept a name dart:io rejects gets an
+  untrusted-chain error instead. Upstream's only custom check
+  (tls-terminate-proxy) pins the name more strictly, so it is not affected.
+- `node/tls.dart` has no `new TLSSocket(duplex, { isServer })` yet
+  (tls-terminate-proxy); `proxy-only.ts` `listen({ fd })` is unsupported.
+- `node/net.dart` `unref()` records state only: Dart cannot let an open
+  socket stop holding the process open.
 
 - `which.ts`: Dart's synchronous `Process.runSync` has no `spawnSync` timeout;
   the upstream one-second timeout cannot be reproduced synchronously.

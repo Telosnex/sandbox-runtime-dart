@@ -8,7 +8,9 @@ import 'dart:typed_data';
 
 import 'package:asn1lib/asn1lib.dart' as asn1lib;
 
+import 'errno.dart';
 import 'mozilla_roots.dart';
+import 'net.dart' as net;
 
 export 'mozilla_roots.dart'
     show mozillaRootBundleVersion, mozillaRootBundleSha256;
@@ -160,6 +162,179 @@ Future<SecureSocket> secureServer(
     requestClientCertificate: requestClientCertificate,
     requireClientCertificate: requireClientCertificate,
   );
+}
+
+/// Node `tls.TLSSocket`, as returned by [connect].
+class TLSSocket extends net.NodeSocket {
+  TLSSocket.pending({super.allowHalfOpen}) : super.pending();
+
+  /// True when the peer certificate was verified, as in Node.
+  bool authorized = false;
+
+  /// Why [authorized] is false, when it is.
+  Object? authorizationError;
+
+  /// The ALPN protocol the server chose, or false, as in Node.
+  Object alpnProtocol = false;
+
+  String? servername;
+  X509Certificate? _peer;
+
+  /// The peer certificate (Node returns a parsed object; this is the
+  /// dart:io certificate).
+  X509Certificate? getPeerCertificate() => _peer;
+}
+
+const _tlsConnectOptions = {
+  'host',
+  'port',
+  'path',
+  'servername',
+  'ca',
+  'secureContext',
+  'rejectUnauthorized',
+  'checkServerIdentity',
+  'ALPNProtocols',
+  'lookup',
+  'timeout',
+  'allowHalfOpen',
+  'noDelay',
+};
+
+/// Node `tls.connect(options[, secureConnectListener])`. Returns the socket
+/// at once. It emits 'connect' when TCP connects and 'secureConnect' when
+/// the handshake is done; writes made before then are queued.
+///
+/// As in Node, the certificate is checked against the trusted roots
+/// ([rootCertificates], or `ca` / `secureContext`) and by
+/// `checkServerIdentity(servername ?? host, cert)`. dart:io also checks the
+/// name itself during the handshake; see the gap noted in the code. With
+/// `rejectUnauthorized: false`, a failed check sets [TLSSocket.authorized]
+/// to false and the connection stays open.
+TLSSocket connect(Map<Object?, Object?> options, [Function? listener]) {
+  final opts = Map<Object?, Object?>.of(options)
+    ..removeWhere((key, value) => value == null);
+  for (final key in opts.keys) {
+    if (!_tlsConnectOptions.contains(key)) {
+      throw UnimplementedError('tls.connect option "$key"');
+    }
+  }
+  final host = opts['host'] as String? ?? 'localhost';
+  final servername =
+      opts['servername'] as String? ?? (net.isIP(host) == 0 ? host : null);
+  final rejectUnauthorized = opts['rejectUnauthorized'] != false;
+  final identity =
+      opts['checkServerIdentity'] as Function? ?? checkServerIdentity;
+  final context = secureContextFor(
+    opts['ca'],
+    opts['secureContext'] as SecurityContext?,
+  );
+  final protocols = (opts['ALPNProtocols'] as List?)?.cast<String>();
+  final socket = TLSSocket.pending(allowHalfOpen: opts['allowHalfOpen'] == true)
+    ..servername = servername;
+  if (opts['noDelay'] == true) socket.setNoDelay();
+  if (opts['timeout'] is int) socket.setTimeout(opts['timeout'] as int);
+  if (listener != null) socket.once('secureConnect', listener);
+  socket.startConnect(
+    path: opts['path'] as String?,
+    port: opts['port'] as int?,
+    host: host,
+    lookup: opts['lookup'] as net.LookupFunction?,
+    secure: (raw) async {
+      final name = servername ?? host;
+      Object? failure;
+      final SecureSocket secured;
+      try {
+        secured = await SecureSocket.secure(
+          raw,
+          // dart:io sends this name as SNI and checks the certificate against
+          // it as well as against the trusted roots.
+          host: name,
+          context: context,
+          supportedProtocols: protocols,
+          onBadCertificate: (certificate) {
+            // dart:io does not say which check failed. If the identity check
+            // passes, the chain is not trusted; else report the identity
+            // error. Gap: a custom checkServerIdentity that accepts a name
+            // dart:io rejected is reported as an untrusted chain.
+            failure =
+                applyIdentity(identity, name, certificate) ??
+                NodeError(
+                  'unable to verify the first certificate',
+                  code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+                );
+            return !rejectUnauthorized;
+          },
+        );
+      } on HandshakeException catch (error) {
+        throw failure ??
+            NodeError(
+              'Client network socket disconnected before secure TLS '
+              'connection was established: ${error.message}',
+              code: 'ECONNRESET',
+            );
+      }
+      socket._setPeer(secured);
+      failure ??= applyIdentity(identity, name, secured.peerCertificate);
+      socket.authorized = failure == null;
+      socket.authorizationError = failure;
+      if (failure != null && rejectUnauthorized) {
+        secured.destroy();
+        throw failure!;
+      }
+      return secured;
+    },
+  );
+  return socket;
+}
+
+extension on TLSSocket {
+  void _setPeer(SecureSocket secured) {
+    _peer = secured.peerCertificate;
+    alpnProtocol = secured.selectedProtocol ?? false;
+  }
+}
+
+Object? applyIdentity(
+  Function identity,
+  String hostname,
+  X509Certificate? certificate,
+) => Function.apply(identity, [hostname, certificate]);
+
+/// The context for a client connection: [context] as given, or one that
+/// trusts [ca] (PEM text or bytes, or a list of them), or else
+/// [trustedRootContext].
+SecurityContext secureContextFor(Object? ca, SecurityContext? context) {
+  if (context != null) {
+    if (ca != null) {
+      throw ArgumentError('Cannot combine a SecurityContext with a CA bundle');
+    }
+    return context;
+  }
+  if (ca == null) return trustedRootContext();
+  final custom = SecurityContext(withTrustedRoots: false);
+  void addCertificate(Object certificate) {
+    if (certificate is String) {
+      custom.setTrustedCertificatesBytes(utf8.encode(certificate));
+    } else if (certificate is List<int>) {
+      custom.setTrustedCertificatesBytes(Uint8List.fromList(certificate));
+    } else {
+      throw ArgumentError.value(
+        certificate,
+        'ca',
+        'Expected PEM certificate bytes or text',
+      );
+    }
+  }
+
+  if (ca is Iterable && ca is! String) {
+    for (final certificate in ca) {
+      addCertificate(certificate as Object);
+    }
+  } else {
+    addCertificate(ca);
+  }
+  return custom;
 }
 
 /// Node `tls.checkServerIdentity` result. A null result means the peer name

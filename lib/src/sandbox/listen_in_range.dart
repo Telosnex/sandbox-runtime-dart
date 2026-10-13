@@ -14,58 +14,54 @@ import '../node/events.dart';
  * sandbox profile and pass `range = undefined`.
  */
 Future<void> listenInRange(
-  NodeEventEmitter server,
+  EventEmitter server,
   void Function(int port) doListen,
   List<int>? range,
   Set<int> exclude,
-) async {
+) {
+  final completer = Completer<void>();
+  void resolve() => completer.complete();
+  void reject(Object error) => completer.completeError(error);
   final lo = range?[0] ?? 0;
   final hi = range?[1] ?? 0;
   var port = lo;
-  while (true) {
+  late void Function() tryNext;
+  tryNext = () {
     while (exclude.contains(port) && port <= hi) {
       port++;
     }
     if (port > hi) {
-      throw NodeException(
-        'No free port in range $lo-$hi (excluding ${exclude.join(',')})',
+      reject(
+        NodeException(
+          'No free port in range $lo-$hi (excluding ${exclude.join(',')})',
+        ),
       );
+      return;
+    }
+    late final void Function([Object?]) onError;
+    void onListening() {
+      server.removeListener('error', onError);
+      resolve();
     }
 
-    final attempt = Completer<({bool listening, Object? error})>();
-    StreamSubscription<Object?>? errorSubscription;
-    StreamSubscription<void>? listeningSubscription;
-    errorSubscription = server.errorEvents.listen((error) {
-      if (!attempt.isCompleted) {
-        attempt.complete((listening: false, error: error));
-      }
-    });
-    listeningSubscription = server.listeningEvents.listen((_) {
-      if (!attempt.isCompleted) {
-        attempt.complete((listening: true, error: null));
-      }
-    });
-    try {
-      doListen(range == null ? 0 : port);
-      final outcome = await attempt.future;
+    onError = ([Object? err]) {
       // The paired 'listening' once-listener never fired; drop it
       // so retries don't accumulate stale listeners.
-      await errorSubscription.cancel();
-      await listeningSubscription.cancel();
-      if (outcome.listening) return;
-      final error = outcome.error ?? NodeException('listen error');
+      server.removeListener('listening', onListening);
       if (range != null &&
-          error is NodeError &&
-          error.code == 'EADDRINUSE' &&
+          err is NodeError &&
+          err.code == 'EADDRINUSE' &&
           port < hi) {
         port++;
-        continue;
+        tryNext();
+        return;
       }
-      throw error;
-    } catch (_) {
-      await errorSubscription.cancel();
-      await listeningSubscription.cancel();
-      rethrow;
-    }
-  }
+      reject(err ?? NodeException('listen error'));
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    doListen(range != null ? port : 0);
+  };
+  tryNext();
+  return completer.future;
 }

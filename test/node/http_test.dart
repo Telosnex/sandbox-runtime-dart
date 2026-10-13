@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:sandbox_runtime/src/node/events.dart' as events;
 import 'package:sandbox_runtime/src/node/http.dart' as http;
 import 'package:sandbox_runtime/src/node/emitted_http.dart' as emitted_http;
 import 'package:sandbox_runtime/src/node/net.dart' as net;
@@ -11,9 +12,16 @@ import 'package:test/test.dart';
 Future<(int port, Future<void> Function())> _listen(
   http.NodeHttpServer server,
 ) async {
-  await server.listen(0, '127.0.0.1');
+  server.listen(0, '127.0.0.1');
+  await events.once(server, 'listening');
   final address = server.address()! as net.NodeAddress;
-  return (address.port, () => server.close());
+  return (address.port, () => _close(server));
+}
+
+Future<void> _close(net.NodeServer server) {
+  final done = Completer<void>();
+  server.close(() => done.complete());
+  return done.future;
 }
 
 Future<Uint8List> _rawExchange(int port, List<int> request) async {
@@ -192,7 +200,8 @@ void main() {
         emitted_http.writeHeadsAsLatin1(socket);
         expect(httpServer.emit('connection', socket), isTrue);
       });
-      await transport.listen(0, '127.0.0.1');
+      transport.listen(0, '127.0.0.1');
+      await events.once(transport, 'listening');
       final address = transport.address()! as net.NodeAddress;
       final response = await _rawExchange(
         address.port,
@@ -202,8 +211,8 @@ void main() {
       );
       await served.future.timeout(const Duration(seconds: 3));
       expect(latin1.decode(response), contains('ok'));
-      await transport.close();
-      await httpServer.close();
+      await _close(transport);
+      httpServer.close();
     });
 
     test(

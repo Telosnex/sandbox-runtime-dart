@@ -7,6 +7,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'events.dart' as events;
 import 'net.dart' as net;
 import 'tls.dart' as node_tls;
 
@@ -532,85 +533,52 @@ class _HeaderValue {
 
 /// Node-shaped HTTP server. `serveConnection` is the HTTP parser handoff used
 /// for accepted TLS sockets that are not owned by a listening HTTP server.
-class NodeHttpServer {
-  NodeHttpServer({this.maxHeaderSize = defaultMaxHeaderSize});
+/// Node `http.Server`, which is a `net.Server` that serves each connection.
+class NodeHttpServer extends net.NodeServer {
+  NodeHttpServer({this.maxHeaderSize = defaultMaxHeaderSize}) {
+    on('connection', serveConnection);
+  }
   final int maxHeaderSize;
-  final Map<String, List<Function>> _listeners = {};
   final Set<net.NodeSocket> _connections = {};
   final Set<net.NodeSocket> _idleConnections = {};
-  net.NodeServer? _server;
   bool _closed = false;
 
+  @override
   NodeHttpServer on(String event, Function listener) {
-    (_listeners[event] ??= []).add(listener);
-    if (event == 'connection' && _server != null) _server!.on(event, listener);
+    super.on(event, listener);
     return this;
   }
 
+  @override
   NodeHttpServer once(String event, Function listener) {
-    late Function wrapped;
-    wrapped = ([Object? value]) {
-      off(event, wrapped);
-      Function.apply(listener, value == null ? const [] : [value]);
-    };
-    return on(event, wrapped);
-  }
-
-  NodeHttpServer off(String event, Function listener) {
-    _listeners[event]?.remove(listener);
-    _server?.off(event, listener);
+    super.once(event, listener);
     return this;
   }
 
+  @override
+  NodeHttpServer off(String event, Function listener) {
+    super.off(event, listener);
+    return this;
+  }
+
+  @override
   NodeHttpServer removeListener(String event, Function listener) =>
       off(event, listener);
-  int listenerCount(String event) =>
-      (_listeners[event]?.length ?? 0) + (event == 'connection' ? 1 : 0);
-  bool get listening => _server?.listening ?? false;
-  Object? address() => _server?.address();
-  NodeHttpServer unref() {
-    _server?.unref();
+
+  @override
+  NodeHttpServer listen([Object? a, Object? b, Object? c, Object? d]) {
+    _closed = false;
+    super.listen(a, b, c, d);
     return this;
   }
 
-  NodeHttpServer ref() {
-    _server?.ref();
-    return this;
-  }
-
-  bool emit(String event, [Object? first, Object? second, Object? third]) {
-    final listeners = List<Function>.of(_listeners[event] ?? const []);
-    if (event == 'connection' && first is net.NodeSocket)
-      serveConnection(first);
-    for (final listener in listeners) {
-      final args = <Object?>[first, second, third];
-      while (args.isNotEmpty && args.last == null) {
-        args.removeLast();
-      }
-      Function.apply(listener, args);
-    }
-    return listeners.isNotEmpty ||
-        (event == 'connection' && first is net.NodeSocket);
-  }
-
-  Future<void> listen(
-    Object address, [
-    Object? hostOrCallback,
-    Function? callback,
-  ]) {
-    _server = net.NodeServer()
-      ..on('connection', (net.NodeSocket socket) => serveConnection(socket));
-    for (final listener in (_listeners['connection'] ?? const <Function>[])) {
-      _server!.on('connection', listener);
-    }
-    return _server!.listen(address, hostOrCallback, callback);
-  }
-
-  Future<void> close([Function? callback]) async {
+  /// As in Node 19 and later, close also closes idle keep-alive connections.
+  @override
+  NodeHttpServer close([Function? callback]) {
     closeIdleConnections();
-    await _server?.close(callback);
     _closed = true;
-    if (_server == null) callback?.call();
+    super.close(callback);
+    return this;
   }
 
   void closeIdleConnections() {
@@ -628,9 +596,17 @@ class NodeHttpServer {
     _connections.add(socket);
     _idleConnections.add(socket);
     socket.allowHalfOpen = true;
-    socket.once('close', ([Object? _]) {
+    socket.once('close', () {
       _connections.remove(socket);
       _idleConnections.remove(socket);
+    });
+    // Node's socketOnError: report to 'clientError', else destroy.
+    socket.on('error', (Object error) {
+      if (listenerCount('clientError') != 0) {
+        emit('clientError', error, socket);
+      } else {
+        socket.destroy();
+      }
     });
     unawaited(_serve(socket));
   }
@@ -946,47 +922,35 @@ class ClientRequest {
       final lease = await _agent._acquire(key, () async {
         if (_options['socket'] is net.NodeSocket)
           return _options['socket'] as net.NodeSocket;
+        final lookup = _options['lookup'] as net.LookupFunction?;
+        final net.NodeSocket created;
+        final String ready;
         if (_agent.socketPath != null || _options['socketPath'] != null) {
-          return net.NodeSocket.connect(
-            _agent.socketPath ?? _options['socketPath'] as String,
-          );
+          created = net.connect({
+            'path': _agent.socketPath ?? _options['socketPath'] as String,
+          });
+          ready = 'connect';
+        } else if (secure) {
+          created = node_tls.connect({
+            'host': host,
+            'port': port,
+            'lookup': lookup,
+            'ca': _options['ca'] ?? _agent.ca,
+            'secureContext': _agent.securityContext,
+            'rejectUnauthorized': _options['rejectUnauthorized'],
+            'checkServerIdentity':
+                _options['checkServerIdentity'] as Function? ??
+                _agent.checkServerIdentity,
+            'ALPNProtocols': const ['http/1.1'],
+          });
+          ready = 'secureConnect';
+        } else {
+          created = net.connect({'port': port, 'host': host, 'lookup': lookup});
+          ready = 'connect';
         }
-        if (secure) {
-          final context = _securityContextFor(
-            _options['ca'] ?? _agent.ca,
-            _agent.securityContext,
-          );
-          final connected = await net.connectRaw(
-            port,
-            host,
-            _options['lookup'] as net.LookupFunction?,
-          );
-          final raw = await SecureSocket.secure(
-            connected,
-            host: host,
-            context: context,
-            onBadCertificate: _options['rejectUnauthorized'] == false
-                ? (_) => true
-                : null,
-            supportedProtocols: const ['http/1.1'],
-          );
-          final identityCheck =
-              _options['checkServerIdentity'] as Function? ??
-              _agent.checkServerIdentity;
-          final identityError = identityCheck == null
-              ? node_tls.checkServerIdentity(host, raw.peerCertificate)
-              : Function.apply(identityCheck, [host, raw.peerCertificate]);
-          if (identityError != null) {
-            raw.destroy();
-            throw identityError as Object;
-          }
-          return net.NodeSocket.fromSocket(raw, allowHalfOpen: true);
-        }
-        return net.NodeSocket.connect(
-          port,
-          host,
-          _options['lookup'] as net.LookupFunction?,
-        );
+        created.allowHalfOpen = true;
+        await events.once(created, ready);
+        return created;
       });
       _lease = lease;
       reusedSocket = lease.reused;
@@ -1616,37 +1580,4 @@ Map<String, Object?> _requestOptions(Object options) {
     };
   if (options is String) return _requestOptions(Uri.parse(options));
   throw ArgumentError('http.request options must be a Map, Uri, or URL string');
-}
-
-SecurityContext _securityContextFor(Object? ca, SecurityContext? context) {
-  if (context != null) {
-    if (ca != null) {
-      throw ArgumentError('Cannot combine a SecurityContext with a CA bundle');
-    }
-    return context;
-  }
-  if (ca == null) return node_tls.trustedRootContext();
-  final custom = SecurityContext(withTrustedRoots: false);
-  void addCertificate(Object certificate) {
-    if (certificate is String) {
-      custom.setTrustedCertificatesBytes(utf8.encode(certificate));
-    } else if (certificate is List<int>) {
-      custom.setTrustedCertificatesBytes(Uint8List.fromList(certificate));
-    } else {
-      throw ArgumentError.value(
-        certificate,
-        'ca',
-        'Expected PEM certificate bytes or text',
-      );
-    }
-  }
-
-  if (ca is Iterable && ca is! String) {
-    for (final certificate in ca) {
-      addCertificate(certificate as Object);
-    }
-  } else {
-    addCertificate(ca);
-  }
-  return custom;
 }
