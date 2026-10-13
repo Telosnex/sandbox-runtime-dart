@@ -117,6 +117,18 @@ Repeat these translation decisions for the rest of the port:
   `env`, and `cwd()` getters at the point of use. Tests that patch Node globals
   call `setPlatformForTesting`, `setEnvForTesting`, or `setCwdForTesting` and
   restore with `null` in `finally`.
+- **`sandbox-config` types.** Each inferred object configuration type is an
+  immutable Dart class with the upstream field names and `final` fields;
+  optional fields use nullable types. The inline TLS-termination object is
+  represented by `TlsTerminateConfig`. `FilesystemPathEntry` is a sealed
+  union: `FilesystemPathSpelling(path)` is the string spelling branch and
+  `FilesystemPathLiteral(path)` is `{path, literal: true}` (`literal` is
+  always true). String-literal unions remain `String` typedefs with adjacent
+  allowed-value constants. The hand-written validators expose
+  `ConfigSchema<T>.safeParse(Object?)`, returning `success`, typed `data`, or
+  `error.issues` with `message`, `path`, and `code`. The request callback's web
+  `Request`/`RequestInfo` types use `Object` at the stub boundary until the
+  request-filter port supplies their Dart representations.
 
 ### Worked example
 
@@ -171,6 +183,10 @@ and replaces paired EventEmitter one-shot callbacks with the
 | `src/sandbox/emitted-connection.ts` | `lib/src/sandbox/emitted_connection.dart` | — | **Partial: blocked on HTTP shim**; no matching upstream test file; byte-budget/runtime tests are deferred; unsupported HTTP/parser/socket operations throw rather than no-op |
 | `src/sandbox/mux-proxy.ts` | `lib/src/sandbox/mux_proxy.dart` | `test/sandbox/mux_proxy_test.dart` | **Partial: blocked on HTTP/socket shim**; all 8 direct tests are skipped; no rawHeaders or CONNECT-head dependency |
 | `src/sandbox/aws-sigv4.ts` | `lib/src/sandbox/aws_sigv4.dart` | `test/sandbox/aws_sigv4_test.dart` | Ported; 38 pass, including all 22 official test-suite vectors |
+| `src/sandbox/sandbox-config.ts` | `lib/src/sandbox/sandbox_config.dart` | `test/config_validation_test.dart` | Ported; config classes and hand-written validators; direct tests being ported |
+| `src/sandbox/domain-pattern.ts` | `lib/src/sandbox/domain_pattern.dart` | — | Stub; declarations required by sandbox-config; no matching standalone test file |
+| `src/sandbox/request-filter.ts` | `lib/src/sandbox/request_filter.dart` | — | Stub; `FilterRequestCallback` declaration required by sandbox-config |
+| `src/sandbox/sandbox-utils.ts` | `lib/src/sandbox/sandbox_utils.dart` | — | Stub; `containsGlobCharsForPlatform` declaration required by sandbox-config |
 | — (Node shims) | `lib/src/node/{errno,events,fs,net,process}.dart` | — | No upstream counterparts; small compatibility layer for these files |
 | — (Node shims) | `lib/src/node/{abort,emitted_http,regexp}.dart` | `test/node/{emitted_http,regexp}_test.dart` | No upstream counterparts; AbortSignal, fail-closed HTTP/socket boundary, and exact supported RegExp-with-indices instrumentation |
 | — (Node shims) | `lib/src/node/{aws_crypto,incoming_http_headers,url_search_params}.dart` | — | No upstream counterparts; Node crypto Buffer/HMAC, HTTP headers, and URLSearchParams used by `aws-sigv4.ts` |
