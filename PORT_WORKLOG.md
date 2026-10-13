@@ -243,13 +243,14 @@ and replaces paired EventEmitter one-shot callbacks with the
 | `src/sandbox/domain-pattern.ts` | `lib/src/sandbox/domain_pattern.dart` | `test/sandbox/domain_pattern_test.dart` | Ported; all 16 direct tests pass |
 | `src/sandbox/parent-proxy.ts` | `lib/src/sandbox/parent_proxy.dart` | — | **Partial:** `stripBrackets` and `canonicalizeHost` ported for domain-pattern; rest of the module remains unported |
 | `src/sandbox/request-filter.ts` | `lib/src/sandbox/request_filter.dart` | — | Stub; `FilterRequestCallback` declaration required by sandbox-config |
-| `src/sandbox/sandbox-utils.ts` | `lib/src/sandbox/sandbox_utils.dart` | — | Stub; `containsGlobCharsForPlatform` declaration required by sandbox-config |
+| `src/sandbox/sandbox-utils.ts` | `lib/src/sandbox/sandbox_utils.dart` | `test/sandbox/{sandbox_env_tmpdir_test,glob_walk_property_test}.dart` | Ported; 6 direct tests pass; no one-to-one utility suite exists upstream; Node shims `os.dart`, `buffer.dart`, `fs_sandbox_utils.dart` |
+| `src/sandbox/path-entries.ts` | `lib/src/sandbox/path_entries.dart` | — | Ported; `literal-path-entries.test.ts` waits on sandbox-manager and Linux/macOS wrapper modules |
 | `src/sandbox/sandbox-violation-store.ts` | `lib/src/sandbox/sandbox_violation_store.dart` | — | Ported; no one-to-one upstream test file; related assertions are in `command-text-registry.test.ts` |
 | — (Node shims) | `lib/src/node/{errno,events,fs,net,process}.dart` | — | No upstream counterparts; small compatibility layer for these files |
 | — (Node shim) | `lib/src/node/url.dart` | `test/node/url_test.dart` | WHATWG URL host parsing subset for `canonicalizeHost`; seven Node v22.16.0 golden tests pass; unsupported IDNA fails closed |
 | — (Node shims) | `lib/src/node/{abort,emitted_http,regexp}.dart` | `test/node/{emitted_http,regexp}_test.dart` | No upstream counterparts; AbortSignal, fail-closed HTTP/socket boundary, and exact supported RegExp-with-indices instrumentation |
 | — (Node shims) | `lib/src/node/{aws_crypto,incoming_http_headers,url_search_params}.dart` | — | No upstream counterparts; Node crypto Buffer/HMAC, HTTP headers, and URLSearchParams used by `aws-sigv4.ts` |
-| — (Node shims) | `lib/src/node/{forge,tls}.dart` | `test/node/{forge,tls}_test.dart` | Pure-Dart forge subset; Mozilla root bundle `2025-02-25` SHA-256 `50a6277e…55386cef`; bounded ClientHello replay and ALPN; raw `dart:io` socket boundary pending HTTP shim wiring |
+| — (Node shims) | `lib/src/node/{forge,tls}.dart` | `test/node/{forge,tls}_test.dart` | Pure-Dart forge subset; Mozilla root bundle `2026-09-25` SHA-256 `a41b5d35…37d00505`; bounded ClientHello replay and ALPN; raw `dart:io` socket boundary pending HTTP shim wiring |
 
 ### Known port gaps
 
@@ -272,6 +273,10 @@ and replaces paired EventEmitter one-shot callbacks with the
   forms, IPv6, percent decoding, Latin-1 Punycode, fullwidth ASCII and mapped
   dot separators. Full UTS-46/NFC IDNA behavior is not implemented; unsupported
   Unicode throws so `canonicalizeHost` returns null rather than guessing.
+- `sandbox-utils.ts`: `os.homedir()`'s native passwd-database fallback is not
+  available through Dart; the shim throws if HOME/USERPROFILE is absent. Dart
+  also cannot create a `TypeError` carrying Node's custom message, so marked
+  literal and invalid-anchor failures use `ArgumentError`.
 
 ### Related upstream tests not ported in this batch
 
@@ -285,6 +290,7 @@ they stay queued for those files' port steps (per the one-file test rule):
 - `aws-sigv4.ts`: `test/sandbox/{credential-aws-pairs,credential-mask-sigv4}.test.ts`.
 - `emitted-connection.ts`: direct tests in `test/sandbox/{byte-budget,tls-terminate-runtime,tls-terminate-upload-gate,tls-terminate-relay-budget}.test.ts`; its helper `test/helpers/emitted-connections.ts` is used by `test/proxy-cli.test.ts` and `test/sandbox/{canonical-host-routing,client-abort,connect-non-tls,credential-mask-body,credential-mask-sigv4,deny-late-body,invalid-upstream-response,proxy-only-edges,proxy-only,request-filter,request-rewriting,request-target-forwarding,resolved-address-guard,response-header-bytes,tls-terminate-handshake-deadline,tls-terminate-in-process,tls-terminate-keepalive,tls-terminate-proxy,trailers-then-request}.test.ts`.
 - `sandbox-config.ts`: `test/config-validation.test.ts` is the one-to-one suite ported with this file. The other direct schema/type consumers belong to their own source/test steps and remain queued: `test/configurable-proxy-ports.test.ts`, `test/public-exports.test.ts`, and `test/sandbox/{brackets-that-spell-no-set,credential-aws-pairs,credential-deny,credential-mask-files,credential-mask-sigv4,credential-mask,filesystem-disabled,glob-expand,integration,java-proxy-agent,literal-path-entries,mux-proxy-e2e,names-with-a-backslash,own-files,proxy-env-vars,read-list-precedence,request-rewriting,resolved-address-guard,tls-terminate-runtime,update-config,winsrt,wrap-with-sandbox}.test.ts`.
+- `path-entries.ts`: `test/sandbox/literal-path-entries.test.ts` waits on `sandbox-manager.ts`, `linux-sandbox-utils.ts`, `macos-sandbox-utils.ts`, `linux-violation-monitor.ts`, and its platform/bwrap/config-loader helpers.
 
 The upstream `src` and `test` grep for `maskedFileBinds` and
 `NetworkHostPattern` found reads and object construction only; no code mutates
