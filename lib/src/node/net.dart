@@ -4,6 +4,16 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'dns.dart' as dns;
+
+/// Node's net.connect DNS callback contract. `options` describes the requested
+/// family/order and callback receives NodeLookupError plus a LookupResult.
+typedef LookupFunction = void Function(
+  String hostname,
+  dns.LookupOptions options,
+  Function callback,
+);
+
 /// Node `net.isIP`: 4 for strict dotted-decimal IPv4, 6 for an IPv6 literal,
 /// and 0 otherwise. The regexes mirror Node's internal/net.js expressions.
 int isIP(String input) {
@@ -209,14 +219,37 @@ class NodeSocket {
   int _timeoutMs = 0;
 
   /// Create a socket connected to a TCP endpoint or a Unix-domain path.
-  static Future<NodeSocket> connect(Object pathOrPort, [String? host]) async {
+  static Future<NodeSocket> connect(
+    Object pathOrPort, [String? host, LookupFunction? lookup]) async {
     if (pathOrPort is String) {
       final address = InternetAddress(pathOrPort, type: InternetAddressType.unix);
       return NodeSocket._(await Socket.connect(address, 0), connecting: false);
     }
     final port = pathOrPort as int;
+    final hostname = host ?? 'localhost';
+    if (lookup == null) {
+      return NodeSocket._(
+        await Socket.connect(hostname, port),
+        connecting: false,
+      );
+    }
+    final result = Completer<InternetAddress>();
+    lookup(hostname, dns.LookupOptions(family: 0), (Object? error, Object? value, [Object? family]) {
+      if (error != null) {
+        result.completeError(error);
+      } else if (value is dns.LookupResultAddress) {
+        result.complete(InternetAddress(value.address));
+      } else if (value is String) {
+        result.complete(InternetAddress(value));
+      } else if (value is dns.LookupResultAll && value.addresses.isNotEmpty) {
+        result.complete(InternetAddress(value.addresses.first.address));
+      } else {
+        result.completeError(StateError('lookup returned no address'));
+      }
+    });
+    final address = await result.future;
     return NodeSocket._(
-      await Socket.connect(host ?? 'localhost', port),
+      await Socket.connect(address, port),
       connecting: false,
     );
   }
@@ -648,5 +681,14 @@ NodeServer createServer([Function? connectionListener, bool allowHalfOpen = fals
 }
 
 /// Node-style net.connect helper; a String means Unix socket path.
-Future<NodeSocket> connect(Object portOrPath, [String? host]) =>
-    NodeSocket.connect(portOrPath, host);
+Future<NodeSocket> connect(Object portOrOptions, [String? host]) {
+  Object? target = portOrOptions;
+  LookupFunction? lookup;
+  if (portOrOptions is Map) {
+    target = portOrOptions['path'] ?? portOrOptions['port'];
+    host = portOrOptions['host'] as String? ?? host;
+    lookup = portOrOptions['lookup'] as LookupFunction?;
+  }
+  if (target == null) throw ArgumentError('net.connect requires port or path');
+  return NodeSocket.connect(target, host, lookup);
+}
