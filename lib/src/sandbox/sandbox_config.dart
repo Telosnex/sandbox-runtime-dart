@@ -383,6 +383,18 @@ final ConfigSchema<FilesystemPathEntry> _filesystemPathEntrySchema =
         ]);
         return checked == null ? null : FilesystemPathLiteral(checked);
       }
+      if (value is Map && value['path'] is String && value['literal'] == true) {
+        final unknown = value.keys
+            .where((key) => key != 'path' && key != 'literal')
+            .join("', '");
+        _addIssue(
+          issues,
+          path,
+          "Unrecognized key(s) in object: '$unknown'",
+          code: 'unrecognized_keys',
+        );
+        return null;
+      }
       final issue = issues.length;
       _addIssue(
         issues,
@@ -948,6 +960,9 @@ AwsPairConfig? _parseAwsPair(
   );
 }
 
+final ConfigSchema<AwsPairConfig> AwsPairConfigSchema =
+    ConfigSchema(_parseAwsPair);
+
 Sigv4Config? _parseSigv4(
   Object? value,
   List<ConfigIssue> issues,
@@ -985,6 +1000,8 @@ Sigv4Config? _parseSigv4(
     sigv4a: sigv4a,
   );
 }
+
+final ConfigSchema<Sigv4Config> Sigv4ConfigSchema = ConfigSchema(_parseSigv4);
 
 ConfigSchema<T> _notNull<T>(
   T? Function(Object?, List<ConfigIssue>, List<Object>) parser,
@@ -1290,10 +1307,10 @@ final ConfigSchema<NetworkConfig> NetworkConfigSchema = _notNull((
           'mitmProxy',
         ])
       : null;
-  final filter = _has(obj, 'filterRequest')
-      ? (obj['filterRequest'] is Function
-            ? obj['filterRequest'] as FilterRequestCallback
-            : null)
+  final rawFilter = _has(obj, 'filterRequest') ? obj['filterRequest'] : null;
+  final filter = rawFilter is Function
+      ? (request, [info]) async =>
+            await Function.apply(rawFilter, [request, info]) as Object?
       : null;
   if (_has(obj, 'filterRequest') && filter == null)
     _addIssue(issues, [
