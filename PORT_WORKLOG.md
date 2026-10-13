@@ -78,7 +78,7 @@ A ported file never reimplements a Node API inline.
 |----------|------|
 | `zod` schemas | Hand-written validators in the same file, same error messages |
 | `commander` | `package:args`, same options and help text |
-| `node-forge` | Open: `pointycastle` + `asn1lib`, or FFI to the system TLS library |
+| `node-forge` | Pure Dart: `pointycastle` + `asn1lib`, no OpenSSL FFI |
 | `@pondwader/socks5-server` | Open: port the parts used into `lib/src/node/socks5_server.dart` |
 | `fast-check` | Open: a small property-test helper, or seeded random loops |
 | `bun:test` | `package:test` |
@@ -216,9 +216,11 @@ and replaces paired EventEmitter one-shot callbacks with the
 | `src/sandbox/domain-pattern.ts` | `lib/src/sandbox/domain_pattern.dart` | — | Stub; declarations required by sandbox-config; no matching standalone test file |
 | `src/sandbox/request-filter.ts` | `lib/src/sandbox/request_filter.dart` | — | Stub; `FilterRequestCallback` declaration required by sandbox-config |
 | `src/sandbox/sandbox-utils.ts` | `lib/src/sandbox/sandbox_utils.dart` | — | Stub; `containsGlobCharsForPlatform` declaration required by sandbox-config |
+| `src/sandbox/sandbox-violation-store.ts` | `lib/src/sandbox/sandbox_violation_store.dart` | — | Ported; no one-to-one upstream test file; related assertions are in `command-text-registry.test.ts` |
 | — (Node shims) | `lib/src/node/{errno,events,fs,net,process}.dart` | — | No upstream counterparts; small compatibility layer for these files |
 | — (Node shims) | `lib/src/node/{abort,emitted_http,regexp}.dart` | `test/node/{emitted_http,regexp}_test.dart` | No upstream counterparts; AbortSignal, fail-closed HTTP/socket boundary, and exact supported RegExp-with-indices instrumentation |
 | — (Node shims) | `lib/src/node/{aws_crypto,incoming_http_headers,url_search_params}.dart` | — | No upstream counterparts; Node crypto Buffer/HMAC, HTTP headers, and URLSearchParams used by `aws-sigv4.ts` |
+| — (Node shims) | `lib/src/node/{forge,tls}.dart` | `test/node/{forge,tls}_test.dart` | Pure-Dart forge subset; Mozilla root bundle `2025-02-25` SHA-256 `50a6277e…55386cef`; bounded ClientHello replay and ALPN; raw `dart:io` socket boundary pending HTTP shim wiring |
 
 ### Known port gaps
 
@@ -231,6 +233,12 @@ and replaces paired EventEmitter one-shot callbacks with the
   listener/socket/sniff-timer `unref`, and the Node HTTP server's Unix-socket
   listen/close lifecycle. The mux does not parse `rawHeaders` or CONNECT
   `head`; CONNECT request parsing is delegated to its HTTP backend.
+- TLS: malformed, oversized, or timed-out ClientHello inspection throws and
+  destroys the raw socket; no-SNI is returned explicitly for caller policy.
+  Unsupported forge extensions, non-RSA PEM keys, and signing algorithms throw
+  rather than guessing. `checkServerIdentity` returns a mismatch error. Complex
+  multi-valued user-CA RDNs are normalized when re-encoded for CRLs, matching
+  node-forge's documented limitation.
 
 ### Related upstream tests not ported in this batch
 
@@ -239,6 +247,7 @@ they stay queued for those files' port steps (per the one-file test rule):
 
 - `credential-extract.ts`: `test/sandbox/credential-mask-files.test.ts`.
 - `sandbox-schemas.ts`: `test/sandbox/{macos-seatbelt,symlink-boundary,macos-profile-size,allow-read,read-list-precedence,macos-pty}.test.ts`.
+- `sandbox-violation-store.ts`: sanitizer/store cases in `test/sandbox/command-text-registry.test.ts` (not a one-to-one test file).
 - `mux-proxy.ts`: `test/sandbox/{mux-proxy-e2e,request-rewriting}.test.ts`.
 - `aws-sigv4.ts`: `test/sandbox/{credential-aws-pairs,credential-mask-sigv4}.test.ts`.
 - `emitted-connection.ts`: direct tests in `test/sandbox/{byte-budget,tls-terminate-runtime,tls-terminate-upload-gate,tls-terminate-relay-budget}.test.ts`; its helper `test/helpers/emitted-connections.ts` is used by `test/proxy-cli.test.ts` and `test/sandbox/{canonical-host-routing,client-abort,connect-non-tls,credential-mask-body,credential-mask-sigv4,deny-late-body,invalid-upstream-response,proxy-only-edges,proxy-only,request-filter,request-rewriting,request-target-forwarding,resolved-address-guard,response-header-bytes,tls-terminate-handshake-deadline,tls-terminate-in-process,tls-terminate-keepalive,tls-terminate-proxy,trailers-then-request}.test.ts`.
