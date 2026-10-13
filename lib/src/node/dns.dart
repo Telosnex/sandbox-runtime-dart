@@ -1,5 +1,4 @@
 // Node-compatible subset of `node:dns` used by resolved-address-guard.
-import 'dart:async';
 import 'dart:io';
 
 import 'net.dart' as net;
@@ -34,14 +33,8 @@ class LookupOptions {
 
 /// Options for `dns.lookup` with Node's all-address callback shape.
 class LookupAllOptions extends LookupOptions {
-  LookupAllOptions({Object? family, int? hints, bool? verbatim, String? order})
-    : super(
-        family: family,
-        hints: hints,
-        all: true,
-        verbatim: verbatim,
-        order: order,
-      );
+  LookupAllOptions({super.family, super.hints, super.verbatim, super.order})
+    : super(all: true);
 
   @override
   bool get all => true;
@@ -68,17 +61,34 @@ class LookupResultAll extends LookupResult {
 /// `code`; Dart's resolver does not expose getaddrinfo's code, so unresolved
 /// names are surfaced as the Node `ENOTFOUND` error rather than guessed as a
 /// successful empty answer.
-void lookup(String hostname, LookupOptions options, Function callback) {
+void lookup(
+  String hostname,
+  LookupOptions options,
+  void Function(NodeLookupError? err, LookupResult? address, [int? family])
+  callback,
+) {
   final literalFamily = net.isIP(hostname);
   final familyOption = options.family ?? 0;
+  if (familyOption != 0 && familyOption != 4 && familyOption != 6) {
+    throw NodeLookupError(
+      'ERR_INVALID_ARG_VALUE',
+      "The property 'options.family' must be one of: 0, 4, 6. Received $familyOption",
+    );
+  }
+  if (options.order != null &&
+      !const ['verbatim', 'ipv4first', 'ipv6first'].contains(options.order)) {
+    throw NodeLookupError(
+      'ERR_INVALID_ARG_VALUE',
+      "The property 'options.order' must be one of: 'verbatim', 'ipv4first', 'ipv6first'. Received '${options.order}'",
+    );
+  }
+  if (options.hints != null && options.hints != 0) {
+    throw UnimplementedError(
+      'dns.lookup hints are not reproduced by dart:io InternetAddress.lookup',
+    );
+  }
   // Node passes IP literals through regardless of the requested family.
   final family = literalFamily != 0 ? literalFamily : familyOption;
-  if (familyOption != 0 && familyOption != 4 && familyOption != 6) {
-    scheduleMicrotask(() {
-      Function.apply(callback, [_lookupError('EINVAL', hostname), null]);
-    });
-    return;
-  }
   final type = family == 4
       ? InternetAddressType.IPv4
       : family == 6
@@ -100,7 +110,10 @@ void lookup(String hostname, LookupOptions options, Function callback) {
                 address.family == familyOption,
           )
           .toList();
-      if (options.order == 'ipv4first' || options.verbatim == false) {
+      if (options.order == 'ipv4first' ||
+          (options.order != 'ipv6first' &&
+              options.order != 'verbatim' &&
+              options.verbatim == false)) {
         addresses = [
           ...addresses.where((address) => address.family == 4),
           ...addresses.where((address) => address.family == 6),
@@ -112,23 +125,19 @@ void lookup(String hostname, LookupOptions options, Function callback) {
         ];
       }
       if (addresses.isEmpty) {
-        Function.apply(callback, [_lookupError('ENOTFOUND', hostname), null]);
+        callback(_lookupError('ENOTFOUND', hostname), null);
         return;
       }
       if (options.all == true) {
-        Function.apply(callback, [null, LookupResultAll(addresses)]);
+        callback(null, LookupResultAll(addresses));
       } else {
         final first = addresses.first;
-        Function.apply(callback, [
-          null,
-          LookupResultAddress(first.address),
-          first.family,
-        ]);
+        callback(null, LookupResultAddress(first.address), first.family);
       }
     },
     onError: (Object error, StackTrace stack) {
       final code = _codeForLookupError(error);
-      Function.apply(callback, [_lookupError(code, hostname), null]);
+      callback(_lookupError(code, hostname), null);
     },
   );
 }
