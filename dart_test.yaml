@@ -1,0 +1,5 @@
+# `dart test` runs test files as isolates of one process. Several files set
+# Directory.current, which is process-wide, to a temporary directory (as
+# upstream tests call process.chdir). Run files one at a time, so that no
+# child process starts in another file's deleted directory.
+concurrency: 1
