@@ -3,6 +3,115 @@
 Upstream: https://github.com/anthropics/sandbox-runtime, checked out at
 `~/dev/sandbox-runtime`. Port baseline: v0.0.79, commit `24eb39e`.
 
+## State (2026-10-13, after the /root audit)
+
+`main` builds and passes from a clean clone on macOS (496 pass, 39 skip) and
+on the Ubuntu ARM64 VM (424 pass, 101 skip, most of them macOS-only). No agent
+is running, and there is no other worktree or branch.
+
+### Audit findings still open
+
+Each is a Rule 1 gap in a committed file. Fix them before or with the next
+batch:
+
+- **Test files restructured or thinned.** These still have every upstream
+  title, but not upstream's shape or comments:
+  - `test/config_validation_test.dart`: rewritten around `_config` and
+    `_expectResult` helpers; about 80 upstream comment lines are gone.
+  - `test/sandbox/macos_glob_deny_reemit_test.dart`: 55 comment lines gone.
+  - `test/sandbox/resolved_address_guard_test.dart`: 30 comment lines gone,
+    and its 16 proxy tests are empty `() {}` bodies. Rule 1a needs the
+    upstream body kept, as a comment where it cannot compile.
+  - `test/sandbox/mux_proxy_test.dart`: all 9 bodies empty, with no comments.
+  - `test/sandbox/glob_walk_property_test.dart`: 15 comment lines gone,
+    including the file's opening explanation.
+  - Smaller gaps: `path_canonicalization_test` (5), `macos_literal_deny_brackets_test`
+    (3), `ripgrep_test` (2). The `which` tests drop only Bun-specific
+    comments, which Rule 1 allows.
+- **`test/sandbox/java_proxy_agent_test.dart`** lacks upstream's
+  `agent inside a JVM` group: 7 tests, including `against a challenging
+  proxy`. Port them as `group(..., skip: java == null || jarPath == null ?
+  reason : false)`. They need a JDK and the agent jar; there is no Dart port
+  of `vendor/java-proxy-agent/build.ts` yet.
+- **`test/sandbox/macos_profile_size_test.dart`** adds a test upstream does
+  not have (`matches the upstream Seatbelt profile byte-for-byte for equal
+  inputs`). It is a useful differential check, but it does not belong in a
+  one-to-one file. Move it to a differential-test directory outside the
+  upstream mapping.
+- **`emitted_connection.dart`** keeps upstream's declarations, but four
+  bodies live in `node/emitted_http.dart`. Move them back when the proxies
+  are ported (header now says PARTIAL).
+- `tool/refresh_mozilla_roots.dart` and the files in `test/node/` have no
+  upstream counterpart, so they carry no `Ported from` header. That is
+  intended.
+
+The audit scripts are in `/tmp/audit` (not kept). To repeat the check:
+compare each file's `it`/`test`/`describe` titles in order, and check that
+every upstream comment line of 12 or more characters appears in the Dart
+file after normalizing `{@link X}` to `[X]` and `**\/` to `**/`.
+
+### Linux VM
+
+- VM "Ubuntu 26.04 ARM64" (Parallels). Dart is at `/opt/dart/dart-sdk/bin`
+  (not on `PATH`). gcc, libseccomp-dev, bubblewrap, socat and ripgrep are
+  installed.
+- `prlctl exec VM bash -c '...'` passes only the first word to `bash -c`; the
+  rest runs in an outer shell. Put the commands in a script under `~` (shared
+  as `/media/psf/Home`) and run `prlctl exec VM /bin/bash <script>`.
+  Long-running commands can fail inside prlctl; run them with `nohup ... &`
+  and poll an output file.
+- To test: `git clone /media/psf/Home/dev/sandbox-runtime-dart /root/srt-dart`,
+  then `dart pub get`, `dart run tool/build_seccomp.dart` and `dart test`.
+
+### Coordination rules learned (keep them)
+
+- One writer per file. Agents must not spawn sub-agents for files they own: a
+  recursive spawn tree once had about 10 agents overwriting
+  `macos_sandbox_utils.dart`.
+- A shared shim that others import (net.dart) is developed in its own git
+  worktree, then rebased and merged with `--ff-only`.
+- /root commits `PORT_WORKLOG.md`; agents edit their rows but do not commit it.
+- `git add` explicit paths only. The repo root must be this directory
+  (`git rev-parse --show-toplevel`).
+- Commit as soon as a file analyzes clean. An untracked file that a committed
+  file imports breaks every other checkout (this happened with the seccomp
+  port).
+- An agent that reports no progress for 30 minutes is stuck: check file
+  modification times, then interrupt it.
+- Author: James O'Leary <jpohhhh@gmail.com>.
+
+### Remaining source (about 19,000 of 27,700 upstream lines)
+
+- Linux: linux-sandbox-utils (3,653), linux-violation-monitor, read-deny-glob,
+  own-files. The seccomp helper builds and works on the VM.
+- Proxies: http-proxy, tls-terminate-proxy, socks-proxy (needs a SOCKS5 server
+  shim), proxy-only, decider-client, request-filter, the rest of
+  parent-proxy, mux-proxy and emitted-connection.
+- mitm-ca, mitm-leaf (forge/tls shims are ready).
+- Credentials: credential-sentinel, -decode, -mask-env, -mask-files,
+  -aws-pairs, body-substitution.
+- windows-sandbox-utils (2,457) plus vendored srt-win Rust. Open founder
+  decision: Telosnex uses the Codex restricted-token fork, not srt-win.
+  Recommendation: skip for now and record the gap.
+- sandbox-manager (3,144), then index, cli, proxy-cli, proxy-main,
+  config-loader.
+- Tests: most of upstream's ~66,000 test lines, mostly sandbox-manager driven.
+  The queue is under "Related upstream tests not ported in this batch".
+- Vendor: srt-win and java-proxy-agent sources and their build scripts in
+  Dart. CI.
+
+Open decisions for the founder: whether to port windows-sandbox-utils, and
+whether the proxy stack (domain allowlist) comes before sandbox-manager.
+
+Open design decision before the proxy ports: `net.connect` in `node/net.dart`
+returns a `Future`, where Node returns the socket at once. Decide how
+http-proxy and socks-proxy keep their upstream line structure with that.
+
+**Telosnex follow-ups (outside this repo):** update
+`docs/design/ADR_tool_execution_sandbox.md` to use this port; wire
+`cli_command` to it; fix file descriptors that Telosnex leaks into spawned
+commands (they bypass the sandbox, because it checks access only at open).
+
 ## Rule 1: one-to-one with upstream
 
 The goal is to keep porting upstream changes for years. So a reader must be
@@ -11,7 +120,11 @@ able to put an upstream file next to its Dart file and diff them by eye.
 - **Files.** `src/<dir>/<kebab-name>.ts` becomes `lib/src/<dir>/<snake_name>.dart`.
   Only `-` changes to `_`. Do not merge, split, or move files.
   `test/<dir>/<name>.test.ts` becomes `test/<dir>/<snake_name>_test.dart`.
-  `test/helpers/*.ts` becomes `test/helpers/*.dart`.
+  `test/helpers/*.ts` becomes `test/helpers/*.dart` (`test/helpers/platform.dart`
+  is ported; use its `isLinux`/`isMacOS`/`isWindows` for `describe.if`).
+  A `.` in a test name other than the extension becomes `_`
+  (`glob-walk.property.test.ts` is `glob_walk_property_test.dart`).
+  `vendor/<helper>/build.ts` becomes `tool/build_<helper>.dart`.
 - **Names.** Every function, class, constant, type, field, and parameter keeps
   its upstream name. Only casing changes where Dart requires it:
   `SCREAMING_CASE` stays `SCREAMING_CASE` (ignore the lint per file).
@@ -64,13 +177,25 @@ Dart equivalents behave differently. All such shims live in `lib/src/node/`
 (no upstream counterpart), so that ported files read like the original.
 A ported file never reimplements a Node API inline.
 
+There is one shim file per Node module, named for the module, so a ported
+file imports the shim that matches upstream's import (`import * as fs from
+'node:fs'` becomes `import '../node/fs.dart' as fs;`). Add to the module's
+file; do not make a per-consumer file such as `fs_<consumer>.dart`.
+
 | Node | Dart shim (`lib/src/node/`) |
 |------|-----------------------------|
 | `err.code` (`ENOENT`, ...) | `errno.dart`: `NodeError { code, syscall, path }`; errno-to-code tables for macOS and Linux |
-| `fs.*Sync` that throw with a code (`lstatSync`, `realpathSync`, `readlinkSync`) | `fs.dart`, using FFI where `dart:io` drops the errno; test-only `statIdentitySync` supplies Node's `dev:ino` oracle |
-| `net.isIP`, `BlockList` | `net.dart`, with Node's internal IPv4/IPv6 regexes and cross-family matching |
-| `process.env`, `process.platform`, `process.cwd()` | `process.dart`, overridable in tests (upstream tests patch `process.platform`) |
-| `EventEmitter`-style callbacks | Dart `Stream`/`Future`; keep the upstream function boundaries |
+| `fs` | `fs.dart`: `lstatSync`, `statSync`, `existsSync`, `readdirSync` (Dirent), `readlinkSync`, `realpathSync`; libc keeps the errno; test-only `statIdentitySync` and `fsCallObserver` |
+| `os` | `os.dart`: `homedir`, `tmpdir`, `networkInterfaces` (getifaddrs) |
+| `process` | `process.dart`: `platform`, `arch`, `env`, `cwd()`, overridable in tests |
+| `child_process` | `child_process.dart`: `spawn` (long-running), `execSync`, `exec` |
+| `crypto` | `crypto.dart`: `createHash`, `createHmac` (sha256) |
+| `buffer` | `buffer.dart`: `Buffer.from`, `Buffer.byteLength`, `toString` |
+| `url` | `url.dart`: WHATWG host parsing, `URLSearchParams` |
+| `net`, `dns`, `tls`, `http` | `net.dart` (`isIP`, `BlockList`, sockets, servers), `dns.dart`, `tls.dart`, `http.dart` (raw HTTP/1.1, `IncomingHttpHeaders`) |
+| `node-forge` | `forge.dart`, with `mozilla_roots.dart` (generated) |
+| `EventEmitter`-style callbacks | `events.dart`; Dart `Stream`/`Future`; keep the upstream function boundaries |
+| Generators that return a value | `generators.dart` (see Conventions) |
 
 ## Rule 3: third-party packages
 
@@ -120,6 +245,12 @@ Repeat these translation decisions for the rest of the port:
   condition. A conditional assertion in a test body remains an early return,
   not a skipped test. Use Dart `test(..., skip: reason)` for an upstream case
   whose behavior cannot be run faithfully.
+- **Test shape.** Keep each test body in upstream's shape, statement for
+  statement. Do not factor bodies into new helpers: the file must diff
+  against upstream. A body that cannot compile yet is kept as `//` lines of
+  the upstream text, never left empty.
+- **Test runner.** `dart_test.yaml` sets `concurrency: 1`: test files share
+  one process, and several set the process-wide `Directory.current`.
 - **Assertions in test declarations.** Bun permits `expect(...)` directly in a
   `describe` callback; `package:test` does not. Move the assertion into a
   `test` at the same position, titled for what it checks.
@@ -158,6 +289,19 @@ Repeat these translation decisions for the rest of the port:
   `error.issues` with `message`, `path`, and `code`. The request callback's web
   `Request`/`RequestInfo` types use `Object` at the stub boundary until the
   request-filter port supplies their Dart representations.
+
+### Comments
+
+- Keep an upstream `/** ... */` block as it is where its text holds no `/*`.
+  That diffs best against upstream.
+- Dart block comments nest, so a block whose text holds `/*` (a glob such as
+  `src/**`, or `/**/*.key`) never closes and breaks the whole file. Write such
+  a block as `///` lines. Convert with a scanner that skips strings, never
+  with a broad regex: one such regex once deleted code in sandbox_utils.dart.
+- In a `///` comment, write a TS JSDoc escape such as `**\/` as `**/`, and
+  `{@link X}` as `[X]` (dartdoc reports `{@link}` as an unknown directive).
+  Inside a Dart `/** */` block, keep both as upstream has them.
+- Comments inside test bodies stay too, at the same place in the body.
 
 ### Generators that return a value (`Steps<T>`)
 
@@ -243,13 +387,17 @@ and replaces paired EventEmitter one-shot callbacks with the
 | `src/sandbox/domain-pattern.ts` | `lib/src/sandbox/domain_pattern.dart` | `test/sandbox/domain_pattern_test.dart` | Ported; all 16 direct tests pass |
 | `src/sandbox/parent-proxy.ts` | `lib/src/sandbox/parent_proxy.dart` | — | **Partial:** `stripBrackets` and `canonicalizeHost` ported for domain-pattern; rest of the module remains unported |
 | `src/sandbox/request-filter.ts` | `lib/src/sandbox/request_filter.dart` | — | Stub; `FilterRequestCallback` declaration required by sandbox-config |
-| `src/sandbox/sandbox-utils.ts` | `lib/src/sandbox/sandbox_utils.dart` | `test/sandbox/{sandbox_env_tmpdir_test,glob_walk_property_test}.dart` | Ported; 6 direct tests pass; no one-to-one utility suite exists upstream; Node shims `os.dart`, `buffer.dart`, `fs_sandbox_utils.dart` |
+| `src/sandbox/sandbox-utils.ts` | `lib/src/sandbox/sandbox_utils.dart` | `test/sandbox/{sandbox_env_tmpdir_test,glob_walk_property_test}.dart` | Ported; 6 direct tests pass; no one-to-one utility suite exists upstream; Node shims `os.dart`, `buffer.dart`, `fs.dart` |
 | `src/sandbox/path-entries.ts` | `lib/src/sandbox/path_entries.dart` | — | Ported; `literal-path-entries.test.ts` waits on sandbox-manager and Linux/macOS wrapper modules |
+| `src/sandbox/macos-sandbox-utils.ts` | `lib/src/sandbox/macos_sandbox_utils.dart` | `test/sandbox/{macos_allow_local_binding,macos_apple_events,macos_deny_grouping,macos_glob_deny_reemit,macos_literal_deny_brackets,macos_profile_size,macos_pty,macos_seatbelt,path_canonicalization,tls_terminate_trust_env,symlink_boundary}_test.dart` | Ported; 129 tests pass across the macOS suites, plus 2 credential-mask cases skipped pending `credential-mask-files.ts`; generated wrapper/profile compared byte-for-byte with upstream after normalizing only the random log suffix. Apple Events end-to-end cases depend on the host GUI probe. |
+| `src/sandbox/java-proxy-agent.ts` | `lib/src/sandbox/java_proxy_agent.dart` | `test/sandbox/java_proxy_agent_test.dart` | Ported; 11 direct tests pass. The sandbox-manager integration case is pending `sandbox-manager.ts` and only registered when a built agent jar exists. |
+| `src/sandbox/generate-seccomp-filter.ts` | `lib/src/sandbox/generate_seccomp_filter.dart` | `test/sandbox/seccomp_filter_test.dart` | Ported; 3 binary tests pass on the Linux VM, 9 more keep upstream bodies pending `linux-sandbox-utils.ts`. `vendor/seccomp-src` copied unchanged; `tool/build_seccomp.dart` builds `apply-seccomp`, which refuses `socket(AF_UNIX)` on the VM. An AOT embedder passes `seccompBinaryPath` |
+| `test/helpers/platform.ts` | `test/helpers/platform.dart` | — | Ported |
 | `src/sandbox/sandbox-violation-store.ts` | `lib/src/sandbox/sandbox_violation_store.dart` | — | Ported; no one-to-one upstream test file; related assertions are in `command-text-registry.test.ts` |
-| — (Node shims) | `lib/src/node/{errno,events,fs,http,net,process}.dart` | `test/node/{http,net}_test.dart` | No upstream counterparts; raw HTTP/1.1/socket subset with byte-preserving headers, body/trailer framing, CONNECT, keep-alive, and TCP/Unix listeners; 16 focused tests pass |
+| — (Node shims) | `lib/src/node/{errno,events,fs,os,child_process,http,net,process}.dart` | `test/node/{http,net}_test.dart` | No upstream counterparts; raw HTTP/1.1/socket subset with byte-preserving headers, body/trailer framing, CONNECT, server `upgrade`, keep-alive, and TCP/Unix listeners; focused tests pass |
 | — (Node shim) | `lib/src/node/url.dart` | `test/node/url_test.dart` | WHATWG URL host parsing subset for `canonicalizeHost`; seven Node v22.16.0 golden tests pass; unsupported IDNA fails closed |
 | — (Node shims) | `lib/src/node/{abort,emitted_http,regexp}.dart` | `test/node/{emitted_http,regexp}_test.dart` | No upstream counterparts; AbortSignal, emitted-connection adapter over raw HTTP/socket shim, and exact supported RegExp-with-indices instrumentation |
-| — (Node shims) | `lib/src/node/{aws_crypto,incoming_http_headers,url_search_params}.dart` | — | No upstream counterparts; Node crypto Buffer/HMAC, HTTP headers, and URLSearchParams used by `aws-sigv4.ts` |
+| — (Node shims) | `lib/src/node/{crypto,buffer}.dart` | — | No upstream counterparts; sha256 hash/HMAC for `aws-sigv4.ts`, Buffer helpers for `sandbox-utils.ts` |
 | — (Node shims) | `lib/src/node/{forge,tls}.dart` | `test/node/{forge,tls}_test.dart` | Pure-Dart forge subset; Mozilla root bundle `2026-09-25` SHA-256 `a41b5d35…37d00505`; bounded ClientHello replay and ALPN; secure client HTTP uses the raw socket shim |
 
 ### Known port gaps
@@ -274,6 +422,9 @@ and replaces paired EventEmitter one-shot callbacks with the
   available through Dart; the shim throws if HOME/USERPROFILE is absent. Dart
   also cannot create a `TypeError` carrying Node's custom message, so marked
   literal and invalid-anchor failures use `ArgumentError`.
+- macOS wrapper test helpers use `dart:io` process boundaries; synchronous
+  `Process.runSync` has no timeout option where the upstream `spawnSync` tests
+  specify one. The PTY and profile-size suites retain explicit async deadlines.
 
 ### Related upstream tests not ported in this batch
 
@@ -281,13 +432,14 @@ These exercise the listed modules but belong to other source/test files, so
 they stay queued for those files' port steps (per the one-file test rule):
 
 - `credential-extract.ts`: `test/sandbox/credential-mask-files.test.ts`.
-- `sandbox-schemas.ts`: `test/sandbox/{macos-seatbelt,symlink-boundary,macos-profile-size,allow-read,read-list-precedence,macos-pty}.test.ts`.
+- `sandbox-schemas.ts`: `test/sandbox/{allow-read,read-list-precedence}.test.ts`.
 - `sandbox-violation-store.ts`: sanitizer/store cases in `test/sandbox/command-text-registry.test.ts` (not a one-to-one test file).
 - `mux-proxy.ts`: `test/sandbox/{mux-proxy-e2e,request-rewriting}.test.ts`.
 - `aws-sigv4.ts`: `test/sandbox/{credential-aws-pairs,credential-mask-sigv4}.test.ts`.
 - `emitted-connection.ts`: direct tests in `test/sandbox/{byte-budget,tls-terminate-runtime,tls-terminate-upload-gate,tls-terminate-relay-budget}.test.ts`; its helper `test/helpers/emitted-connections.ts` is used by `test/proxy-cli.test.ts` and `test/sandbox/{canonical-host-routing,client-abort,connect-non-tls,credential-mask-body,credential-mask-sigv4,deny-late-body,invalid-upstream-response,proxy-only-edges,proxy-only,request-filter,request-rewriting,request-target-forwarding,resolved-address-guard,response-header-bytes,tls-terminate-handshake-deadline,tls-terminate-in-process,tls-terminate-keepalive,tls-terminate-proxy,trailers-then-request}.test.ts`.
-- `sandbox-config.ts`: `test/config-validation.test.ts` is the one-to-one suite ported with this file. The other direct schema/type consumers belong to their own source/test steps and remain queued: `test/configurable-proxy-ports.test.ts`, `test/public-exports.test.ts`, and `test/sandbox/{brackets-that-spell-no-set,credential-aws-pairs,credential-deny,credential-mask-files,credential-mask-sigv4,credential-mask,filesystem-disabled,glob-expand,integration,java-proxy-agent,literal-path-entries,mux-proxy-e2e,names-with-a-backslash,own-files,proxy-env-vars,read-list-precedence,request-rewriting,resolved-address-guard,tls-terminate-runtime,update-config,winsrt,wrap-with-sandbox}.test.ts`.
-- `path-entries.ts`: `test/sandbox/literal-path-entries.test.ts` waits on `sandbox-manager.ts`, `linux-sandbox-utils.ts`, `macos-sandbox-utils.ts`, `linux-violation-monitor.ts`, and its platform/bwrap/config-loader helpers.
+- `linux-sandbox-utils.ts`: 9 cases of `test/sandbox/seccomp-filter.test.ts` (ported, skipped) and the Linux backend case of `path-canonicalization.test.ts`.
+- `sandbox-config.ts`: `test/config-validation.test.ts` is the one-to-one suite ported with this file. The other direct schema/type consumers belong to their own source/test steps and remain queued: `test/configurable-proxy-ports.test.ts`, `test/public-exports.test.ts`, and `test/sandbox/{brackets-that-spell-no-set,credential-aws-pairs,credential-deny,credential-mask-files,credential-mask-sigv4,credential-mask,filesystem-disabled,glob-expand,integration,literal-path-entries,mux-proxy-e2e,names-with-a-backslash,own-files,proxy-env-vars,read-list-precedence,request-rewriting,resolved-address-guard,tls-terminate-runtime,update-config,winsrt,wrap-with-sandbox}.test.ts`.
+- `path-entries.ts`: `test/sandbox/literal-path-entries.test.ts` waits on `sandbox-manager.ts`, `linux-sandbox-utils.ts`, `linux-violation-monitor.ts`, and its platform/bwrap/config-loader helpers.
 
 The upstream `src` and `test` grep for `maskedFileBinds` and
 `NetworkHostPattern` found reads and object construction only; no code mutates
