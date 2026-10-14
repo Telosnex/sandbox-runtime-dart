@@ -8,6 +8,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import '../node/abort.dart' show AbortController;
+import '../node/errno.dart' show errorMessage, errorCode;
 import '../node/buffer.dart' show Buffer;
 import '../node/http.dart' as http;
 import '../node/http.dart' show Agent, createServer;
@@ -424,11 +425,14 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
   // the host process. Parse errors get the RFC-required 400; resets and
   // already-unwritable sockets are just dropped.
   server.on('clientError', (dynamic err, net.NodeSocket socket) {
-    logForDebugging('Client connection error: ${err.message}', level: 'error');
+    logForDebugging(
+      'Client connection error: ${errorMessage(err)}',
+      level: 'error',
+    );
     // The peer may reset while the 400 flushes; without a listener that
     // write failure is itself an uncaughtException.
     socket.on('error', (_) {});
-    if (err.code != 'ECONNRESET' && socket.writable) {
+    if (errorCode(err) != 'ECONNRESET' && socket.writable) {
       // Destroy only after the flush: destroying immediately races the
       // write and can reset the connection before the 400 reaches the
       // client, while end() alone can leave a half-open socket from a
@@ -439,7 +443,8 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
       // A head past a caller's own maxHeaderSize is a request past its
       // limits: 400, as any other request past them.
       final status =
-          err.code == 'HPE_HEADER_OVERFLOW' && options.maxHeaderSize == null
+          errorCode(err) == 'HPE_HEADER_OVERFLOW' &&
+              options.maxHeaderSize == null
           ? '431 Request Header Fields Too Large'
           : '400 Bad Request';
       // In a proxy that marks its refusals, this one says it came from the
@@ -484,7 +489,10 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
   ) async {
     // Attach error handler immediately to prevent unhandled errors
     socket.on('error', (dynamic err) {
-      logForDebugging('Client socket error: ${err.message}', level: 'error');
+      logForDebugging(
+        'Client socket error: ${errorMessage(err)}',
+        level: 'error',
+      );
       // A failed write (e.g. EPIPE to a dead peer) must also release
       // the descriptor: logging alone leaves the fd open for the life
       // of the process, and an open dead-peer fd is what the runtime's
@@ -875,7 +883,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
         }
       } catch (err) {
         logForDebugging(
-          'CONNECT tunnel failed: ${(err as dynamic).message}',
+          'CONNECT tunnel failed: ${errorMessage(err)}',
           level: 'error',
         );
         // If we already sent 200 (mitmCA sniff path), an HTTP status line now
@@ -918,7 +926,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
 
       upstream.on('error', (dynamic err) {
         logForDebugging(
-          'CONNECT tunnel failed: ${err.message}',
+          'CONNECT tunnel failed: ${errorMessage(err)}',
           level: 'error',
         );
         socket.destroy();
@@ -946,10 +954,16 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
     // from node:_http_server). `pipe()` does not forward error events, so
     // the body pipelines below never see it either.
     req.on('error', (dynamic err) {
-      logForDebugging('Client request error: ${err.message}', level: 'error');
+      logForDebugging(
+        'Client request error: ${errorMessage(err)}',
+        level: 'error',
+      );
     });
     res.on('error', (dynamic err) {
-      logForDebugging('Client response error: ${err.message}', level: 'error');
+      logForDebugging(
+        'Client response error: ${errorMessage(err)}',
+        level: 'error',
+      );
       // A failed response write (EPIPE to a dead peer) must release
       // the descriptor — same rationale as the CONNECT handler's
       // socket error handler. The res 'close' teardown listeners then
@@ -1194,7 +1208,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
 
       void failUpstream(Object err) {
         logForDebugging(
-          'Proxy request failed: ${(err as dynamic).message}',
+          'Proxy request failed: ${errorMessage(err)}',
           level: 'error',
         );
         respondUpstreamError(res, err, options.denyHeader);
@@ -1222,7 +1236,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
             // handle source errors.
             proxyRes.on('error', (dynamic err) {
               logForDebugging(
-                'Upstream response error: ${err.message}',
+                'Upstream response error: ${errorMessage(err)}',
                 level: 'error',
               );
               res.destroy();
@@ -1261,7 +1275,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
             // handle source errors.
             proxyRes.on('error', (dynamic err) {
               logForDebugging(
-                'Upstream response error: ${err.message}',
+                'Upstream response error: ${errorMessage(err)}',
                 level: 'error',
               );
               res.destroy();
@@ -1311,7 +1325,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
             // handle source errors.
             proxyRes.on('error', (dynamic err) {
               logForDebugging(
-                'Upstream response error: ${err.message}',
+                'Upstream response error: ${errorMessage(err)}',
                 level: 'error',
               );
               res.destroy();
