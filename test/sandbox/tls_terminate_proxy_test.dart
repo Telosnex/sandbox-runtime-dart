@@ -981,9 +981,11 @@ Future<CurlResult> curlViaProxy(
       .listen((c) => stderr += c, onDone: () => stderrEnd.complete());
   // Drain both streams to 'end' before reading the exit code — Bun's
   // ChildProcess 'close' can fire before all 'data' events are delivered.
-  await Future.wait([stdoutEnd.future, stderrEnd.future]);
+  // Dart: listen for 'close' first; it can fire before the streams end, and
+  // a late listener would wait forever.
   final exitCompleter = Completer<int>();
   child.on('close', (int? code) => exitCompleter.complete(code ?? 1));
+  await Future.wait([stdoutEnd.future, stderrEnd.future]);
   final exit = await exitCompleter.future;
 
   // -D - prints headers (possibly multiple blocks: CONNECT response, then the
