@@ -542,17 +542,18 @@ Future<void> main() async {
       ));
     });
 
-    // Descriptors 3 to 6 are closed in the child: starting on them fails, so
+    // Descriptors 100 to 103 are closed in the child
+    // (Dart: not 3 to 6, which the Dart VM itself uses on Linux): starting on them fails, so
     // the same answer shows that none of them was opened or read.
     const CLOSED_FDS = [
       '--listen-fd',
-      '3',
+      '100',
       '--decider-fd',
-      '4',
+      '101',
       '--lifeline-fd',
-      '5',
+      '102',
       '--ca-fd',
-      '6',
+      '103',
     ];
 
     test('opens no descriptor another option names', () {
