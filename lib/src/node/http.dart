@@ -648,6 +648,7 @@ class NodeHttpServer extends net.NodeServer {
         final request = parser.incoming! as IncomingMessage;
         final response = ServerResponse._(socket, request);
         pendingResponses.add(response.done);
+        pendingPairs.removeWhere((p) => p.$2.writableEnded);
         pendingPairs.add((request, response));
         final connectionTokens = request.headers['connection']
             ?.toString()
@@ -1034,6 +1035,7 @@ class ClientRequest extends events.EventEmitter {
     return ok;
   }
 
+  final _socketWaiters = <void Function()>[];
   bool _needDrain = false;
   bool _drainArmed = false;
 
@@ -1044,7 +1046,7 @@ class ClientRequest extends events.EventEmitter {
     if (s == null || !_headersSent) {
       // Not yet on the wire: look again shortly.
       _drainArmed = true;
-      Timer(const Duration(milliseconds: 1), () {
+      _socketWaiters.add(() {
         _drainArmed = false;
         _armDrain();
       });
@@ -1165,6 +1167,11 @@ class ClientRequest extends events.EventEmitter {
       _lease = lease;
       reusedSocket = lease.reused;
       socket = lease.socket;
+      final w = _socketWaiters.toList();
+      _socketWaiters.clear();
+      for (final f in w) {
+        f();
+      }
       socket!.on('error', (Object error) => _emit('error', error));
       final method = (_options['method'] ?? 'GET').toString().toUpperCase();
       final headers = <String, Object?>{};
@@ -1228,6 +1235,11 @@ class ClientRequest extends events.EventEmitter {
       requestHead.write('\r\n');
       socket!.write(_latin1(requestHead.toString()));
       _headersSent = true;
+      final hw = _socketWaiters.toList();
+      _socketWaiters.clear();
+      for (final f in hw) {
+        f();
+      }
       if (_chunked) {
         for (final chunk in _body) {
           if (chunk.isNotEmpty) socket!.write(_chunk(chunk));

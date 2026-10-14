@@ -293,6 +293,14 @@ _Launched _launch(
     final sigset = arena<Uint8>(256).cast<Void>();
     n.faInit(actions);
     n.attrInit(attr);
+    // macOS: POSIX_SPAWN_CLOEXEC_DEFAULT (0x4000) below makes everything
+    // close-on-exec except what is explicitly dup2'd/inherited.
+    final inheritNp = io.Platform.isMacOS
+        ? _libc!.lookupFunction<
+            Int32 Function(Pointer<Void>, Int32),
+            int Function(Pointer<Void>, int)
+          >('posix_spawn_file_actions_addinherit_np')
+        : (Pointer<Void> a, int f) => 0;
     try {
       for (var i = 0; i < specs.length; i++) {
         final spec = specs[i] ?? 'pipe';
@@ -328,7 +336,11 @@ _Launched _launch(
           );
         } else if (spec == 'inherit') {
           // The child keeps the parent's descriptor i.
-          if (i >= 3) n.faDup2(actions, dupHigh(i), i);
+          if (i >= 3) {
+            n.faDup2(actions, dupHigh(i), i);
+          } else if (io.Platform.isMacOS) {
+            inheritNp(actions, i);
+          }
         } else if (spec is int) {
           n.faDup2(actions, dupHigh(spec), i);
         } else {
@@ -350,7 +362,7 @@ _Launched _launch(
       n.attrSigDefault(attr, sigset);
       n.sigemptyset(sigset);
       n.attrSigMask(attr, sigset);
-      n.attrFlags(attr, 0x04 | 0x08);
+      n.attrFlags(attr, 0x04 | 0x08 | (io.Platform.isMacOS ? 0x4000 : 0));
 
       final argv = arena<Pointer<Utf8>>(args.length + 2);
       argv[0] = ((options['argv0'] as String?) ?? command).toNativeUtf8(
@@ -385,7 +397,21 @@ _Launched _launch(
             int Function(Pointer<Void>, int)
           >('posix_spawn_file_actions_addclosefrom_np')(actions, specs.length);
         } on ArgumentError {
-          // glibc < 2.34
+          // glibc < 2.34: explicitly close every other open descriptor.
+          final fds = <int>[];
+          try {
+            for (final e in io.Directory('/proc/self/fd').listSync()) {
+              final fd = int.tryParse(
+                e.uri.pathSegments.lastWhere((s) => s.isNotEmpty),
+              );
+              if (fd != null && fd >= specs.length) fds.add(fd);
+            }
+          } on io.FileSystemException {
+            throw _LaunchError(codeForErrno(24));
+          }
+          for (final fd in fds) {
+            if (n.fcntl(fd, 1, 0) >= 0) n.faClose(actions, fd);
+          }
         }
       }
       if (helper != null) {

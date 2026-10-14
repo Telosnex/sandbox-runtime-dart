@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io' as io;
 
 import 'package:sandbox_runtime/src/node/child_process.dart';
@@ -28,6 +29,19 @@ void main() {
     final closed = Future<void>.delayed(const Duration(seconds: 10));
     await Future.any([closed, events.once(child, 'close')]);
     expect(utf8.decode(got), 'hello');
+  });
+
+  test('child sees no fd beyond its stdio slots', () {
+    final dup = DynamicLibrary.process()
+        .lookupFunction<Int32 Function(Int32), int Function(int)>('dup');
+    final leaked = dup(1); // not close-on-exec
+    expect(leaked, greaterThan(2));
+    final r = spawnSync('/bin/sh', [
+      '-c',
+      'for f in /dev/fd/*; do echo \${f##*/}; done',
+    ], {});
+    final fds = r.stdout.toString().split('\n').where((l) => l.isNotEmpty);
+    expect(fds.map(int.parse).where((n) => n == leaked), isEmpty);
   });
 
   test('int fd is inherited at its slot; writeSync, copyFileSync', () {
