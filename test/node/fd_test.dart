@@ -8,6 +8,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
+import 'package:sandbox_runtime/src/node/fs.dart' as fs;
 import 'package:sandbox_runtime/src/node/net.dart' as net;
 import 'package:test/test.dart';
 
@@ -41,6 +42,24 @@ final _close = _lib.lookupFunction<Int32 Function(Int32), int Function(int)>(
 );
 
 void main() {
+  test('fs.createReadStream(path, {fd}) reads a descriptor', () async {
+    final fds = calloc<Int32>(2);
+    expect(_socketpair(1, 1, 0, fds), 0);
+    final a = fds[0], b = fds[1];
+    calloc.free(fds);
+    final p = calloc<Uint8>(2)..asTypedList(2).setAll(0, [7, 6]);
+    _write(b, p, 2);
+    calloc.free(p);
+    _close(b);
+    final r = fs.createReadStream('', fd: a);
+    final chunks = <int>[];
+    final ended = Completer<void>();
+    r.on('data', (List<int> c) => chunks.addAll(c));
+    r.on('end', ended.complete);
+    await ended.future.timeout(const Duration(seconds: 5));
+    expect(chunks, [7, 6]);
+  });
+
   test('Socket({fd}) reads and writes a socketpair end', () async {
     final fds = calloc<Int32>(2);
     expect(_socketpair(1, 1, 0, fds), 0); // AF_UNIX, SOCK_STREAM

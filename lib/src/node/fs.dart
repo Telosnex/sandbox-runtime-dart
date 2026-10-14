@@ -3,6 +3,7 @@
 // its errno (and so Node's `code`); dart:io would turn it into a lossy
 // FileSystemException. File types come from dart:io once the libc call has
 // succeeded; only the test-only statIdentitySync reads `struct stat` fields.
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
@@ -12,6 +13,8 @@ import 'package:ffi/ffi.dart';
 import 'package:path/path.dart' as path_utils;
 
 import 'errno.dart';
+import 'fd_io.dart';
+import 'stream.dart' as stream;
 
 final DynamicLibrary? _libc = _loadLibc();
 typedef _LstatNative = Int32 Function(Pointer<Uint8>, Pointer<Void>);
@@ -288,4 +291,38 @@ String _codeFromIoError(FileSystemException error) {
     default:
       return 'UNKNOWN';
   }
+}
+
+/// Node `fs.createReadStream(path, {fd})`: a Readable over [path], or over
+/// the open descriptor [fd] (then [path] is ignored, as in Node).
+stream.Readable createReadStream(String path, {int? fd}) {
+  final Stream<List<int>> source;
+  final void Function() close;
+  if (fd != null) {
+    final s = fdSocket(fd, writable: false);
+    source = s;
+    close = s.destroy;
+  } else {
+    source = File(path).openRead();
+    close = () {};
+  }
+  late final StreamSubscription<List<int>> sub;
+  late final stream.Readable readable;
+  readable = stream.Readable(
+    read: (int _) => sub.resume(),
+    destroy: (Object? error, Function callback) {
+      sub.cancel();
+      close();
+      callback(error);
+    },
+  );
+  sub = source.listen(
+    (chunk) {
+      if (!readable.push(Uint8List.fromList(chunk))) sub.pause();
+    },
+    onError: (Object e) => readable.destroy(e),
+    onDone: () => readable.push(null),
+  );
+  sub.pause();
+  return readable;
 }
