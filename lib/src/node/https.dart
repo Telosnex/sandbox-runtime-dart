@@ -3,6 +3,7 @@
 import 'http.dart' as http;
 import 'net.dart' as net;
 import 'tls.dart' as tls;
+import 'url.dart' as url;
 
 /// Node HTTPS server. The secure context is provided by `key` and `cert`, or
 /// by `secureContext`.
@@ -53,37 +54,69 @@ class Agent extends http.Agent {
 
 final Agent globalAgent = Agent(keepAlive: true, maxSockets: 1);
 
-http.ClientRequest request(Object options, [Function? responseListener]) {
+/// Node's `https.request(url[, options][, callback])` and
+/// `https.request(options[, callback])`: [input] is a URL string, [url.URL],
+/// [Uri] or an options map; a map in [options] is merged over the URL's
+/// fields, as Node's `urlToHttpOptions` then `Object.assign` do.
+http.ClientRequest request(
+  Object input, [
+  Object? options,
+  Function? responseListener,
+]) {
+  if (options is Function && responseListener == null) {
+    responseListener = options;
+    options = null;
+  }
   final Map<Object?, Object?> opts;
-  if (options is Map) {
-    opts = Map<Object?, Object?>.of(options);
-  } else if (options is Uri) {
-    opts = {
-      'protocol': 'https:',
-      'hostname': options.host,
-      'port': options.hasPort ? options.port : null,
-      'path': '${options.path}${options.hasQuery ? '?${options.query}' : ''}',
-    };
-  } else if (options is String) {
-    final uri = Uri.parse(options);
-    opts = {
-      'protocol': 'https:',
-      'hostname': uri.host,
-      'port': uri.hasPort ? uri.port : null,
-      'path': '${uri.path}${uri.hasQuery ? '?${uri.query}' : ''}',
-    };
+  if (input is Map) {
+    opts = Map<Object?, Object?>.of(input);
+  } else if (input is String || input is url.URL || input is Uri) {
+    final parsed = url.URL(input is String ? input : input.toString());
+    opts = _urlToHttpOptions(parsed);
   } else {
     throw ArgumentError(
-      'https.request options must be a Map, Uri, or URL string',
+      'https.request options must be a Map, URL, Uri, or URL string',
     );
   }
-  opts['protocol'] = 'https:';
+  if (options is Map) opts.addAll(options);
+  opts.putIfAbsent('protocol', () => 'https:');
+  if (opts['protocol'] != 'https:') {
+    throw ArgumentError.value(
+      opts['protocol'],
+      'protocol',
+      'Protocol "${opts['protocol']}" not supported. Expected "https:"',
+    );
+  }
   opts.putIfAbsent('agent', () => globalAgent);
+  opts['port'] ??= 443;
   return http.request(opts, responseListener);
 }
 
-http.ClientRequest get(Object options, [Function? responseListener]) =>
-    request(options, responseListener)..end();
+/// Node's `urlToHttpOptions`.
+Map<Object?, Object?> _urlToHttpOptions(url.URL u) {
+  final hostname = u.hostname.startsWith('[')
+      ? u.hostname.substring(1, u.hostname.length - 1)
+      : u.hostname;
+  return {
+    'protocol': u.protocol,
+    'hostname': hostname,
+    'hash': u.hash,
+    'search': u.search,
+    'pathname': u.pathname,
+    'path': '${u.pathname}${u.search}',
+    'href': u.href,
+    if (u.port != '') 'port': int.parse(u.port),
+    if (u.username.isNotEmpty || u.password.isNotEmpty)
+      'auth':
+          '${Uri.decodeComponent(u.username)}:${Uri.decodeComponent(u.password)}',
+  };
+}
+
+http.ClientRequest get(
+  Object input, [
+  Object? options,
+  Function? responseListener,
+]) => request(input, options, responseListener)..end();
 
 /// Public Node socket type used by HTTPS callbacks.
 typedef Socket = net.NodeSocket;
