@@ -417,21 +417,6 @@ Future<void> main() async {
   });
 
   final EXPOSES_SERVER_NAME = await probeServerNameSupport();
-  void testIfServerName(
-    String name,
-    Future<void> Function() fn,
-    int timeoutMs,
-  ) => test(
-    name,
-    fn,
-    // Dart: pending until node/tls.dart connect() takes the `socket` option.
-    tags: ['pending'],
-    skip: !EXPOSES_SERVER_NAME || !SERVES_EMITTED_CONNECTIONS
-        ? 'server name or TLS termination unavailable'
-        : null,
-    timeout: Timeout(Duration(milliseconds: timeoutMs)),
-  );
-
   group('applyHeaderEdits', () {
     test('removals fold case and the separators - _ and .', () {
       final http.IncomingHttpHeaders h = {
@@ -1826,7 +1811,7 @@ Future<void> main() async {
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
 
-    testIfServerName(
+    test(
       'TLS-terminated: a server name of another host is answered 421',
       () async {
         asked = 0;
@@ -1838,7 +1823,12 @@ Future<void> main() async {
         });
         expect(asked, 0);
       },
-      15000,
+      // Dart: pending until node/tls.dart connect() takes the `socket` option.
+      tags: ['pending'],
+      skip: !EXPOSES_SERVER_NAME || !SERVES_EMITTED_CONNECTIONS
+          ? 'server name or TLS termination unavailable'
+          : null,
+      timeout: const Timeout(Duration(milliseconds: 15000)),
     );
 
     test(
