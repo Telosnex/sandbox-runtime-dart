@@ -405,10 +405,11 @@ void main() {
     );
 
     // Signature verification via openssl — the strongest correctness signal.
-    final opensslTest = whichSync('openssl') != null;
-    test(
+    final hasOpenssl = whichSync('openssl') != null;
+    void opensslTest(String name, dynamic Function() body) =>
+        test(name, skip: hasOpenssl ? null : 'openssl not found', body);
+    opensslTest(
       'openssl crl parses it and verifies the signature against the CA',
-      skip: opensslTest ? null : 'openssl not found',
       () {
         // Pipe DER on stdin (no `-in` → stdin) — the CRL is served from
         // memory, not disk.
