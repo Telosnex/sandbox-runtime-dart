@@ -62,7 +62,9 @@ holdingDecider([Frame answer = const {'action': 'allow'}]) {
   void release() {
     final go = held.toList();
     held.clear();
-    go.forEach((f) => f());
+    for (final f in go) {
+      f();
+    }
   }
 
   return (d: d, bodies: bodies, release: release);
