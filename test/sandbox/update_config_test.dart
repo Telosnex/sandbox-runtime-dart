@@ -880,8 +880,9 @@ void main() {
         ));
 
         SandboxManager.unregisterCommandNetworkLists(randomCommandId());
-        // Dart: the typed API cannot be handed a non-string (null, undefined,
-        // 42), so the cleanup-path loop over those has no counterpart.
+        // Unregistering lets a non-string pass, so a cleanup path never throws.
+        // Dart: the typed API cannot be handed a non-string (null, 42), so the
+        // loop over those has no counterpart.
         expect(
           await connectAs(port, loopback.target, usernameFor(registered)),
           200,
@@ -1029,8 +1030,9 @@ void main() {
             RegExp('random .* never derived from the command text'),
           ),
         );
-        // Dart: a null or number is no id either, but the typed API cannot be
-        // handed one, so that loop has no counterpart.
+        // A JavaScript caller's null or number is no id either.
+        // Dart: the typed API cannot be handed one, so that loop has no
+        // counterpart.
         // The floor itself is accepted, and an empty or absent list is a list.
         SandboxManager.registerCommandNetworkLists('a' * 22, lists);
         SandboxManager.registerCommandNetworkLists(randomCommandId(), (
@@ -1039,7 +1041,8 @@ void main() {
         SandboxManager.registerCommandNetworkLists(randomCommandId(), (
           allowedDomains: <String>[],
         ));
-        // Dart: "no second argument at all" cannot be passed to the typed API.
+        // So is no second argument at all, which a JavaScript caller can pass.
+        // Dart: the typed API cannot be called without its second argument.
       },
     );
 
@@ -1135,9 +1138,13 @@ void main() {
       );
     }
 
-    // Dart: 'refuses an entry that is not a string, and a list that is not an
-    // array' hands the API null, 443, an object and a bare string; the typed
-    // List<String> parameter cannot be given any of them.
+    test(
+      'refuses an entry that is not a string, and a list that is not an array',
+      () {},
+      // Dart: the body hands the API null, undefined, 443, an object and a bare
+      // string; the typed List<String> parameter cannot be given any of them.
+      skip: 'a Dart caller cannot pass a non-string entry or a non-array list',
+    );
 
     test('registers nothing when any entry is invalid', () async {
       final port = await start();
@@ -1916,6 +1923,10 @@ void main() {
     });
   });
 
+  /**
+   * Integration tests using wrapWithSandbox() to verify sandbox wrapper generation
+   * and actual network behavior with sandboxed curl commands.
+   */
   group('SandboxManager.updateConfig integration (wrapWithSandbox)', () {
     tearDown(() async {
       await SandboxManager.reset();
