@@ -642,7 +642,7 @@ void removeHeadersFolded(
  */
 void applyHeaderEdits(
   http.IncomingHttpHeaders headers,
-  ({List<String>? removeHeaders, List<(String, String)>? setHeaders}) decision,
+  RequestDecision decision,
 ) {
   // Grouped by folded name, emitted under the first spelling given.
   final sets = <String, ({String name, List<String> values})>{};
@@ -817,8 +817,9 @@ typedef DenyMark = Object /* String | ({String name, String value}) */;
 String rawDenied(
   String reason, [
   DenyMark? tag = _DEFAULT_DENY_TAG,
-  String phrase = 'Forbidden',
+  String? phrase,
 ]) {
+  phrase ??= 'Forbidden';
   final (name, value) = _denyMarkHeader(tag ?? _DEFAULT_DENY_TAG);
   return 'HTTP/1.1 403 ${sanitizeDenialReason(phrase).replaceAll(RegExp(r'[^ -~]', unicode: true), '?')}\r\n'
       'Content-Type: text/plain\r\n'
@@ -858,7 +859,7 @@ void respondDenied(
  */
 void respondUpstreamError(
   http.ServerResponse res,
-  Error err, [
+  Object err, [
   String? denyHeader,
 ]) {
   if (isResolvedAddressDenied(err)) {
