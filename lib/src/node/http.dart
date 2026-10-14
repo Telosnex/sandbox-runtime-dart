@@ -500,11 +500,17 @@ class NodeHttpServer extends net.NodeServer {
     }
   }
 
-  void serveConnection(net.NodeSocket socket) {
+  /// Protected hook for a subclass (node/https.dart): return the socket the HTTP
+  /// parser should read, e.g. [accepted] wrapped in a server-side TLS socket.
+  /// Called once per accepted connection, before any byte is parsed.
+  net.NodeSocket wrapConnection(net.NodeSocket accepted) => accepted;
+
+  void serveConnection(net.NodeSocket accepted) {
     if (_closed) {
-      socket.destroy();
+      accepted.destroy();
       return;
     }
+    final socket = wrapConnection(accepted);
     _connections.add(socket);
     _idleConnections.add(socket);
     socket.allowHalfOpen = true;
@@ -536,14 +542,59 @@ class NodeHttpServer extends net.NodeServer {
         }
         _idleConnections.remove(socket);
         final parsed = _parseHead(head, request: true);
-        final request = IncomingMessage._(
-          socket: socket,
-          rawHeaders: parsed.rawHeaders,
-          headers: parsed.headers,
-          httpVersion: parsed.version,
-          method: parsed.method,
-          url: parsed.target,
-        );
+        final parser = socket.parser ??= _newServerParser(socket);
+        final versionParts = parsed.version.split('.');
+        final major = int.tryParse(versionParts.first) ?? 1;
+        final minor = versionParts.length > 1
+            ? int.tryParse(versionParts[1]) ?? 1
+            : 0;
+        final headerTokens = parsed.headers['connection']
+            ?.toString()
+            .toLowerCase()
+            .split(',')
+            .map((token) => token.trim())
+            .toSet();
+        final upgradeHeader =
+            parsed.headers.containsKey('upgrade') &&
+            (headerTokens?.contains('upgrade') ?? false);
+        final shouldKeepAlive = (major == 1 && minor >= 1)
+            ? !(headerTokens?.contains('close') ?? false)
+            : (headerTokens?.contains('keep-alive') ?? false);
+        // Node's parser flushes 31 header lines at a time through kOnHeaders,
+        // then calls kOnHeadersComplete with no headers and no url.
+        List<String>? headersArg = parsed.rawHeaders;
+        String? urlArg = parsed.target;
+        if (parsed.rawHeaders.length ~/ 2 > 31 &&
+            parser[net.HTTPParser.kOnHeaders] != null) {
+          var index = 0;
+          var urlPart = parsed.target;
+          while (parsed.rawHeaders.length ~/ 2 - index > 31) {
+            Function.apply(parser[net.HTTPParser.kOnHeaders]!, [
+              parsed.rawHeaders.sublist(2 * index, 2 * (index + 31)),
+              urlPart,
+            ]);
+            urlPart = '';
+            index += 31;
+          }
+          Function.apply(parser[net.HTTPParser.kOnHeaders]!, [
+            parsed.rawHeaders.sublist(2 * index),
+            urlPart,
+          ]);
+          headersArg = null;
+          urlArg = null;
+        }
+        Function.apply(parser[net.HTTPParser.kOnHeadersComplete]!, [
+          major,
+          minor,
+          headersArg,
+          parsed.method,
+          urlArg,
+          null,
+          null,
+          upgradeHeader || parsed.method == 'CONNECT',
+          shouldKeepAlive,
+        ]);
+        final request = parser.incoming! as IncomingMessage;
         final response = ServerResponse._(socket, request);
         pendingResponses.add(response.done);
         final connectionTokens = request.headers['connection']
@@ -592,7 +643,7 @@ class NodeHttpServer extends net.NodeServer {
             if (!socket.destroyed && !_closed) _idleConnections.add(socket);
           });
         }
-        await _readMessageBody(reader, request, parsed.headers);
+        await _readMessageBody(reader, request, parsed.headers, parser: parser);
         if (request.headers['connection']?.toString().toLowerCase() ==
             'close') {
           await response.done;
@@ -627,6 +678,66 @@ class NodeHttpServer extends net.NodeServer {
   }
 }
 
+/// Node's server installs these on every parser; they build the
+/// IncomingMessage and feed it. Wrappers (keepFlushedHeaderBatches) replace
+/// slots and call these.
+net.HTTPParser _newServerParser(net.NodeSocket socket) {
+  final parser = net.HTTPParser();
+  parser[net.HTTPParser.kOnHeaders] = (List<String> headers, String url) {
+    parser.headersSoFar.addAll(headers);
+    parser.urlSoFar += url;
+  };
+  parser[net.HTTPParser.kOnHeadersComplete] =
+      (
+        int versionMajor,
+        int versionMinor,
+        List<String>? headers,
+        String? method,
+        String? url,
+        int? statusCode,
+        String? statusMessage,
+        bool upgrade,
+        bool shouldKeepAlive,
+      ) {
+        final List<String> rawHeaders;
+        if (headers == null) {
+          rawHeaders = parser.headersSoFar;
+          parser.headersSoFar = [];
+        } else {
+          rawHeaders = headers;
+        }
+        if (url == null) {
+          url = parser.urlSoFar;
+          parser.urlSoFar = '';
+        }
+        final values = <String, Object?>{};
+        for (var i = 0; i + 1 < rawHeaders.length; i += 2) {
+          _mergeParsedHeader(values, rawHeaders[i], rawHeaders[i + 1]);
+        }
+        parser.incoming = IncomingMessage._(
+          socket: socket,
+          rawHeaders: rawHeaders,
+          headers: values,
+          httpVersion: '$versionMajor.$versionMinor',
+          method: method,
+          url: url,
+          statusCode: statusCode,
+          statusMessage: statusMessage,
+        );
+        return 0;
+      };
+  parser[net.HTTPParser.kOnBody] = (Uint8List chunk) {
+    (parser.incoming! as IncomingMessage)._add(chunk);
+  };
+  parser[net.HTTPParser.kOnMessageComplete] = () {
+    // Whatever came through kOnHeaders since the head was the trailers.
+    parser.headersSoFar = [];
+    parser.urlSoFar = '';
+    (parser.incoming! as IncomingMessage)._finish();
+  };
+  return parser;
+}
+
 NodeHttpServer createServer([Object? options, Function? requestListener]) {
   var maxHeaderSize = defaultMaxHeaderSize;
   Function? listener = requestListener;
@@ -658,9 +769,10 @@ class Agent {
   final SecurityContext? securityContext;
   final Object? ca;
   final Function? checkServerIdentity;
-  final Map<String, net.NodeSocket> _idle = {};
+  final Map<String, List<net.NodeSocket>> _idle = {};
   final Set<net.NodeSocket> _active = {};
-  final Map<String, Completer<void>> _locks = {};
+  final Map<String, int> _inUse = {};
+  final Map<String, List<Completer<void>>> _waiting = {};
   bool _destroyed = false;
 
   Future<_AgentLease> _acquire(
@@ -668,29 +780,50 @@ class Agent {
     Future<net.NodeSocket> Function() create,
   ) async {
     if (_destroyed) throw StateError('Agent is destroyed');
-    while (_locks.containsKey(key)) {
-      await _locks[key]!.future;
+    while ((_inUse[key] ?? 0) >= (maxSockets < 1 ? 1 : maxSockets)) {
+      final waiter = Completer<void>();
+      (_waiting[key] ??= []).add(waiter);
+      await waiter.future;
       if (_destroyed) throw StateError('Agent is destroyed');
     }
-    final lock = Completer<void>();
-    _locks[key] = lock;
+    _inUse[key] = (_inUse[key] ?? 0) + 1;
+    void freeSlot() {
+      final n = (_inUse[key] ?? 1) - 1;
+      if (n <= 0) {
+        _inUse.remove(key);
+      } else {
+        _inUse[key] = n;
+      }
+      final waiters = _waiting[key];
+      if (waiters != null && waiters.isNotEmpty) {
+        waiters.removeAt(0).complete();
+      }
+    }
+
     try {
-      final idle = _idle.remove(key);
-      final reused = idle != null && !idle.destroyed && !idle.closed;
+      final pool = _idle[key];
+      net.NodeSocket? idle;
+      while (pool != null && pool.isNotEmpty) {
+        final candidate = pool.removeLast();
+        if (!candidate.destroyed && !candidate.closed) {
+          idle = candidate;
+          break;
+        }
+      }
+      final reused = idle != null;
       final socket = reused ? idle : await create();
       _active.add(socket);
       return _AgentLease(socket, reused, () {
         _active.remove(socket);
-        if (!_destroyed && keepAlive && !socket.destroyed && !socket.closed)
-          _idle[key] = socket;
-        else
+        if (!_destroyed && keepAlive && !socket.destroyed && !socket.closed) {
+          (_idle[key] ??= []).add(socket);
+        } else {
           socket.destroy();
-        _locks.remove(key);
-        lock.complete();
+        }
+        freeSlot();
       });
     } catch (_) {
-      _locks.remove(key);
-      lock.complete();
+      freeSlot();
       rethrow;
     }
   }
@@ -700,12 +833,39 @@ class Agent {
     for (final socket in _active) {
       socket.destroy();
     }
-    for (final socket in _idle.values) {
-      socket.destroy();
+    for (final sockets in _idle.values) {
+      for (final socket in sockets) {
+        socket.destroy();
+      }
     }
     _active.clear();
     _idle.clear();
   }
+}
+
+Object? _headerOption(Object? headers, String name) {
+  if (headers is! Map) return null;
+  for (final entry in headers.entries) {
+    if ('${entry.key}'.toLowerCase() == name) return entry.value;
+  }
+  return null;
+}
+
+/// Node's SNI choice: `servername` if given ('' disables), else the Host
+/// header's name, else the host. An IP literal gets none.
+String? _servernameFor(Object? option, Object? hostHeader, String host) {
+  if (option is String) return option.isEmpty ? null : option;
+  var name = hostHeader?.toString() ?? host;
+  if (name.startsWith('[')) {
+    final end = name.indexOf(']');
+    if (end > 0) name = name.substring(1, end);
+  } else {
+    final colon = name.indexOf(':');
+    if (colon >= 0 && name.indexOf(':', colon + 1) < 0) {
+      name = name.substring(0, colon);
+    }
+  }
+  return net.isIP(name) == 0 ? name : null;
 }
 
 class _AgentLease {
@@ -826,8 +986,15 @@ class ClientRequest extends events.EventEmitter {
       final secure =
           _options['secure'] == true || protocol == 'https:' || _agent.secure;
       final socketPath = _agent.socketPath ?? _options['socketPath'] as String?;
+      final hostHeader = _headerOption(_options['headers'], 'host');
+      final servername = _servernameFor(
+        _options['servername'],
+        hostHeader,
+        host,
+      );
+      final ca = _options['ca'] ?? _agent.ca;
       final key = socketPath == null
-          ? '$protocol//$host:$port'
+          ? '$protocol//$host:$port${secure ? ':sni=${servername ?? '\u0000'}:ca=${ca == null ? '' : identityHashCode(ca)}' : ''}'
           : 'unix:$socketPath';
       final lease = await _agent._acquire(key, () async {
         if (_options['socket'] is net.NodeSocket)
@@ -845,7 +1012,8 @@ class ClientRequest extends events.EventEmitter {
             'host': host,
             'port': port,
             'lookup': lookup,
-            'ca': _options['ca'] ?? _agent.ca,
+            'servername': servername ?? '',
+            'ca': ca,
             'secureContext': _agent.securityContext,
             'rejectUnauthorized': _options['rejectUnauthorized'],
             'checkServerIdentity':
@@ -875,6 +1043,11 @@ class ClientRequest extends events.EventEmitter {
         });
       if (!headers.keys.any((key) => key.toLowerCase() == 'host'))
         headers['Host'] = host;
+      final auth = _options['auth'];
+      if (auth is String &&
+          !headers.keys.any((key) => key.toLowerCase() == 'authorization')) {
+        headers['Authorization'] = 'Basic ${base64.encode(utf8.encode(auth))}';
+      }
       if (!headers.keys.any((key) => key.toLowerCase() == 'connection'))
         headers['Connection'] = _agent.keepAlive ? 'keep-alive' : 'close';
       final contentLength = headers.entries.any(
@@ -1226,11 +1399,38 @@ void _mergeHeader(Map<String, Object?> headers, String name, String value) {
   }
 }
 
+void _bodyChunk(net.HTTPParser? parser, IncomingMessage message, Uint8List b) {
+  if (parser == null) {
+    message._add(b);
+  } else {
+    Function.apply(parser[net.HTTPParser.kOnBody]!, [b]);
+  }
+}
+
+void _messageComplete(
+  net.HTTPParser? parser,
+  IncomingMessage message, [
+  List<String> trailers = const [],
+]) {
+  if (parser == null) {
+    message._finish();
+    return;
+  }
+  if (trailers.isNotEmpty && parser[net.HTTPParser.kOnHeaders] != null) {
+    Function.apply(parser[net.HTTPParser.kOnHeaders]!, [
+      trailers,
+      message.url ?? '',
+    ]);
+  }
+  Function.apply(parser[net.HTTPParser.kOnMessageComplete]!, const []);
+}
+
 Future<void> _readMessageBody(
   _ByteReader reader,
   IncomingMessage message,
   Map<String, Object?> headers, {
   bool response = false,
+  net.HTTPParser? parser,
 }) async {
   if (headers['transfer-encoding']?.toString().toLowerCase().contains(
         'chunked',
@@ -1267,7 +1467,7 @@ Future<void> _readMessageBody(
             ..add(value);
           _mergeHeader(message.trailers, name.toLowerCase(), value);
         }
-        message._finish();
+        _messageComplete(parser, message, message.rawTrailers);
         return;
       }
       var remainingChunk = length;
@@ -1277,7 +1477,7 @@ Future<void> _readMessageBody(
         if (bytes == null)
           throw const SocketException('Unexpected EOF in chunk data');
         remainingChunk -= bytes.length;
-        message._add(bytes);
+        _bodyChunk(parser, message, Uint8List.fromList(bytes));
         await message._waitForBodyGate();
       }
       final crlf = await reader.exact(2);
@@ -1306,20 +1506,20 @@ Future<void> _readMessageBody(
         );
       }
       remaining -= bytes.length;
-      message._add(bytes);
+      _bodyChunk(parser, message, Uint8List.fromList(bytes));
       await message._waitForBodyGate();
     }
-    message._finish();
+    _messageComplete(parser, message);
     return;
   }
   if (response) {
     while (true) {
       final bytes = await reader.some(8192);
       if (bytes == null) break;
-      message._add(bytes);
+      _bodyChunk(parser, message, Uint8List.fromList(bytes));
     }
   }
-  message._finish();
+  _messageComplete(parser, message);
 }
 
 class _ByteReader {
