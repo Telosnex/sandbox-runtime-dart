@@ -415,6 +415,9 @@ Future<void> main() async {
           if (proxy != null) {
             final closed = Completer<void>();
             proxy!.close(() => closed.complete());
+            // The JVM may leave an unread follow-up on the 407 CONNECT socket,
+            // which then never ends: close what is left.
+            proxy!.closeAllConnections();
             await closed.future;
           }
         });
