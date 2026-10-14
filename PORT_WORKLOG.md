@@ -73,7 +73,30 @@ expected output.
 - To test: `git clone /media/psf/Home/dev/sandbox-runtime-dart /root/srt-dart`,
   then `dart pub get`, `dart run tool/build_seccomp.dart` and `dart test`.
 
-### HANDOFF: wave 0 aborted (2026-10-13, evening). Read before any agent work
+### Wave 0: DONE (2026-10-13, retry)
+
+Merged to main as a67c74b (gate PASS: 0 analyzer errors, 0 warnings;
+macOS 521 pass; Linux 444 pass). Every remaining module has a stub
+(or, for the three PARTIAL files, its missing exports as stubs) that
+passes `tool/audit/stubcheck.dart` and an independent review: exports in
+order, public members, upstream doc comments verbatim, exact types per
+"Types for the remaining modules". Shim declarations: node/stream.dart,
+node/fetch.dart (Headers implemented), node/console.dart, url.URL and
+fileURLToPath; bodies throw until wave 1. Spy points in fs, which,
+process, console.
+
+How it ran, for next time: 10 leaf agents (system prompt forbids
+agent_create; fork_turns none; brief ~/dev/srt-wt/WAVE0_BRIEF.md), one
+read-only reviewer per group after its gate passed
+(~/dev/srt-wt/REVIEW_BRIEF.md). Reviewers rejected 8 of 10 first
+submissions; every defect was real (reworded or misplaced docs, `{@link}`
+rewritten in /** */ blocks, missing allowed-value comments, wrong
+optionality, a record or sealed class where the table says Object, a
+static-dispatch `pipe` extension). One round of fixes each. Decisions made
+during the wave are in the type table (unions of primitive and object,
+`Partial<T>`, optional positionals before an options object).
+
+### HANDOFF (historical): wave 0 first attempt aborted (2026-10-13, evening)
 
 The first parallel attempt (wave 0: API stubs) failed and was stopped. The
 chat that ran it is being reset, so this section is the only record.
@@ -416,9 +439,9 @@ Repeat these translation decisions for the rest of the port:
   always true). String-literal unions remain `String` typedefs with adjacent
   allowed-value constants. The hand-written validators expose
   `ConfigSchema<T>.safeParse(Object?)`, returning `success`, typed `data`, or
-  `error.issues` with `message`, `path`, and `code`. The request callback's web
-  `Request`/`RequestInfo` types use `Object` at the stub boundary until the
-  request-filter port supplies their Dart representations.
+  `error.issues` with `message`, `path`, and `code`. `filterRequest` is a
+  `FilterRequestCallback` (request_filter.dart): `fetch.Request` in,
+  `Future<RequestDecision>` out.
 
 ### Comments
 
@@ -589,8 +612,8 @@ and replaces paired EventEmitter one-shot callbacks with the
 | `src/sandbox/aws-sigv4.ts` | `lib/src/sandbox/aws_sigv4.dart` | `test/sandbox/aws_sigv4_test.dart` | Ported; 38 pass, including all 22 official test-suite vectors |
 | `src/sandbox/sandbox-config.ts` | `lib/src/sandbox/sandbox_config.dart` | `test/config_validation_test.dart` | Ported; 151 config-validation cases pass, with hand-written typed validators |
 | `src/sandbox/domain-pattern.ts` | `lib/src/sandbox/domain_pattern.dart` | `test/sandbox/domain_pattern_test.dart` | Ported; all 16 direct tests pass |
-| `src/sandbox/parent-proxy.ts` | `lib/src/sandbox/parent_proxy.dart` | — | **Partial:** `stripBrackets` and `canonicalizeHost` ported for domain-pattern; rest of the module remains unported |
-| `src/sandbox/request-filter.ts` | `lib/src/sandbox/request_filter.dart` | — | Stub; `FilterRequestCallback` declaration required by sandbox-config |
+| `src/sandbox/parent-proxy.ts` | `lib/src/sandbox/parent_proxy.dart` | — | **Partial:** `stripBrackets` and `canonicalizeHost` ported; the rest are stubs (wave 0) |
+| `src/sandbox/request-filter.ts` | `lib/src/sandbox/request_filter.dart` | — | Stub (wave 0): full API |
 | `src/sandbox/sandbox-utils.ts` | `lib/src/sandbox/sandbox_utils.dart` | `test/sandbox/{sandbox_env_tmpdir_test,glob_walk_property_test}.dart` | Ported; 6 direct tests pass; no one-to-one utility suite exists upstream; Node shims `os.dart`, `buffer.dart`, `fs.dart` |
 | `src/sandbox/path-entries.ts` | `lib/src/sandbox/path_entries.dart` | — | Ported; `literal-path-entries.test.ts` waits on sandbox-manager and Linux/macOS wrapper modules |
 | `src/sandbox/macos-sandbox-utils.ts` | `lib/src/sandbox/macos_sandbox_utils.dart` | `test/sandbox/{macos_allow_local_binding,macos_apple_events,macos_deny_grouping,macos_glob_deny_reemit,macos_literal_deny_brackets,macos_profile_size,macos_pty,macos_seatbelt,path_canonicalization,tls_terminate_trust_env,symlink_boundary}_test.dart` | Ported; 129 tests pass across the macOS suites, plus 2 credential-mask cases skipped pending `credential-mask-files.ts`; generated wrapper/profile compared byte-for-byte with upstream after normalizing only the random log suffix. Apple Events end-to-end cases depend on the host GUI probe. |
@@ -671,3 +694,24 @@ The upstream `src` and `test` grep for `maskedFileBinds` and
 `NetworkHostPattern` found reads and object construction only; no code mutates
 `realPath`, `fakePath`, `host`, or `port` fields. The existing named records
 remain appropriate for those nested object shapes.
+| `src/sandbox/linux-sandbox-utils.ts` | `lib/src/sandbox/linux_sandbox_utils.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/linux-violation-monitor.ts` | `lib/src/sandbox/linux_violation_monitor.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/read-deny-glob.ts` | `lib/src/sandbox/read_deny_glob.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/own-files.ts` | `lib/src/sandbox/own_files.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/sandbox-manager.ts` | `lib/src/sandbox/sandbox_manager.dart` | — | Stub (wave 0): full API |
+| `src/utils/config-loader.ts` | `lib/src/utils/config_loader.dart` | — | Stub (wave 0): full API |
+| `src/proxy-cli.ts` | `lib/src/proxy_cli.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/http-proxy.ts` | `lib/src/sandbox/http_proxy.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/proxy-only.ts` | `lib/src/sandbox/proxy_only.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/socks-proxy.ts` | `lib/src/sandbox/socks_proxy.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/tls-terminate-proxy.ts` | `lib/src/sandbox/tls_terminate_proxy.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/mitm-ca.ts` | `lib/src/sandbox/mitm_ca.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/mitm-leaf.ts` | `lib/src/sandbox/mitm_leaf.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/decider-client.ts` | `lib/src/sandbox/decider_client.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/body-substitution.ts` | `lib/src/sandbox/body_substitution.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/credential-sentinel.ts` | `lib/src/sandbox/credential_sentinel.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/credential-decode.ts` | `lib/src/sandbox/credential_decode.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/credential-mask-env.ts` | `lib/src/sandbox/credential_mask_env.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/credential-mask-files.ts` | `lib/src/sandbox/credential_mask_files.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/credential-aws-pairs.ts` | `lib/src/sandbox/credential_aws_pairs.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/windows-sandbox-utils.ts` | `lib/src/sandbox/windows_sandbox_utils.dart` | — | Stub (wave 0): full API; permanent (Windows not ported), bodies throw UnsupportedError |
