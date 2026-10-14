@@ -540,8 +540,14 @@ Decider createDecider(DeciderOptions opts) {
     }
   });
   opts.input.on('end', () => die('decider closed the stream'));
-  opts.input.on('error', (Object err) => die('read error: ${_message(err)}'));
-  opts.output.on('error', (Object err) => die('write error: ${_message(err)}'));
+  opts.input.on(
+    'error',
+    (Object err) => die('read error: ${errorMessage(err)}'),
+  );
+  opts.output.on(
+    'error',
+    (Object err) => die('write error: ${errorMessage(err)}'),
+  );
   // A stream destroyed without an error (Node's socket on a descriptor whose
   // peer closed) drops later writes without reporting one.
   opts.output.on('close', () => die('decider closed the output stream'));
@@ -763,7 +769,7 @@ Decider createDecider(DeciderOptions opts) {
         action: 'deny',
         status: 503,
         mark: 'decider_unavailable',
-        reason: 'request decider: ${_message(err)}',
+        reason: 'request decider: ${errorMessage(err)}',
       );
     } finally {
       held -= reserved;
@@ -777,9 +783,6 @@ Decider createDecider(DeciderOptions opts) {
     bodyBytesHeld: () => held,
   );
 }
-
-// `(err as Error).message`.
-String _message(Object err) => err is NodeException ? err.message : '$err';
 
 const String _BODYLESS_METHOD_BODY_REASON =
     'the decider asked to see the body of a request whose method normally has none, and it has one';
