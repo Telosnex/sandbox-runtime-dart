@@ -99,7 +99,13 @@ class _ObserveEvent {
  * inherited fds. Filesystem sockets survive across net + user + mount
  * namespaces as long as the path is bind-mounted into the sandbox.
  */
-LinuxViolationMonitor startLinuxSandboxViolationMonitor(
+LinuxViolationMonitor Function(
+  SandboxViolationCallback callback,
+  LinuxViolationMonitorOptions opts,
+)
+startLinuxSandboxViolationMonitor = _startLinuxSandboxViolationMonitor;
+
+LinuxViolationMonitor _startLinuxSandboxViolationMonitor(
   SandboxViolationCallback callback,
   LinuxViolationMonitorOptions opts,
 ) {
