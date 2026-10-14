@@ -1,5 +1,4 @@
 // Ported from sandbox-runtime test/sandbox/request-target-forwarding.test.ts @ 24eb39e.
-@Tags(['pending']) // Dart: all 29 fail, then hangs in tearDownAll
 library;
 
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, no_leading_underscores_for_local_identifiers, slash_for_doc_comments
@@ -108,11 +107,15 @@ Future<int> exchange(net.NodeSocket socket, String head) {
       int.parse(RegExp(r'^HTTP/1\.1 (\d+)').firstMatch(buf)?.group(1) ?? '0'),
     );
   });
-  socket.once('error', (Object e) => completer.completeError(e));
-  socket.once(
-    'close',
-    (_) => completer.completeError(Exception('closed before a reply')),
-  );
+  // Dart: a settled JS promise ignores a later reject; a Completer throws.
+  socket.once('error', (Object e) {
+    if (!completer.isCompleted) completer.completeError(e);
+  });
+  socket.once('close', (_) {
+    if (!completer.isCompleted) {
+      completer.completeError(Exception('closed before a reply'));
+    }
+  });
   socket.write(head);
   return completer.future;
 }
