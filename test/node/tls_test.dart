@@ -681,9 +681,8 @@ void main() {
             () => node_tls.TLSSocket(socket, {
               'isServer': true,
               'secureContext': context(),
-              'requestCert': true,
             }),
-            throwsUnimplementedError,
+            returnsNormally,
           );
           expect(
             () => node_tls.TLSSocket(socket, {'secureContext': context()}),

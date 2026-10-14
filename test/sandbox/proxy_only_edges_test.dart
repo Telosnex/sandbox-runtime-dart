@@ -102,7 +102,9 @@ serve({
       }
       c.write('CONNECT $target HTTP/1.1\r\nHost: $target\r\n\r\n');
     });
-    c.on('error', (Object e) => completer.completeError(e));
+    c.on('error', (Object e) {
+      if (!completer.isCompleted) completer.completeError(e);
+    });
     if (path == 'plain') return completer.future;
     var head = '';
     void onData(Object? x) {
@@ -115,8 +117,13 @@ serve({
         'checkServerIdentity': (Object? a, Object? b) => null,
         'ALPNProtocols': ['http/1.1'],
       });
-      t.on('error', (Object e) => completer.completeError(e));
-      t.once('secureConnect', () => completer.complete(t));
+      // Dart: a Promise settles once; a Completer throws on the second.
+      t.on('error', (Object e) {
+        if (!completer.isCompleted) completer.completeError(e);
+      });
+      t.once('secureConnect', () {
+        if (!completer.isCompleted) completer.complete(t);
+      });
     }
 
     c.on('data', onData);
@@ -281,14 +288,6 @@ void main() {
           // Event n arrived when n + 1 events had been sent, the next one not yet.
           expect(sentOnArrival, List.generate(EVENTS, (n) => n + 1));
         },
-        // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option (tls).
-        // Dart (plain, flaky): lib/src/sandbox/request_filter.dart:202 ->
-        // emitted_connection.dart:235 req.destroy() -> http.dart:185
-        // socket.destroy() runs on ServerResponse 'finish' (http.dart:350),
-        // which only means the 403 reached the Dart socket's buffer, not the
-        // peer; closing the fd with unread request body sends RST and the
-        // client loses the reply (read EPIPE, empty reply).
-        tags: ['pending'],
         skip: cannotServe(path) ? 'TLS termination unavailable' : null,
         timeout: const Timeout(Duration(milliseconds: 15000)),
       );
@@ -323,40 +322,33 @@ void main() {
   });
 
   group('an allow that sets a header to several values', () {
-    test(
-      'tls: every value reaches the upstream, in order',
-      () async {
-        var seen = <String>[];
-        final s = await serve(
-          path: 'tls',
-          handler: (http.IncomingMessage req, http.ServerResponse res) {
-            seen = [
-              for (final (i, v) in req.rawHeaders.indexed)
-                if (i % 2 == 1 &&
-                    req.rawHeaders[i - 1].toLowerCase() == 'x-beta')
-                  v,
-            ];
-            res.end('ok');
+    test('tls: every value reaches the upstream, in order', () async {
+      var seen = <String>[];
+      final s = await serve(
+        path: 'tls',
+        handler: (http.IncomingMessage req, http.ServerResponse res) {
+          seen = [
+            for (final (i, v) in req.rawHeaders.indexed)
+              if (i % 2 == 1 && req.rawHeaders[i - 1].toLowerCase() == 'x-beta')
+                v,
+          ];
+          res.end('ok');
+        },
+        decide: (_) => {
+          'action': 'allow',
+          'setHeaders': {
+            'x-beta': ['one', 'two'],
           },
-          decide: (_) => {
-            'action': 'allow',
-            'setHeaders': {
-              'x-beta': ['one', 'two'],
-            },
-          },
-        );
-        final sock = await s.open();
-        final reply = readAll(sock);
-        sock.write(
-          'GET /x HTTP/1.1\r\nHost: ${s.target}\r\nX-Beta: guest\r\nConnection: close\r\n\r\n',
-        );
-        expect(await reply, startsWith('HTTP/1.1 200'));
-        expect(seen, ['one', 'two']);
-      },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
-      skip: cannotServe('tls') ? 'TLS termination unavailable' : null,
-    );
+        },
+      );
+      final sock = await s.open();
+      final reply = readAll(sock);
+      sock.write(
+        'GET /x HTTP/1.1\r\nHost: ${s.target}\r\nX-Beta: guest\r\nConnection: close\r\n\r\n',
+      );
+      expect(await reply, startsWith('HTTP/1.1 200'));
+      expect(seen, ['one', 'two']);
+    }, skip: cannotServe('tls') ? 'TLS termination unavailable' : null);
   });
 
   group('TRACE inside a terminated tunnel', () {
@@ -397,8 +389,6 @@ void main() {
         expect(requests(), [...before, 'GET']);
         expect(reached, ['GET']);
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: cannotServe('tls') ? 'TLS termination unavailable' : null,
     );
   });

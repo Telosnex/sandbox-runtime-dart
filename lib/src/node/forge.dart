@@ -126,6 +126,18 @@ class ForgeAsn1Api {
   ForgeAsn1 create(int tagClass, int type, bool constructed, dynamic value) =>
       ForgeAsn1(tagClass, type, constructed, value);
 
+  /// node-forge `asn1.fromDer`: [input] is a binary string (or [ForgeDerBuffer]).
+  ForgeAsn1 fromDer(dynamic input) {
+    final bytes = input is ForgeDerBuffer
+        ? input.getBuffer()
+        : Uint8List.fromList(_binaryBytes(input as String));
+    final result = _parseDer(bytes, 0);
+    if (result.$2 != bytes.length) {
+      throw FormatException('Unparsed DER bytes remain after ASN.1 parsing.');
+    }
+    return result.$1;
+  }
+
   ForgeDerBuffer toDer(ForgeAsn1 object) => ForgeDerBuffer(object.encode());
 
   ForgeDerBuffer oidToDer(String oid) =>
@@ -210,12 +222,82 @@ class ForgeAsn1 {
   }
 }
 
+(ForgeAsn1, int) _parseDer(Uint8List b, int offset) {
+  if (offset + 2 > b.length) {
+    throw FormatException('Too few bytes to parse DER.');
+  }
+  final tagByte = b[offset++];
+  final tagClass = tagByte & 0xc0;
+  final constructed = (tagByte & 0x20) != 0;
+  final type = tagByte & 0x1f;
+  var length = b[offset++];
+  if (length & 0x80 != 0) {
+    final n = length & 0x7f;
+    if (n == 0 || offset + n > b.length) {
+      throw FormatException('Invalid DER length.');
+    }
+    length = 0;
+    for (var i = 0; i < n; i++) {
+      length = (length << 8) | b[offset++];
+    }
+  }
+  if (offset + length > b.length) {
+    throw FormatException('Too few bytes to read ASN.1 value.');
+  }
+  final end = offset + length;
+  if (constructed) {
+    final children = <ForgeAsn1>[];
+    while (offset < end) {
+      final r = _parseDer(Uint8List.sublistView(b, 0, end), offset);
+      children.add(r.$1);
+      offset = r.$2;
+    }
+    return (ForgeAsn1(tagClass, type, true, children), end);
+  }
+  return (
+    ForgeAsn1(tagClass, type, false, _binary(b.sublist(offset, end))),
+    end,
+  );
+}
+
+/// A node-forge distinguished name attribute (`{ name, type, value }`).
+class ForgeAttribute {
+  ForgeAttribute(this.attributes);
+  final Map<String, String> attributes;
+  String? get name => attributes['name'];
+  String? get type => attributes['oid'];
+  String get value => attributes['value'] ?? '';
+  String? get shortName => _shortNames[name];
+}
+
+const _shortNames = {
+  'commonName': 'CN',
+  'organizationName': 'O',
+  'organizationalUnitName': 'OU',
+  'countryName': 'C',
+  'stateOrProvinceName': 'ST',
+  'localityName': 'L',
+  'emailAddress': 'E',
+};
+
 class ForgeDistinguishedName {
   ForgeDistinguishedName(List<Map<String, String>> attributes)
     : attributes = attributes.map((a) => Map<String, String>.from(a)).toList();
   final List<Map<String, String>> attributes;
 
   ForgeAsn1 toAsn1() => _nameAsn1(attributes);
+
+  /// node-forge `getField(sn)`: by short name, name or OID; null if absent.
+  ForgeAttribute? getField(String sn) {
+    for (final attr in attributes) {
+      if (attr['name'] == sn ||
+          attr['oid'] == sn ||
+          _shortNames[attr['name']] == sn) {
+        return ForgeAttribute(attr);
+      }
+    }
+    return null;
+  }
 }
 
 class ForgeValidity {
@@ -331,6 +413,28 @@ class ForgeCertificate {
     signatureOid = forge.pki.oids.sha256WithRSAEncryption;
     siginfo.algorithmOid = signatureOid;
     signature = key.sign(messageDigest);
+  }
+
+  /// node-forge `cert.verify(child)`: true if [child] was issued and signed by
+  /// this certificate.
+  bool verify(ForgeCertificate child) {
+    final key = publicKey;
+    if (key == null) throw StateError('Certificate publicKey is unset');
+    if (!_sameName(subject, child.issuer)) return false;
+    final tbs = child.tbsCertificate ?? child.getTBSCertificate();
+    final verifier = pc.RSASigner(pc.SHA256Digest(), '0609608648016503040201')
+      ..init(
+        false,
+        pc.PublicKeyParameter<pc.RSAPublicKey>(pc.RSAPublicKey(key.n, key.e)),
+      );
+    try {
+      return verifier.verifySignature(
+        Uint8List.fromList(tbs.encode()),
+        pc.RSASignature(Uint8List.fromList(_binaryBytes(child.signature))),
+      );
+    } catch (_) {
+      return false;
+    }
   }
 
   static ForgeCertificate fromPem(String pem) {
@@ -961,3 +1065,12 @@ List<int> _binaryBytes(String value) =>
     value.codeUnits.map((c) => c & 0xff).toList();
 String _binary(Iterable<int> bytes) =>
     String.fromCharCodes(bytes.map((b) => b & 0xff));
+
+bool _sameName(ForgeDistinguishedName a, ForgeDistinguishedName b) {
+  final x = a.toAsn1().encode(), y = b.toAsn1().encode();
+  if (x.length != y.length) return false;
+  for (var i = 0; i < x.length; i++) {
+    if (x[i] != y[i]) return false;
+  }
+  return true;
+}

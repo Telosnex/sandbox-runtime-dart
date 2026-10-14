@@ -23,15 +23,16 @@ final describeWithTls = (String description, void Function() body) {
   return group(
     description,
     body,
-    skip: SERVES_EMITTED_CONNECTIONS ? false : 'TLS termination unavailable',
+    skip: SERVES_EMITTED_CONNECTIONS ? null : 'TLS termination unavailable',
   );
 };
-final testWithTls = (String description, void Function() body) {
+final testWithTls = (String description, void Function() body, {Object? tags}) {
   _warned;
   return test(
     description,
     body,
-    skip: SERVES_EMITTED_CONNECTIONS ? false : 'TLS termination unavailable',
+    tags: tags,
+    skip: SERVES_EMITTED_CONNECTIONS ? null : 'TLS termination unavailable',
   );
 };
 

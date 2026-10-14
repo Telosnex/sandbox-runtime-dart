@@ -259,6 +259,17 @@ List<String> testTitles(String t, List<String> declared) {
         final mod = modifier.matchAsPrefix(t, i);
         if (mod == null) break;
         i = mod.end;
+        if (mod[1] == 'each' && i < t.length && t[i] == '<') {
+          var depth = 0;
+          while (i < t.length) {
+            if (t[i] == '<') depth++;
+            if (t[i] == '>' && t[i - 1] != '=' && --depth == 0) {
+              i++;
+              break;
+            }
+            i++;
+          }
+        }
         if (const {'if', 'skipIf', 'each'}.contains(mod[1]) &&
             i < t.length &&
             t[i] == '(') {
@@ -273,7 +284,11 @@ List<String> testTitles(String t, List<String> declared) {
     }
     if (i >= t.length || t[i] != '(') continue;
     final title = _literalAt(t, i + 1);
-    if (title != null) titles.add(title);
+    // A title that is only an interpolation (`${when}`) is a variable in
+    // Dart, which has no literal to compare.
+    if (title != null && !RegExp(r'^\$(?:\{[^}]*\}|\w+)$').hasMatch(title)) {
+      titles.add(title);
+    }
   }
   return titles;
 }

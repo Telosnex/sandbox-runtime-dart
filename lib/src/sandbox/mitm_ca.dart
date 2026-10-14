@@ -693,7 +693,7 @@ MitmCA _generateEphemeralCA([List<String>? extraCaCertPaths]) {
 String _readPem(String path, String label, String field) {
   String pem;
   try {
-    pem = File(path).readAsStringSync();
+    pem = fs.readFileSync(path, 'utf8') as String;
   } catch (err) {
     final code = errorCode(err) ?? err.toString();
     throw Exception('$field: cannot read $path ($code)');
