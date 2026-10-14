@@ -1002,9 +1002,40 @@ class ClientRequest extends events.EventEmitter {
     if (callback != null)
       scheduleMicrotask(() => Function.apply(callback, const []));
     _start();
-    return (socket?.writableLength ??
-            _body.fold<int>(0, (n, b) => n + b.length)) <
+    final ok =
+        (socket?.writableLength ?? _body.fold<int>(0, (n, b) => n + b.length)) <
         (socket?.writableHighWaterMark ?? 16384);
+    if (!ok) _needDrain = true;
+    _armDrain();
+    return ok;
+  }
+
+  bool _needDrain = false;
+  bool _drainArmed = false;
+
+  /// Node `'drain'`: once a write returned false and the queue has emptied.
+  void _armDrain() {
+    if (!_needDrain || _drainArmed || destroyed) return;
+    final s = socket;
+    if (s == null || !_headersSent) {
+      // Not yet on the wire: look again shortly.
+      _drainArmed = true;
+      Timer(const Duration(milliseconds: 1), () {
+        _drainArmed = false;
+        _armDrain();
+      });
+      return;
+    }
+    if (s.writableLength == 0) {
+      _needDrain = false;
+      scheduleMicrotask(() => _emit('drain'));
+      return;
+    }
+    _drainArmed = true;
+    s.once('drain', ([Object? _]) {
+      _drainArmed = false;
+      if (!destroyed) _armDrain();
+    });
   }
 
   ClientRequest end([Object? data, Function? callback]) {

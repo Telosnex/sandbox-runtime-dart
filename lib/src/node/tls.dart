@@ -702,8 +702,15 @@ Future<Socket> _bridgeDuplex(stream.Duplex duplex) async {
       onError: (Object _) => far.destroy(),
     );
   });
-  far.listen(
-    (data) => duplex.write(Uint8List.fromList(data)),
+  late final StreamSubscription<Uint8List> farSub;
+  farSub = far.listen(
+    (data) {
+      // Backpressure: stop reading the loopback until the duplex drains.
+      if (!duplex.write(Uint8List.fromList(data))) {
+        farSub.pause();
+        duplex.once('drain', () => farSub.resume());
+      }
+    },
     onDone: () {
       if (!duplex.destroyed) duplex.end();
     },
