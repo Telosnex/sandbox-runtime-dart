@@ -356,23 +356,29 @@ void main() {
       Directory(tree.root).deleteSync(recursive: true);
     });
 
-    ProcessResult run(String command) => _runShell(wrap(tree, command));
+    ({int? status, String stderr}) run(String command) {
+      final result = Process.runSync(
+        '/bin/sh',
+        ['-c', wrap(tree, command)],
+        // Assert on the message, so pin the language it is written in.
+        environment: {...Platform.environment, 'LC_ALL': 'C'},
+        includeParentEnvironment: false,
+      ); // spawnSync's 10000 ms timeout: dart:io's runSync has none.
+      return (status: result.exitCode, stderr: result.stderr as String? ?? '');
+    }
 
     test('allows writes elsewhere under the write root (sanity check)', () {
       final result = run(
         'echo ok > ${_shellQuote(joinPath(tree.work, 'file'))}',
       );
-      expect(result.exitCode, 0);
+      expect(result.status, 0);
     }, skip: _isMacOS ? false : 'macOS sandbox-exec required');
 
     test('refuses to move the hooks directory out of the way', () {
       final moved = joinPath(tree.work, '.git/hooks-moved');
       final result = run('mv ${_shellQuote(tree.hooks)} ${_shellQuote(moved)}');
-      expect(result.exitCode, isNot(0));
-      expect(
-        (result.stderr as String).toLowerCase(),
-        contains('operation not permitted'),
-      );
+      expect(result.status, isNot(0));
+      expect(result.stderr.toLowerCase(), contains('operation not permitted'));
     }, skip: _isMacOS ? false : 'macOS sandbox-exec required');
   }, skip: _isMacOS ? false : 'macOS sandbox-exec required');
 
@@ -453,7 +459,7 @@ void main() {
       for (final regex in regexes) {
         // The cwd reaches a regex only as an escaped literal: unescaped, its
         // `a[b/c]d` is a one-character class and the rule matches nothing it
-        // was built from. Escaped, the segments read `a\\[b` and `c\\]d`.
+        // was built from. Escaped, the segments read `a\[b` and `c\]d`.
         expect(regex, isNot(contains('${BRACKET_SEGMENTS[0]}/')));
         expect(regex, isNot(contains(BRACKET_SEGMENTS[1])));
       }

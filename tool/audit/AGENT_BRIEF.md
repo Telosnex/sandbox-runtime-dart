@@ -24,11 +24,17 @@ Goal: each test file you own must diff against its upstream file by eye.
 - `lib/src/node/mozilla_roots.dart` may show as modified after `dart format`
   or builds; leave it alone (do not commit it).
 
+Porting a test file from scratch: start from
+`dart run tool/audit/ts2dart.dart ../sandbox-runtime/<file>.test.ts`, which
+keeps upstream's statements, titles and comments, then fix what
+`dart analyze` reports. Never reorder or reshape what it kept.
+
 Checks (run them until clean):
-- `python3 tool/audit/comments.py <name-fragment>` lists upstream comment
+- `dart run tool/audit/comments.dart <name-fragment>` lists upstream comment
   lines (12+ chars) missing from your Dart file. Target: none missing, except
   Bun-only comments where Rule 1 allows (say which in your report).
-- `python3 tool/audit/titles.py <name-fragment>` must say OK for your file.
+- `dart run tool/audit/titles.dart <name-fragment>` must say OK for your file.
+- `dart test test/port` must pass: it runs both checks on every file.
 - `dart analyze <file>` clean, `dart format <file>`.
 - `dart test <file>` passes (skips allowed only as above, or for platform
   conditions upstream also has). Run it 3 times if it touches sockets/timing.
@@ -39,7 +45,7 @@ already configured). If git reports index.lock, wait a few seconds and retry.
 Do not edit PORT_WORKLOG.md; put anything the worklog should record in your
 final report (suspected upstream bugs, gaps, lib changes you needed).
 
-Before you report, rerun comments.py and titles.py after your last edit;
+Before you report, rerun `dart test test/port` after your last edit;
 report their actual output. Never add a comment upstream does not have.
 
 Final report: per file, comments found/total before and after, titles OK,

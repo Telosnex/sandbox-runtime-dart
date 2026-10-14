@@ -12,8 +12,8 @@ pending ports). No agent is running, and there is no other worktree or branch.
 ### Test fidelity pass (done)
 
 Every ported test file now has all upstream titles in order and every
-upstream comment (`tool/audit/titles.py`, `tool/audit/comments.py`; see
-below). What changed beyond comments:
+upstream comment (`test/port/fidelity_test.dart` checks both in
+`dart test`; see below). What changed beyond comments:
 
 - `config_validation_test` was rebuilt from upstream statement for
   statement. Its full assertions caught a validator bug: zod `.strict()`
@@ -54,9 +54,10 @@ Still open:
   `expect(vectors.length).toBe(22)`, moved into a test as the convention
   says.
 
-To repeat the audit: `python3 tool/audit/comments.py` (every upstream
+The audit runs in `dart test` (`test/port/fidelity_test.dart`); by hand:
+`dart run tool/audit/comments.dart` (every upstream
 comment line of 12+ characters must appear after normalizing `{@link X}`
-and `**\/`) and `python3 tool/audit/titles.py all`. `tool/audit/README.md` lists the
+and `**\/`) and `dart run tool/audit/titles.dart all`. `tool/audit/README.md` lists the
 expected output.
 
 ### Linux VM
@@ -90,12 +91,12 @@ expected output.
 - Never `git commit --amend`, `reset`, `rebase` or `stash` in a shared
   checkout: an agent's amend once folded its file into another agent's
   commit (history was split back into one commit per file afterwards).
-- Check an agent's report against `comments.py`/`titles.py` and its diff:
+- Check an agent's report against `dart test test/port` and its diff:
   in the fidelity pass, half the agents reported done with work missing,
   and one replaced an upstream comment with an invented one.
-- Mechanical test ports go faster with a translator: `tool/audit/ts2dart.py`
-  (object keys, `expect` matchers, `test.each`/`test.if`, `for...of`) did
-  most of config-validation; the rest was hand fixes.
+- Start every test port from `tool/audit/ts2dart.dart`: it drafts all 119
+  upstream test files without losing a title or comment, so the porter (or
+  agent) only fixes types and APIs. Put that in each porting task.
 - Author: James O'Leary <jpohhhh@gmail.com>.
 
 ### Remaining source (about 19,000 of 27,700 upstream lines)
