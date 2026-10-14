@@ -49,7 +49,7 @@ class _Constants {
 }
 
 const constants = _Constants();
-typedef _OpenN = Int32 Function(Pointer<Uint8>, Int32, Int32);
+typedef _OpenN = Int32 Function(Pointer<Uint8>, Int32, VarArgs<(Int32,)>);
 typedef _OpenD = int Function(Pointer<Uint8>, int, int);
 typedef _CloseN = Int32 Function(Int32);
 typedef _CloseD = int Function(int);
