@@ -518,6 +518,12 @@ void main() {
           );
         }
       },
+      // Dart: upstream runs these with the bare nc, which only macOS's leaves
+      // when the network side ends (see sshConnectScript); Debian and Ubuntu
+      // netcat-openbsd waits for stdin, so upstream's run hangs there too.
+      skip: isMacOS
+          ? null
+          : 'needs macOS nc (Debian/Ubuntu nc waits for stdin)',
       timeout: _testTimeout,
     );
 
@@ -570,6 +576,12 @@ void main() {
           '127.0.0.1:$closedPort Zm9v',
         ]);
       },
+      // Dart: upstream runs these with the bare nc, which only macOS's leaves
+      // when the network side ends (see sshConnectScript); Debian and Ubuntu
+      // netcat-openbsd waits for stdin, so upstream's run hangs there too.
+      skip: isMacOS
+          ? null
+          : 'needs macOS nc (Debian/Ubuntu nc waits for stdin)',
       timeout: _testTimeout,
     );
 

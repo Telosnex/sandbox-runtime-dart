@@ -536,9 +536,12 @@ String _realpathSync(String path) {
       final result = realpath(nativePath.cast(), nullptr);
       if (result.address == 0) {
         final errno = _readErrno?.call() ?? 0;
-        if (Platform.isLinux && codeForErrno(errno) == 'ENAMETOOLONG') {
-          // glibc fails when a link is followed to a name over PATH_MAX, but
-          // the kernel resolves it: ask it for the opened object's location.
+        final code = codeForErrno(errno);
+        if (Platform.isLinux && (code == 'ENAMETOOLONG' || code == 'EACCES')) {
+          // glibc fails when a link is followed to a name over PATH_MAX, or
+          // through a directory it cannot search, but the kernel resolves it
+          // (as Bun's realpathSync does, which upstream's tests run under):
+          // ask it for the opened object's location.
           final viaProc = _realpathViaProc(resolvedPath);
           if (viaProc != null) return viaProc;
         }
