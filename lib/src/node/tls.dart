@@ -1,15 +1,18 @@
 // Node-compatible TLS helpers required by sandbox-runtime's MITM proxy.
 // The checked-in Mozilla bundle is generated from curl's dated cacert.pem;
 // no platform trust store is consulted by rootCertificates/trustedRootContext.
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:asn1lib/asn1lib.dart' as asn1lib;
+import 'package:pointycastle/export.dart' as pc;
 
 import 'errno.dart';
 import 'mozilla_roots.dart';
 import 'net.dart' as net;
+import 'stream.dart' as stream;
 
 export 'mozilla_roots.dart'
     show mozillaRootBundleVersion, mozillaRootBundleSha256;
@@ -150,6 +153,7 @@ const _tlsConnectOptions = {
   'timeout',
   'allowHalfOpen',
   'noDelay',
+  'socket',
 };
 
 /// Node `tls.connect(options[, secureConnectListener])`. Returns the socket
@@ -190,7 +194,9 @@ TLSSocket connect(Map<Object?, Object?> options, [Function? listener]) {
   if (opts['noDelay'] == true) socket.setNoDelay();
   if (opts['timeout'] is int) socket.setTimeout(opts['timeout'] as int);
   if (listener != null) socket.once('secureConnect', listener);
+  final existing = opts['socket'];
   socket.startConnect(
+    dialer: existing is stream.Duplex ? () => _bridgeDuplex(existing) : null,
     path: opts['path'] as String?,
     port: opts['port'] as int?,
     host: host,
@@ -209,11 +215,17 @@ TLSSocket connect(Map<Object?, Object?> options, [Function? listener]) {
           supportedProtocols: protocols,
           onBadCertificate: (certificate) {
             // dart:io does not say which check failed. If the identity check
-            // passes, the chain is not trusted; else report the identity
-            // error. Gap: a custom checkServerIdentity that accepts a name
-            // dart:io rejected is reported as an untrusted chain.
+            // passes, the name is fine and dart:io's complaint was the name
+            // (a custom checkServerIdentity accepted it) or the chain: check
+            // the chain against `ca` ourselves.
+            final identityError = applyIdentity(identity, name, certificate);
+            if (identityError == null &&
+                _chainTrusted(certificate, opts['ca'])) {
+              failure = null;
+              return true;
+            }
             failure =
-                applyIdentity(identity, name, certificate) ??
+                identityError ??
                 NodeError(
                   'unable to verify the first certificate',
                   code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
@@ -255,7 +267,38 @@ Object? applyIdentity(
   Function identity,
   String hostname,
   X509Certificate? certificate,
-) => Function.apply(identity, [hostname, certificate]);
+) => Function.apply(identity, [
+  hostname,
+  identical(identity, checkServerIdentity) || certificate == null
+      ? certificate
+      : PeerCertificate(certificate),
+]);
+
+/// A distinguished name as Node's peer certificate shows it: `CN` is the
+/// common name (null when absent) and [raw] the dart:io string.
+class CertName {
+  CertName(this.raw) : CN = _commonName(raw);
+  final String raw;
+  // ignore: non_constant_identifier_names
+  final String? CN;
+  @override
+  String toString() => raw;
+}
+
+/// What a custom `checkServerIdentity` receives: Node's certificate shape
+/// (`subject.CN`, `issuer.CN`, `raw`) over the dart:io certificate.
+class PeerCertificate {
+  PeerCertificate(this.certificate)
+    : subject = CertName(certificate.subject),
+      issuer = CertName(certificate.issuer);
+  final X509Certificate certificate;
+  final CertName subject;
+  final CertName issuer;
+  Uint8List get raw => certificate.der;
+  String get pem => certificate.pem;
+  DateTime get validFrom => certificate.startValidity;
+  DateTime get validTo => certificate.endValidity;
+}
 
 /// The context for a client connection: [context] as given, or one that
 /// trusts [ca] (PEM text or bytes, or a list of them), or else
@@ -297,8 +340,11 @@ SecurityContext secureContextFor(Object? ca, SecurityContext? context) {
 /// matches; errors are returned (rather than thrown) like Node's API.
 NodeTlsIdentityError? checkServerIdentity(
   String hostname,
-  X509Certificate? certificate,
+  Object? peerCertificate,
 ) {
+  final certificate = peerCertificate is PeerCertificate
+      ? peerCertificate.certificate
+      : peerCertificate as X509Certificate?;
   if (certificate == null) {
     return NodeTlsIdentityError(
       hostname,
@@ -446,3 +492,222 @@ bool _sameBytes(List<int> left, List<int> right) =>
       left.length,
       (i) => left[i] ^ right[i],
     ).every((b) => b == 0);
+
+/// A loopback dart:io socket whose far end is [duplex], so dart:io can run
+/// TLS over any Node stream. Bytes the duplex emits go in; bytes written out
+/// go to the duplex.
+Future<Socket> _bridgeDuplex(stream.Duplex duplex) async {
+  final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+  final accepted = server.first;
+  final client = await Socket.connect(
+    InternetAddress.loopbackIPv4,
+    server.port,
+  );
+  final far = await accepted;
+  unawaited(server.close());
+  far.setOption(SocketOption.tcpNoDelay, true);
+  duplex.on('data', (Object? chunk) {
+    far.add(chunk is String ? utf8.encode(chunk) : chunk as List<int>);
+  });
+  duplex.on('end', () => unawaited(far.close()));
+  duplex.on('error', (Object? _) => far.destroy());
+  duplex.on('close', () => far.destroy());
+  far.listen(
+    (data) => duplex.write(Uint8List.fromList(data)),
+    onDone: () {
+      if (!duplex.destroyed) duplex.end();
+    },
+    onError: (Object _) {},
+    cancelOnError: true,
+  );
+  return client;
+}
+
+String _pem(Object? v) {
+  if (v is List) v = v.isEmpty ? null : v.first;
+  if (v is String) return v;
+  if (v is List<int>) return utf8.decode(v);
+  throw ArgumentError('tls.createServer needs "key" and "cert"');
+}
+
+/// The server-side context for `createServer` options: `secureContext`, the
+/// `SNICallback`'s answer, or `key` and `cert` (with optional `ca`).
+SecurityContext serverContextFor(Map<Object?, Object?> options) {
+  Object? context = options['secureContext'];
+  if (context == null) {
+    final sni = options['SNICallback'];
+    if (sni is Function) {
+      // dart:io does not report the client's server name: ask with ''.
+      Object? chosen;
+      var answered = false;
+      sni('', (Object? err, Object? ctx) {
+        if (err != null) throw err;
+        answered = true;
+        chosen = ctx;
+      });
+      if (!answered) {
+        throw UnimplementedError('SNICallback that answers later');
+      }
+      // Answered (null, undefined): the default context, as in Node.
+      context = chosen;
+    }
+  }
+  if (context == null) {
+    final made = createSecureContext(
+      cert: _pem(options['cert']),
+      key: _pem(options['key']),
+    );
+    final ca = options['ca'];
+    if (ca != null) {
+      for (final c in ca is List ? ca : [ca]) {
+        made.setTrustedCertificatesBytes(
+          Uint8List.fromList(utf8.encode(_pem(c))),
+        );
+      }
+    }
+    context = made;
+  }
+  return context as SecurityContext;
+}
+
+/// Node `tls.Server`: a [net.NodeServer] whose connections are TLS. Emits
+/// 'secureConnection' with the [TLSSocket] once the handshake is done and
+/// 'tlsClientError' (error, socket) when it fails.
+class Server extends net.NodeServer {
+  Server(this.options, [Function? secureConnectionListener]) {
+    if (secureConnectionListener != null) {
+      on('secureConnection', secureConnectionListener);
+    }
+    on('connection', (net.NodeSocket accepted) {
+      final TLSSocket secured;
+      try {
+        secured = TLSSocket(accepted, {
+          'isServer': true,
+          'secureContext': serverContextFor(options),
+        });
+      } catch (error) {
+        accepted.destroy();
+        emit('tlsClientError', error, accepted);
+        return;
+      }
+      secured.once('secure', () => emit('secureConnection', secured));
+      secured.on('error', (Object error) {
+        if (!secured.secureEstablished) emit('tlsClientError', error, secured);
+      });
+    });
+  }
+
+  final Map<Object?, Object?> options;
+}
+
+/// Node `tls.createServer([options][, secureConnectionListener])`.
+Server createServer([Object? options, Function? secureConnectionListener]) {
+  if (options is Function) {
+    secureConnectionListener = options;
+    options = null;
+  }
+  final opts = options is Map
+      ? Map<Object?, Object?>.of(options)
+      : <Object?, Object?>{};
+  return Server(opts, secureConnectionListener);
+}
+
+List<Uint8List> _caDers(Object? ca) {
+  final out = <Uint8List>[];
+  void add(Object c) {
+    final text = c is String ? c : utf8.decode(c as List<int>);
+    final blocks = RegExp(
+      r'-----BEGIN CERTIFICATE-----([^-]+)-----END CERTIFICATE-----',
+    );
+    for (final m in blocks.allMatches(text)) {
+      out.add(base64.decode(m.group(1)!.replaceAll(RegExp(r'\s'), '')));
+    }
+  }
+
+  if (ca is Iterable && ca is! String) {
+    ca.forEach((c) => add(c as Object));
+  } else if (ca != null) {
+    add(ca);
+  }
+  return out;
+}
+
+/// True when [leaf] is one of the PEM certificates in [ca], or is signed
+/// (RSA) by one, and is within its validity period. Used only after dart:io
+/// rejected the certificate, when the name check is the caller's.
+bool _chainTrusted(X509Certificate leaf, Object? ca) {
+  try {
+    final now = DateTime.now();
+    if (now.isBefore(leaf.startValidity) || now.isAfter(leaf.endValidity)) {
+      return false;
+    }
+    final leafSeq =
+        asn1lib.ASN1Parser(leaf.der).nextObject() as asn1lib.ASN1Sequence;
+    final leafTbs = leafSeq.elements[0] as asn1lib.ASN1Sequence;
+    final leafSigOid =
+        ((leafSeq.elements[1] as asn1lib.ASN1Sequence).elements.first
+                as asn1lib.ASN1ObjectIdentifier)
+            .identifier;
+    final leafFields = _tbsFields(leafTbs);
+    for (final der in _caDers(ca)) {
+      if (_sameBytes(der, leaf.der)) return true;
+      final caSeq =
+          asn1lib.ASN1Parser(der).nextObject() as asn1lib.ASN1Sequence;
+      final caFields = _tbsFields(caSeq.elements[0] as asn1lib.ASN1Sequence);
+      if (!_sameBytes(leafFields.issuer, caFields.subject)) continue;
+      final spki =
+          asn1lib.ASN1Parser(Uint8List.fromList(caFields.spki)).nextObject()
+              as asn1lib.ASN1Sequence;
+      final keyBits = (spki.elements[1] as asn1lib.ASN1BitString)
+          .contentBytes();
+      final key =
+          asn1lib.ASN1Parser(Uint8List.fromList(keyBits)).nextObject()
+              as asn1lib.ASN1Sequence;
+      final publicKey = pc.RSAPublicKey(
+        (key.elements[0] as asn1lib.ASN1Integer).valueAsBigInteger,
+        (key.elements[1] as asn1lib.ASN1Integer).valueAsBigInteger,
+      );
+      final (digest, digestId) = switch (leafSigOid) {
+        '1.2.840.113549.1.1.11' => (
+          pc.SHA256Digest(),
+          '0609608648016503040201',
+        ),
+        '1.2.840.113549.1.1.12' => (
+          pc.SHA384Digest(),
+          '0609608648016503040202',
+        ),
+        '1.2.840.113549.1.1.13' => (
+          pc.SHA512Digest(),
+          '0609608648016503040203',
+        ),
+        _ => throw const FormatException('unsupported signature algorithm'),
+      };
+      final signer = pc.RSASigner(digest, digestId)
+        ..init(false, pc.PublicKeyParameter<pc.RSAPublicKey>(publicKey));
+      final sigBytes =
+          (leafSeq.elements[2] as asn1lib.ASN1BitString).stringValue;
+      if (signer.verifySignature(
+        leafTbs.encodedBytes,
+        pc.RSASignature(Uint8List.fromList(sigBytes)),
+      )) {
+        return true;
+      }
+    }
+  } catch (_) {
+    return false;
+  }
+  return false;
+}
+
+({List<int> issuer, List<int> subject, List<int> spki}) _tbsFields(
+  asn1lib.ASN1Sequence tbs,
+) {
+  var i = tbs.elements.first.tag == 0xa0 ? 1 : 0;
+  // serial, signature, issuer, validity, subject, subjectPublicKeyInfo
+  final e = tbs.elements;
+  return (
+    issuer: e[i + 2].encodedBytes,
+    subject: e[i + 4].encodedBytes,
+    spki: e[i + 5].encodedBytes,
+  );
+}

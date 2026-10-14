@@ -514,6 +514,7 @@ class NodeHttpServer extends net.NodeServer {
     _connections.add(socket);
     _idleConnections.add(socket);
     socket.allowHalfOpen = true;
+    socket.lingerOnDestroy = true;
     socket.once('close', () {
       _connections.remove(socket);
       _idleConnections.remove(socket);
@@ -534,7 +535,7 @@ class NodeHttpServer extends net.NodeServer {
     final pendingResponses = <Future<void>>[];
     while (!_closed && !socket.destroyed) {
       try {
-        final head = await _readHead(reader, maxHeaderSize);
+        final head = await _readHead(reader, maxHeaderSize, request: true);
         if (head == null) {
           await Future.wait(pendingResponses);
           if (!socket.destroyed) socket.end();
@@ -750,12 +751,15 @@ NodeHttpServer createServer([Object? options, Function? requestListener]) {
   return server;
 }
 
-/// A limited Agent with one active/idle socket per endpoint. It intentionally
-/// serializes requests when maxSockets is one, matching the TLS proxy policy.
+const int _infinity = 0x7fffffff;
+
+/// A limited Agent with one idle socket per endpoint. maxSockets defaults to
+/// Infinity and keepAlive to false, as in Node; maxSockets: 1 serializes.
+
 class Agent {
   Agent({
-    this.keepAlive = true,
-    this.maxSockets = 1,
+    this.keepAlive = false,
+    this.maxSockets = _infinity,
     this.socketPath,
     this.secure = false,
     this.securityContext,
@@ -875,7 +879,7 @@ class _AgentLease {
   final void Function() release;
 }
 
-final Agent globalAgent = Agent(keepAlive: true, maxSockets: 1);
+final Agent globalAgent = Agent(keepAlive: true);
 
 /// Node ClientRequest subset. Writes are queued until a socket is assigned.
 class ClientRequest extends events.EventEmitter {
@@ -1002,7 +1006,25 @@ class ClientRequest extends events.EventEmitter {
         final lookup = _options['lookup'] as net.LookupFunction?;
         final net.NodeSocket created;
         final String ready;
-        if (_agent.socketPath != null || _options['socketPath'] != null) {
+        final createConnection = _options['createConnection'];
+        if (createConnection is Function) {
+          final made = Function.apply(createConnection, [
+            {
+              'host': host,
+              'hostname': host,
+              'port': port,
+              'path': socketPath,
+              'servername': servername,
+              'lookup': lookup,
+            },
+          ]);
+          if (made is! net.NodeSocket) {
+            throw ArgumentError('createConnection must return a socket');
+          }
+          created = made;
+          ready = secure ? 'secureConnect' : 'connect';
+        } else if (_agent.socketPath != null ||
+            _options['socketPath'] != null) {
           created = net.connect({
             'path': _agent.socketPath ?? _options['socketPath'] as String,
           });
@@ -1027,7 +1049,11 @@ class ClientRequest extends events.EventEmitter {
           ready = 'connect';
         }
         created.allowHalfOpen = true;
-        await events.once(created, ready);
+        if (createConnection is! Function ||
+            created.connecting ||
+            (created is node_tls.TLSSocket && !created.secureEstablished)) {
+          await events.once(created, ready);
+        }
         return created;
       });
       _lease = lease;
@@ -1228,11 +1254,18 @@ class _ParsedHead {
   final int? statusCode;
 }
 
-Future<List<Uint8List>?> _readHead(_ByteReader reader, int limit) async {
+Future<List<Uint8List>?> _readHead(
+  _ByteReader reader,
+  int limit, {
+  bool request = false,
+}) async {
   final lines = <Uint8List>[];
   var size = 0;
   while (true) {
-    final line = await reader.line(limit - size);
+    final line = await reader.line(
+      limit - size,
+      requestStart: request && lines.isEmpty,
+    );
     if (line == null) {
       if (lines.isEmpty) return null;
       throw NodeHttpError(
@@ -1547,7 +1580,7 @@ class _ByteReader {
     }
   }
 
-  Future<Uint8List?> line(int limit) async {
+  Future<Uint8List?> line(int limit, {bool requestStart = false}) async {
     final output = BytesBuilder(copy: false);
     var sawCr = false;
     while (true) {
@@ -1573,6 +1606,13 @@ class _ByteReader {
           'HPE_STRICT',
           'Parse Error: Bare LF in HTTP message',
         );
+      // llhttp refuses a request whose first byte cannot start a method.
+      if (requestStart && output.isEmpty && (value < 0x41 || value > 0x5a)) {
+        throw NodeHttpError(
+          'HPE_INVALID_METHOD',
+          'Parse Error: Invalid method encountered',
+        );
+      }
       output.addByte(value);
       if (output.length > limit)
         throw NodeHttpError(

@@ -1,8 +1,5 @@
 // Node-compatible HTTPS subset built on the HTTP and TLS shims.
 // ignore_for_file: use_super_parameters
-import 'dart:convert';
-import 'dart:io' show SecurityContext;
-import 'dart:typed_data';
 
 import 'http.dart' as http;
 import 'net.dart' as net;
@@ -19,37 +16,7 @@ class Server extends http.NodeHttpServer {
 
   @override
   net.NodeSocket wrapConnection(net.NodeSocket accepted) {
-    Object? context = options['secureContext'];
-    if (context == null) {
-      final sni = options['SNICallback'];
-      if (sni is Function) {
-        // dart:io does not report the client's server name: ask with ''.
-        Object? chosen;
-        sni('', (Object? err, Object? ctx) {
-          if (err != null) throw err;
-          chosen = ctx;
-        });
-        if (chosen == null) {
-          throw UnimplementedError('https SNICallback that answers later');
-        }
-        context = chosen;
-      }
-    }
-    if (context == null) {
-      final made = tls.createSecureContext(
-        cert: _pem(options['cert']),
-        key: _pem(options['key']),
-      );
-      final ca = options['ca'];
-      if (ca != null) {
-        for (final c in ca is List ? ca : [ca]) {
-          made.setTrustedCertificatesBytes(
-            Uint8List.fromList(utf8.encode(_pem(c))),
-          );
-        }
-      }
-      context = made;
-    }
+    final context = tls.serverContextFor(options);
     final secured = tls.TLSSocket(accepted, {
       'isServer': true,
       'secureContext': context,
@@ -59,13 +26,6 @@ class Server extends http.NodeHttpServer {
       if (!secured.secureEstablished) emit('tlsClientError', error, secured);
     });
     return secured;
-  }
-
-  static String _pem(Object? v) {
-    if (v is List) v = v.isEmpty ? null : v.first;
-    if (v is String) return v;
-    if (v is List<int>) return utf8.decode(v);
-    throw ArgumentError('https.createServer needs "key" and "cert"');
   }
 
   @override
@@ -90,8 +50,8 @@ Server createServer([Object? options, Function? requestListener]) {
 
 class Agent extends http.Agent {
   Agent({
-    bool keepAlive = true,
-    int maxSockets = 1,
+    bool keepAlive = false,
+    int maxSockets = 0x7fffffff,
     String? socketPath,
     tls.SecureContext? securityContext,
     Object? ca,
@@ -107,7 +67,7 @@ class Agent extends http.Agent {
        );
 }
 
-final Agent globalAgent = Agent(keepAlive: true, maxSockets: 1);
+final Agent globalAgent = Agent(keepAlive: true);
 
 /// Node's `https.request(url[, options][, callback])` and
 /// `https.request(options[, callback])`: [input] is a URL string, [url.URL],

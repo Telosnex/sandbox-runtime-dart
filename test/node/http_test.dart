@@ -43,6 +43,90 @@ Future<Uint8List> _rawExchange(int port, List<int> request) async {
 
 void main() {
   group('raw HTTP/1.1 shim', () {
+    test('request option createConnection supplies the socket', () async {
+      final server = http.createServer();
+      server.on(
+        'request',
+        (http.IncomingMessage request, http.ServerResponse response) =>
+            response.end('ok'),
+      );
+      final (port, close) = await _listen(server);
+      var called = 0;
+      final done = Completer<String>();
+      http.request(
+        {
+          'host': '127.0.0.1',
+          'port': port,
+          'createConnection': (Object options) {
+            called++;
+            return net.connect({'host': '127.0.0.1', 'port': port});
+          },
+        },
+        (http.IncomingMessage r) {
+          final body = StringBuffer();
+          r.on('data', (Object? d) => body.write(utf8.decode(d as List<int>)));
+          r.on('end', () => done.complete(body.toString()));
+        },
+      ).end();
+      expect(await done.future.timeout(const Duration(seconds: 5)), 'ok');
+      expect(called, 1);
+      await close();
+    });
+
+    test(
+      'req.destroy() after finish keeps the reply while the body arrives',
+      () async {
+        final server = http.createServer();
+        server.on('request', (
+          http.IncomingMessage request,
+          http.ServerResponse response,
+        ) {
+          response.statusCode = 403;
+          response.on('finish', request.destroy);
+          response.end('denied');
+        });
+        final (port, close) = await _listen(server);
+        final client = net.connect({'host': '127.0.0.1', 'port': port});
+        final got = StringBuffer();
+        client.on(
+          'data',
+          (Object? d) => got.write(latin1.decode(d as List<int>)),
+        );
+        client.on('error', (Object _) {});
+        final closed = Completer<void>();
+        client.on('close', (Object? _) => closed.complete());
+        client.write(
+          'POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 200000\r\n\r\n${'a' * 1000}',
+        );
+        for (var i = 1; i <= 20; i++) {
+          Timer(Duration(milliseconds: i * 10), () {
+            if (!client.destroyed) client.write('b' * 9950);
+          });
+        }
+        await closed.future.timeout(const Duration(seconds: 5));
+        expect(got.toString(), startsWith('HTTP/1.1 403'));
+        await close();
+      },
+    );
+
+    test('a request starting with 0x16 gets 400 at once', () async {
+      final server = http.createServer();
+      final (port, close) = await _listen(server);
+      final client = net.connect({'host': '127.0.0.1', 'port': port});
+      final got = StringBuffer();
+      client.on(
+        'data',
+        (Object? d) => got.write(latin1.decode(d as List<int>)),
+      );
+      client.on('error', (Object _) {});
+      final closed = Completer<void>();
+      client.on('close', (Object? _) => closed.complete());
+      client.write(Uint8List.fromList([0x16, 0x03, 0x01, 0x00, 0x05]));
+      await closed.future.timeout(const Duration(seconds: 5));
+      expect(got.toString(), startsWith('HTTP/1.1 400'));
+      await close();
+    });
+
     test(
       'ClientRequest auth sends Basic, maxSockets allows parallel sockets',
       () async {

@@ -465,6 +465,8 @@ class NodeSocket extends stream.Duplex {
       // The connection is the TLS socket's now; as in Node, destroying the
       // socket under it destroys it too.
       wrapper.destroy();
+    } else if (lingerOnDestroy && error == null && _bytesDispatched > 0) {
+      _lingerClose();
     } else {
       _socket?.destroy();
       _subscription?.cancel();
@@ -480,6 +482,37 @@ class NodeSocket extends stream.Duplex {
     applyListener(callback, [error]);
     final hadError = error != null;
     scheduleMicrotask(() => _emitClose(hadError));
+  }
+
+  /// Set by an HTTP server on its connections. destroy() then sends what was
+  /// written and a FIN, and discards what the peer still sends, until the peer
+  /// closes (or a second passes). A close with unread bytes would send a RST,
+  /// which can cost the peer the reply it has not read yet.
+  bool lingerOnDestroy = false;
+
+  void _lingerClose() {
+    final socket = _socket;
+    final subscription = _subscription;
+    _subscription = null;
+    if (socket == null) return;
+    final timer = Timer(const Duration(seconds: 1), socket.destroy);
+    void done() {
+      timer.cancel();
+      socket.destroy();
+    }
+
+    if (subscription != null) {
+      subscription
+        ..onData((_) {})
+        ..onDone(done)
+        ..onError((Object _) => done())
+        ..resume();
+    }
+    try {
+      socket.close().then<void>((_) {}, onError: (Object _) => done());
+    } on StateError {
+      done();
+    }
   }
 
   void _emitClose(bool hadError) {
@@ -537,8 +570,9 @@ class NodeSocket extends stream.Duplex {
     String host = 'localhost',
     LookupFunction? lookup,
     Future<Socket> Function(Socket raw)? secure,
+    Future<Socket> Function()? dialer,
   }) {
-    unawaited(_connect(path, port, host, lookup, secure));
+    unawaited(_connect(path, port, host, lookup, secure, dialer));
   }
 
   Future<void> _connect(
@@ -547,10 +581,13 @@ class NodeSocket extends stream.Duplex {
     String host,
     LookupFunction? lookup,
     Future<Socket> Function(Socket raw)? secure,
+    Future<Socket> Function()? dialer,
   ) async {
     try {
       Socket? raw;
-      if (path != null) {
+      if (dialer != null) {
+        raw = await dialer();
+      } else if (path != null) {
         raw =
             await _dial(
               InternetAddress(path, type: InternetAddressType.unix),
@@ -923,6 +960,7 @@ class NodeServer extends EventEmitter {
   String? _unixPath;
   int? _port;
   String? _host;
+  int? _listenFd;
 
   bool get listening => _listening;
   bool get unrefed => _unrefed;
@@ -949,10 +987,14 @@ class NodeServer extends EventEmitter {
   NodeServer removeListener(String event, Function listener) =>
       off(event, listener);
 
+  /// Dart-only test seam for spyOn(Server.prototype, 'listen'); call-through.
+  static void Function(Object? firstArg)? listenSpy;
+
   /// Node's forms: `listen(port[, host][, backlog][, cb])`,
   /// `listen(path[, cb])`, `listen({port, host, path}[, cb])` and
   /// `listen([cb])` (port 0). The result is a 'listening' or 'error' event.
   NodeServer listen([Object? a, Object? b, Object? c, Object? d]) {
+    listenSpy?.call(a);
     if (_listening || _binding) {
       throw NodeError(
         'Listen method has been called more than once without closing.',
@@ -997,6 +1039,7 @@ class NodeServer extends EventEmitter {
       if (fd != null) {
         // Node: listen on an already-open listening descriptor.
         final tcp = fdServerSocket(fd);
+        _listenFd = fd;
         _tcp = tcp;
         if (tcp.address.type == InternetAddressType.unix) {
           _unixPath = tcp.address.address;
@@ -1075,6 +1118,22 @@ class NodeServer extends EventEmitter {
     emit('listening');
   }
 
+  /// Node's `server._handle.fd`: the listening descriptor, or null when the
+  /// server is not listening or the descriptor cannot be found.
+  int? get handleFd {
+    if (!_listening) return null;
+    if (_listenFd != null) return _listenFd;
+    if (_unixPath != null) return listeningFd(_unixPath!, 0);
+    return listeningFd(_tcp!.address.address, _tcp!.port);
+  }
+
+  /// Node `server.getConnections(callback)`.
+  NodeServer getConnections(Function callback) {
+    final count = _connections.length;
+    scheduleMicrotask(() => applyListener(callback, [null, count]));
+    return this;
+  }
+
   /// Node `server.address()`: the path for a Unix-domain listener.
   Object? address() => !_listening
       ? null
@@ -1104,6 +1163,7 @@ class NodeServer extends EventEmitter {
       final unixPath = _unixPath;
       _tcp = null;
       _unixPath = null;
+      _listenFd = null;
       unawaited(
         tcp.close().then((_) async {
           // libuv unlinks a Unix-domain listener's path on close.

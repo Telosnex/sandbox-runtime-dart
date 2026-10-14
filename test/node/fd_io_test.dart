@@ -9,6 +9,7 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 import 'package:sandbox_runtime/src/node/fs.dart' as fs;
+import 'package:sandbox_runtime/src/node/http.dart' as http;
 import 'package:sandbox_runtime/src/node/net.dart' as net;
 import 'package:test/test.dart';
 
@@ -37,6 +38,13 @@ final _write = _lib
       IntPtr Function(Int32, Pointer<Uint8>, IntPtr),
       int Function(int, Pointer<Uint8>, int)
     >('write');
+final _recv = _lib
+    .lookupFunction<
+      IntPtr Function(Int32, Pointer<Uint8>, IntPtr, Int32),
+      int Function(int, Pointer<Uint8>, int, int)
+    >('recv');
+// MSG_DONTWAIT
+final _dontwait = Platform.isMacOS ? 0x80 : 0x40;
 final _close = _lib.lookupFunction<Int32 Function(Int32), int Function(int)>(
   'close',
 );
@@ -114,5 +122,64 @@ void main() {
     expect(net.isIPv4('::1'), isFalse);
     expect(net.isIPv6('::1'), isTrue);
     expect(net.isIPv6('1.2.3.4'), isFalse);
+  });
+
+  test(
+    'large write does not block the isolate; callback waits for drain',
+    () async {
+      final fds = calloc<Int32>(2);
+      expect(_socketpair(1, 1, 0, fds), 0);
+      final a = fds[0], b = fds[1];
+      calloc.free(fds);
+      final socket = net.NodeSocket(fd: a, readable: true, writable: true);
+      const total = 4 * 1024 * 1024;
+      final flushed = Completer<void>();
+      socket.write(Uint8List(total), null, (Object? _) => flushed.complete());
+      var ticks = 0;
+      final t = Timer.periodic(
+        const Duration(milliseconds: 10),
+        (_) => ticks++,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      t.cancel();
+      expect(ticks, greaterThan(10));
+      expect(flushed.isCompleted, isFalse);
+      final buf = calloc<Uint8>(65536);
+      var got = 0;
+      while (got < total) {
+        final n = _recv(b, buf, 65536, _dontwait);
+        if (n > 0) {
+          got += n;
+        } else {
+          await Future<void>.delayed(const Duration(milliseconds: 2));
+        }
+      }
+      calloc.free(buf);
+      await flushed.future.timeout(const Duration(seconds: 5));
+      socket.destroy();
+      _close(b);
+    },
+  );
+
+  test('writable:false socket close does not shutdown the peer', () async {
+    final fds = calloc<Int32>(2);
+    expect(_socketpair(1, 1, 0, fds), 0);
+    final a = fds[0], b = fds[1];
+    calloc.free(fds);
+    final socket = net.NodeSocket(fd: a, readable: true, writable: false);
+    final closed = Completer<void>();
+    socket.on('close', (bool _) => closed.complete());
+    socket.destroy();
+    await closed.future.timeout(const Duration(seconds: 5));
+    _close(b);
+  });
+
+  test('Agent defaults match Node', () {
+    final a = http.Agent();
+    expect(a.keepAlive, isFalse);
+    expect(a.maxSockets, greaterThan(1 << 20));
+    expect(http.globalAgent.keepAlive, isTrue);
+    expect(http.globalAgent.maxSockets, greaterThan(1 << 20));
+    expect(http.Agent(maxSockets: 1).maxSockets, 1);
   });
 }
