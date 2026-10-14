@@ -13,19 +13,8 @@ Future<void> main() async {
       final cert = '${temp.path}/$host.crt';
       final key = '${temp.path}/$host.key';
       final result = await Process.run('openssl', [
-        'req',
-        '-x509',
-        '-newkey',
-        'rsa:2048',
-        '-nodes',
-        '-days',
-        '1',
-        '-keyout',
-        key,
-        '-out',
-        cert,
-        '-subj',
-        '/CN=$host',
+        'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+        '-keyout', key, '-out', cert, '-subj', '/CN=$host',
       ]);
       if (result.exitCode != 0) throw StateError('${result.stderr}');
       contexts[host] = SecurityContext()
@@ -40,10 +29,7 @@ Future<void> main() async {
     });
     for (final host in ['alpha.test', 'beta.test']) {
       final context = SecurityContext(withTrustedRoots: false);
-      final raw = await Socket.connect(
-        InternetAddress.loopbackIPv4,
-        listener.port,
-      );
+      final raw = await Socket.connect(InternetAddress.loopbackIPv4, listener.port);
       final tls = await SecureSocket.secure(
         raw,
         host: host,
@@ -55,26 +41,19 @@ Future<void> main() async {
       final replyDone = Completer<String>();
       final replyBytes = <int>[];
       late StreamSubscription<List<int>> replySub;
-      replySub = tls.listen(
-        (chunk) {
-          replyBytes.addAll(chunk);
-          if (replyBytes.contains(10) && !replyDone.isCompleted) {
-            replyDone.complete(latin1.decode(replyBytes));
-          }
-        },
-        onError: replyDone.completeError,
-        onDone: () {
-          if (!replyDone.isCompleted)
-            replyDone.complete(latin1.decode(replyBytes));
-        },
-      );
+      replySub = tls.listen((chunk) {
+        replyBytes.addAll(chunk);
+        if (replyBytes.contains(10) && !replyDone.isCompleted) {
+          replyDone.complete(latin1.decode(replyBytes));
+        }
+      }, onError: replyDone.completeError, onDone: () {
+        if (!replyDone.isCompleted) replyDone.complete(latin1.decode(replyBytes));
+      });
       tls.write('GET / HTTP/1.1\r\nHost: $host\r\nConnection: close\r\n\r\n');
       await tls.flush();
       final reply = await replyDone.future.timeout(const Duration(seconds: 5));
       await replySub.cancel();
-      print(
-        '$host => ${certSubject ?? '(no peer certificate)'}; ALPN(client)=${tls.selectedProtocol}; ${reply.split('\r\n').first}',
-      );
+      print('$host => ${certSubject ?? '(no peer certificate)'}; ALPN(client)=${tls.selectedProtocol}; ${reply.split('\r\n').first}');
       tls.destroy();
     }
     await acceptSub.cancel();
@@ -85,29 +64,21 @@ Future<void> main() async {
   }
 }
 
-Future<void> _serve(
-  Socket socket,
-  Map<String, SecurityContext> contexts,
-) async {
+Future<void> _serve(Socket socket, Map<String, SecurityContext> contexts) async {
   final consumed = <int>[];
   final gotHello = Completer<void>();
   late StreamSubscription<List<int>> sub;
-  sub = socket.listen(
-    (chunk) {
-      consumed.addAll(chunk);
-      if (_clientHelloSni(consumed) != null && !gotHello.isCompleted) {
-        sub.pause();
-        gotHello.complete();
-      }
-    },
-    onError: (Object e) {
-      if (!gotHello.isCompleted) gotHello.completeError(e);
-    },
-    onDone: () {
-      if (!gotHello.isCompleted)
-        gotHello.completeError(StateError('EOF before ClientHello'));
-    },
-  );
+  sub = socket.listen((chunk) {
+    consumed.addAll(chunk);
+    if (_clientHelloSni(consumed) != null && !gotHello.isCompleted) {
+      sub.pause();
+      gotHello.complete();
+    }
+  }, onError: (Object e) {
+    if (!gotHello.isCompleted) gotHello.completeError(e);
+  }, onDone: () {
+    if (!gotHello.isCompleted) gotHello.completeError(StateError('EOF before ClientHello'));
+  });
   try {
     await gotHello.future.timeout(const Duration(seconds: 5));
     final bytes = Uint8List.fromList(consumed);
@@ -122,22 +93,17 @@ Future<void> _serve(
       bufferedData: bytes,
       supportedProtocols: const ['http/1.1'],
     );
-    print(
-      'selected context for SNI=$host, negotiated ALPN=${tls.selectedProtocol}',
-    );
+    print('selected context for SNI=$host, negotiated ALPN=${tls.selectedProtocol}');
     final requestBytes = <int>[];
     final requestDone = Completer<void>();
     late StreamSubscription<List<int>> requestSub;
     requestSub = tls.listen((chunk) {
       requestBytes.addAll(chunk);
-      if (_containsHeaderEnd(requestBytes) && !requestDone.isCompleted)
-        requestDone.complete();
+      if (_containsHeaderEnd(requestBytes) && !requestDone.isCompleted) requestDone.complete();
     }, onError: requestDone.completeError);
     await requestDone.future.timeout(const Duration(seconds: 5));
     await requestSub.cancel();
-    tls.write(
-      'HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n',
-    );
+    tls.write('HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
     await tls.flush();
     await tls.close();
   } catch (e) {
@@ -160,8 +126,7 @@ String? _clientHelloSni(List<int> input) {
     p += 5 + length;
     if (handshake.length >= 4) {
       if (handshake[0] != 1) return null;
-      final helloLength =
-          (handshake[1] << 16) | (handshake[2] << 8) | handshake[3];
+      final helloLength = (handshake[1] << 16) | (handshake[2] << 8) | handshake[3];
       if (handshake.length < helloLength + 4) continue;
       final b = handshake;
       var i = 4 + 2 + 32;
@@ -186,8 +151,7 @@ String? _clientHelloSni(List<int> input) {
             final nameLength = (b[q + 1] << 8) | b[q + 2];
             q += 3;
             if (q + nameLength > listEnd) return null;
-            if (nameType == 0)
-              return ascii.decode(b.sublist(q, q + nameLength));
+            if (nameType == 0) return ascii.decode(b.sublist(q, q + nameLength));
             q += nameLength;
           }
         }
@@ -201,8 +165,7 @@ String? _clientHelloSni(List<int> input) {
 
 bool _containsHeaderEnd(List<int> b) {
   for (var i = 0; i + 3 < b.length; i++) {
-    if (b[i] == 13 && b[i + 1] == 10 && b[i + 2] == 13 && b[i + 3] == 10)
-      return true;
+    if (b[i] == 13 && b[i + 1] == 10 && b[i + 2] == 13 && b[i + 3] == 10) return true;
   }
   return false;
 }

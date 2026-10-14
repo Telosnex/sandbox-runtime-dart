@@ -18,13 +18,10 @@ Future<void> main() async {
     });
     request.response.close();
   });
-  final parsedClient = await Socket.connect(
-    InternetAddress.loopbackIPv4,
-    headerServer.port,
-  );
+  final parsedClient = await Socket.connect(InternetAddress.loopbackIPv4, headerServer.port);
   parsedClient.write(
     'GET / HTTP/1.1\r\nHost: localhost\r\nX-MiXeD: first\r\nx-mixed: second\r\n' +
-        'X-Order-B: b\r\nX-Order-A: a\r\nConnection: close\r\n\r\n',
+    'X-Order-B: b\r\nX-Order-A: a\r\nConnection: close\r\n\r\n',
   );
   await parsedClient.flush();
   final normalized = await received.future.timeout(const Duration(seconds: 5));
@@ -36,26 +33,14 @@ Future<void> main() async {
   final rawServer = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
   final outcome = Completer<Map<String, Object?>>();
   final rawSub = rawServer.listen((socket) => _readConnect(socket, outcome));
-  final rawClient = await Socket.connect(
-    InternetAddress.loopbackIPv4,
-    rawServer.port,
-  );
+  final rawClient = await Socket.connect(InternetAddress.loopbackIPv4, rawServer.port);
   final payload = <int>[
     ...ascii.encode(
       'CONNECT api.example:443 HTTP/1.1\r\nHost: api.example:443\r\n' +
-          'X-MiXeD: first\r\nx-mixed: second\r\nX-Order-B: b\r\n' +
-          'X-Order-A: a\r\n\r\n',
+      'X-MiXeD: first\r\nx-mixed: second\r\nX-Order-B: b\r\n' +
+      'X-Order-A: a\r\n\r\n',
     ),
-    0x16,
-    0x03,
-    0x01,
-    0x00,
-    0x05,
-    0x01,
-    0x02,
-    0x03,
-    0x04,
-    0x05,
+    0x16, 0x03, 0x01, 0x00, 0x05, 0x01, 0x02, 0x03, 0x04, 0x05,
   ];
   rawClient.add(payload);
   await rawClient.flush();
@@ -67,10 +52,7 @@ Future<void> main() async {
   exit(0); // These listener APIs retain native resources past test completion.
 }
 
-Future<void> _readConnect(
-  Socket socket,
-  Completer<Map<String, Object?>> result,
-) async {
+Future<void> _readConnect(Socket socket, Completer<Map<String, Object?>> result) async {
   final bytes = <int>[];
   late StreamSubscription<List<int>> sub;
   sub = socket.listen((chunk) {
@@ -83,9 +65,7 @@ Future<void> _readConnect(
       result.complete({
         'requestLine': lines.first,
         'rawHeaderLines': lines.skip(1).toList(),
-        'headBytesHex': headBytes
-            .map((b) => b.toRadixString(16).padLeft(2, '0'))
-            .join(' '),
+        'headBytesHex': headBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' '),
         'headLength': headBytes.length,
       });
       socket.destroy();
@@ -96,11 +76,7 @@ Future<void> _readConnect(
 
 int _headerEnd(List<int> bytes) {
   for (var i = 0; i + 3 < bytes.length; i++) {
-    if (bytes[i] == 13 &&
-        bytes[i + 1] == 10 &&
-        bytes[i + 2] == 13 &&
-        bytes[i + 3] == 10)
-      return i;
+    if (bytes[i] == 13 && bytes[i + 1] == 10 && bytes[i + 2] == 13 && bytes[i + 3] == 10) return i;
   }
   return -1;
 }
