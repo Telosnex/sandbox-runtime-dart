@@ -161,8 +161,10 @@ Future<void> runProxyCli(List<String> argv) async {
         decider: inFd == outFd
             ? openFdStreams(inFd.toInt())
             : (
-                input: openFdStreams(inFd.toInt()).input,
-                output: openFdStreams(outFd.toInt()).output,
+                input: openFdStreams(inFd.toInt(), writable: false).input,
+                // Dart: write-only, as Bun's writer is: a peer that closed is
+                // learnt of by a failed write, not by an EOF read.
+                output: openFdStreams(outFd.toInt(), readable: false).output,
               ),
         caPem: o['caFd'] is num
             ? readPemFromFd((o['caFd'] as num).toInt())

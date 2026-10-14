@@ -274,8 +274,15 @@ class NodeSocket extends stream.Duplex {
          emitClose: false,
          autoDestroy: true,
        ) {
+    _fdWriteOnly = !readable;
+    _isFd = true;
     _attach(fdSocket(fd, readable: readable, writable: writable));
   }
+
+  // A descriptor opened with readable: false is never read, so its peer
+  // closing is not seen as an EOF.
+  bool _fdWriteOnly = false;
+  bool _isFd = false;
 
   /// A socket that will run over another, already connected one; see
   /// [startServerTlsOver]. Not connecting, as in Node.
@@ -326,7 +333,7 @@ class NodeSocket extends stream.Duplex {
       },
       onDone: () {
         _subscription = null;
-        if (destroyed) return;
+        if (destroyed || _fdWriteOnly) return;
         // Node's onStreamRead at EOF.
         push(null);
         read(0);
@@ -481,7 +488,17 @@ class NodeSocket extends stream.Duplex {
     }
     applyListener(callback, [error]);
     final hadError = error != null;
-    scheduleMicrotask(() => _emitClose(hadError));
+    // Node closes the handle before 'close': an inherited descriptor is
+    // really closed (its peer sees EOF/EPIPE) once 'close' is emitted.
+    final fdDone = _isFd ? _socket?.done : null;
+    if (fdDone != null) {
+      // After the stream's own 'error' (a macrotask later), as in Node,
+      // where the handle's close callback comes in a later tick.
+      void emitLater(Object? _) => Timer.run(() => _emitClose(hadError));
+      fdDone.then<void>(emitLater, onError: emitLater);
+    } else {
+      scheduleMicrotask(() => _emitClose(hadError));
+    }
   }
 
   /// Set by an HTTP server on its connections. destroy() then sends what was
@@ -905,6 +922,21 @@ class NodeSocket extends stream.Duplex {
     timer.cancel();
     sub.pause();
     return buf;
+  }
+
+  /// Re-points the held-back read subscription of the socket under this one
+  /// at [onData] (for a bridge) and resumes it.
+  void pumpUnder(
+    void Function(List<int>) onData,
+    void Function() onDone,
+    void Function(Object) onError,
+  ) {
+    final sub = _under?._subscription;
+    if (sub == null) return;
+    sub.onData(onData);
+    sub.onDone(onDone);
+    sub.onError((Object e) => onError(e));
+    sub.resume();
   }
 
   Future<void> _serverTlsOver(
