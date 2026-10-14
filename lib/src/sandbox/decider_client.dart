@@ -43,7 +43,7 @@
  *   without asking.
  *
  * An allow's removeHeaders and setHeaders are applied exactly, matched
- * *case-insensitively with `-`, `_` and `.` as one character (see
+ * case-insensitively with `-`, `_` and `.` as one character (see
  * applyHeaderEdits). A credential (`cred` names its class, `credential`
  * carries the value for this one request) first removes every credential
  * header the client sent, then goes where its placement says.

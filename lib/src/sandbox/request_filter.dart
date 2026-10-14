@@ -31,6 +31,7 @@ class RequestDecision {
     this.onResponse,
   });
 
+  /// Allowed values: `'allow'` | `'deny'`.
   final String action;
   /**
    * Human-readable reason. For denials this is surfaced to the sandboxed
@@ -300,26 +301,11 @@ String? hostMismatch(
  * The header that marks a denial: `X-Proxy-Error: <tag>` for a tag, or a
  * caller's own header and value.
  */
-sealed class DenyMark {
-  const DenyMark();
-}
-
-class DenyMarkString extends DenyMark {
-  const DenyMarkString(this.value);
-
-  final String value;
-}
-
-class DenyMarkObject extends DenyMark {
-  const DenyMarkObject({required this.name, required this.value});
-
-  final String name;
-  final String value;
-}
+typedef DenyMark = Object /* String | ({String name, String value}) */;
 
 String rawDenied(
   String reason, [
-  DenyMark tag = const DenyMarkString('blocked-by-sandbox-runtime'),
+  DenyMark tag = 'blocked-by-sandbox-runtime',
   String phrase = 'Forbidden',
 ]) => throw UnimplementedError('pending port of src/sandbox/request-filter.ts');
 
@@ -332,7 +318,7 @@ String rawDenied(
 void respondDenied(
   http.ServerResponse res,
   String reason, [
-  DenyMark tag = const DenyMarkString('blocked-by-sandbox-runtime'),
+  DenyMark tag = 'blocked-by-sandbox-runtime',
   int status = 403,
 ]) => throw UnimplementedError('pending port of src/sandbox/request-filter.ts');
 
