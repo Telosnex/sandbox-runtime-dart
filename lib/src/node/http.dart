@@ -536,14 +536,59 @@ class NodeHttpServer extends net.NodeServer {
         }
         _idleConnections.remove(socket);
         final parsed = _parseHead(head, request: true);
-        final request = IncomingMessage._(
-          socket: socket,
-          rawHeaders: parsed.rawHeaders,
-          headers: parsed.headers,
-          httpVersion: parsed.version,
-          method: parsed.method,
-          url: parsed.target,
-        );
+        final parser = socket.parser ??= _newServerParser(socket);
+        final versionParts = parsed.version.split('.');
+        final major = int.tryParse(versionParts.first) ?? 1;
+        final minor = versionParts.length > 1
+            ? int.tryParse(versionParts[1]) ?? 1
+            : 0;
+        final headerTokens = parsed.headers['connection']
+            ?.toString()
+            .toLowerCase()
+            .split(',')
+            .map((token) => token.trim())
+            .toSet();
+        final upgradeHeader =
+            parsed.headers.containsKey('upgrade') &&
+            (headerTokens?.contains('upgrade') ?? false);
+        final shouldKeepAlive = (major == 1 && minor >= 1)
+            ? !(headerTokens?.contains('close') ?? false)
+            : (headerTokens?.contains('keep-alive') ?? false);
+        // Node's parser flushes 31 header lines at a time through kOnHeaders,
+        // then calls kOnHeadersComplete with no headers and no url.
+        List<String>? headersArg = parsed.rawHeaders;
+        String? urlArg = parsed.target;
+        if (parsed.rawHeaders.length ~/ 2 > 31 &&
+            parser[net.HTTPParser.kOnHeaders] != null) {
+          var index = 0;
+          var urlPart = parsed.target;
+          while (parsed.rawHeaders.length ~/ 2 - index > 31) {
+            Function.apply(parser[net.HTTPParser.kOnHeaders]!, [
+              parsed.rawHeaders.sublist(2 * index, 2 * (index + 31)),
+              urlPart,
+            ]);
+            urlPart = '';
+            index += 31;
+          }
+          Function.apply(parser[net.HTTPParser.kOnHeaders]!, [
+            parsed.rawHeaders.sublist(2 * index),
+            urlPart,
+          ]);
+          headersArg = null;
+          urlArg = null;
+        }
+        Function.apply(parser[net.HTTPParser.kOnHeadersComplete]!, [
+          major,
+          minor,
+          headersArg,
+          parsed.method,
+          urlArg,
+          null,
+          null,
+          upgradeHeader || parsed.method == 'CONNECT',
+          shouldKeepAlive,
+        ]);
+        final request = parser.incoming! as IncomingMessage;
         final response = ServerResponse._(socket, request);
         pendingResponses.add(response.done);
         final connectionTokens = request.headers['connection']
@@ -592,7 +637,7 @@ class NodeHttpServer extends net.NodeServer {
             if (!socket.destroyed && !_closed) _idleConnections.add(socket);
           });
         }
-        await _readMessageBody(reader, request, parsed.headers);
+        await _readMessageBody(reader, request, parsed.headers, parser: parser);
         if (request.headers['connection']?.toString().toLowerCase() ==
             'close') {
           await response.done;
@@ -625,6 +670,66 @@ class NodeHttpServer extends net.NodeServer {
       );
     }
   }
+}
+
+/// Node's server installs these on every parser; they build the
+/// IncomingMessage and feed it. Wrappers (keepFlushedHeaderBatches) replace
+/// slots and call these.
+net.HTTPParser _newServerParser(net.NodeSocket socket) {
+  final parser = net.HTTPParser();
+  parser[net.HTTPParser.kOnHeaders] = (List<String> headers, String url) {
+    parser.headersSoFar.addAll(headers);
+    parser.urlSoFar += url;
+  };
+  parser[net.HTTPParser.kOnHeadersComplete] =
+      (
+        int versionMajor,
+        int versionMinor,
+        List<String>? headers,
+        String? method,
+        String? url,
+        int? statusCode,
+        String? statusMessage,
+        bool upgrade,
+        bool shouldKeepAlive,
+      ) {
+        final List<String> rawHeaders;
+        if (headers == null) {
+          rawHeaders = parser.headersSoFar;
+          parser.headersSoFar = [];
+        } else {
+          rawHeaders = headers;
+        }
+        if (url == null) {
+          url = parser.urlSoFar;
+          parser.urlSoFar = '';
+        }
+        final values = <String, Object?>{};
+        for (var i = 0; i + 1 < rawHeaders.length; i += 2) {
+          _mergeParsedHeader(values, rawHeaders[i], rawHeaders[i + 1]);
+        }
+        parser.incoming = IncomingMessage._(
+          socket: socket,
+          rawHeaders: rawHeaders,
+          headers: values,
+          httpVersion: '$versionMajor.$versionMinor',
+          method: method,
+          url: url,
+          statusCode: statusCode,
+          statusMessage: statusMessage,
+        );
+        return 0;
+      };
+  parser[net.HTTPParser.kOnBody] = (Uint8List chunk) {
+    (parser.incoming! as IncomingMessage)._add(chunk);
+  };
+  parser[net.HTTPParser.kOnMessageComplete] = () {
+    // Whatever came through kOnHeaders since the head was the trailers.
+    parser.headersSoFar = [];
+    parser.urlSoFar = '';
+    (parser.incoming! as IncomingMessage)._finish();
+  };
+  return parser;
 }
 
 NodeHttpServer createServer([Object? options, Function? requestListener]) {
@@ -1226,11 +1331,38 @@ void _mergeHeader(Map<String, Object?> headers, String name, String value) {
   }
 }
 
+void _bodyChunk(net.HTTPParser? parser, IncomingMessage message, Uint8List b) {
+  if (parser == null) {
+    message._add(b);
+  } else {
+    Function.apply(parser[net.HTTPParser.kOnBody]!, [b]);
+  }
+}
+
+void _messageComplete(
+  net.HTTPParser? parser,
+  IncomingMessage message, [
+  List<String> trailers = const [],
+]) {
+  if (parser == null) {
+    message._finish();
+    return;
+  }
+  if (trailers.isNotEmpty && parser[net.HTTPParser.kOnHeaders] != null) {
+    Function.apply(parser[net.HTTPParser.kOnHeaders]!, [
+      trailers,
+      message.url ?? '',
+    ]);
+  }
+  Function.apply(parser[net.HTTPParser.kOnMessageComplete]!, const []);
+}
+
 Future<void> _readMessageBody(
   _ByteReader reader,
   IncomingMessage message,
   Map<String, Object?> headers, {
   bool response = false,
+  net.HTTPParser? parser,
 }) async {
   if (headers['transfer-encoding']?.toString().toLowerCase().contains(
         'chunked',
@@ -1267,7 +1399,7 @@ Future<void> _readMessageBody(
             ..add(value);
           _mergeHeader(message.trailers, name.toLowerCase(), value);
         }
-        message._finish();
+        _messageComplete(parser, message, message.rawTrailers);
         return;
       }
       var remainingChunk = length;
@@ -1277,7 +1409,7 @@ Future<void> _readMessageBody(
         if (bytes == null)
           throw const SocketException('Unexpected EOF in chunk data');
         remainingChunk -= bytes.length;
-        message._add(bytes);
+        _bodyChunk(parser, message, Uint8List.fromList(bytes));
         await message._waitForBodyGate();
       }
       final crlf = await reader.exact(2);
@@ -1306,20 +1438,20 @@ Future<void> _readMessageBody(
         );
       }
       remaining -= bytes.length;
-      message._add(bytes);
+      _bodyChunk(parser, message, Uint8List.fromList(bytes));
       await message._waitForBodyGate();
     }
-    message._finish();
+    _messageComplete(parser, message);
     return;
   }
   if (response) {
     while (true) {
       final bytes = await reader.some(8192);
       if (bytes == null) break;
-      message._add(bytes);
+      _bodyChunk(parser, message, Uint8List.fromList(bytes));
     }
   }
-  message._finish();
+  _messageComplete(parser, message);
 }
 
 class _ByteReader {

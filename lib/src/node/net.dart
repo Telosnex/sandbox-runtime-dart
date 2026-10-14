@@ -41,6 +41,12 @@ int isIP(String input) {
   return 0;
 }
 
+/// Node `net.isIPv4`.
+bool isIPv4(String input) => _ipv4Regex.hasMatch(input);
+
+/// Node `net.isIPv6`.
+bool isIPv6(String input) => _ipv6Regex.hasMatch(input);
+
 const _v4Seg = r'(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])';
 final _v4Str = '(?:$_v4Seg\\.){3}$_v4Seg';
 final _ipv4Regex = RegExp('^$_v4Str\$');

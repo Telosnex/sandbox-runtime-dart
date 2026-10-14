@@ -44,6 +44,46 @@ Future<Uint8List> _rawExchange(int port, List<int> request) async {
 void main() {
   group('raw HTTP/1.1 shim', () {
     test(
+      'socket.parser slots are called positionally with Node arity',
+      () async {
+        final calls = <String>[];
+        final server = http.createServer();
+        server.on('connection', (net.NodeSocket socket) {
+          // Not yet parsing: the server installs the parser on first request.
+          expect(socket.parser, isNull);
+        });
+        server.on('request', (
+          http.IncomingMessage request,
+          http.ServerResponse response,
+        ) {
+          calls.add('request ${request.method} ${request.url}');
+        expect(request.rawHeaders.length, 84);
+        expect(request.headers['x-39'], 'v39');
+          request.resume();
+          request.on('end', () => response.end('ok'));
+          final parser = request.socket.parser!;
+          final original = parser[net.HTTPParser.kOnMessageComplete]!;
+          parser[net.HTTPParser.kOnMessageComplete] = () {
+            calls.add('complete');
+            Function.apply(original, const []);
+          };
+        });
+        final (port, close) = await _listen(server);
+        final head = StringBuffer(
+          'GET /p HTTP/1.1\r\nHost: h\r\nConnection: close\r\n',
+        );
+        for (var i = 0; i < 40; i++) {
+          head.write('X-$i: v$i\r\n');
+        }
+        head.write('\r\n');
+        final response = await _rawExchange(port, ascii.encode('$head'));
+        expect(latin1.decode(response), contains('200 OK'));
+        expect(calls.first, 'request GET /p');
+        await close();
+      },
+    );
+
+    test(
       'keeps raw header order/spelling, streams chunked body, and isolates trailers',
       () async {
         final requestSeen =
