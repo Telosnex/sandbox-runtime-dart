@@ -75,6 +75,14 @@ class _HttpOptions implements HttpProxyServerOptions {
 // listens, within the proxy's bounds on tunnels and the leaf caches.
 
 void main() {
+  // Dart: upstream's testWithTls (test/helpers/emitted-connections.ts) takes no
+  // timeout or tags here, so it is this wrapper over `test`.
+  void testWithTls(
+    String description,
+    Future<void> Function() body, {
+    List<String>? tags,
+  }) => test(description, body, skip: _tlsSkip, tags: tags);
+
   final cleanup = <FutureOr<void> Function()>[];
   tearDown(() async {
     while (cleanup.isNotEmpty) {
@@ -640,7 +648,7 @@ void main() {
       skip: _tlsSkip,
     );
 
-    test(
+    testWithTls(
       'a tunnel that got going outlives the deadline: a request, an idle spell past it, another request',
       () async {
         final p = await capped();
@@ -693,7 +701,6 @@ void main() {
       },
       // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
       tags: ['pending'],
-      skip: _tlsSkip,
     );
 
     test('a tunnel that turns out not to be TLS frees its slot', () async {
