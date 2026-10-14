@@ -1215,7 +1215,7 @@ Future<void> _initializeSteps(
           caKeyPem: p.keyPem,
           caCertPath: p.certPath,
           caKeyPath: p.keyPath,
-          extraCaCertPaths: tlsTerminate!.extraCaCertPaths,
+          extraCaCertPaths: tlsTerminate.extraCaCertPaths,
         );
       } catch (e) {
         _config = null;
