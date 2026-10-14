@@ -114,6 +114,7 @@ import 'sandbox_config.dart'
         SandboxRuntimeConfig,
         SeccompConfig,
         WindowsConfig;
+import 'sandbox_config.dart' as config_types show RipgrepConfig;
 import 'sandbox_schemas.dart'
     show
         CredentialRestrictionConfig,
@@ -2251,7 +2252,7 @@ class PartialSandboxRuntimeConfig {
   final bool? enableWeakerNestedSandbox;
   final bool? enableWeakerNetworkIsolation;
   final bool? allowAppleEvents;
-  final RipgrepConfig? ripgrep;
+  final config_types.RipgrepConfig? ripgrep;
   final int? mandatoryDenySearchDepth;
   final bool? allowPty;
   final SeccompConfig? seccomp;
