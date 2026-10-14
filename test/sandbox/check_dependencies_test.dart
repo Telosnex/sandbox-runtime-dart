@@ -2,6 +2,8 @@
 import 'package:test/test.dart';
 
 import 'package:sandbox_runtime/src/node/process.dart' as process;
+import 'package:sandbox_runtime/src/sandbox/linux_sandbox_utils.dart'
+    show SandboxDependencyCheck;
 import 'package:sandbox_runtime/src/sandbox/sandbox_manager.dart';
 import 'package:sandbox_runtime/src/utils/which.dart' as which;
 
