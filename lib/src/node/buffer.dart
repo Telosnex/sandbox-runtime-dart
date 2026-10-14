@@ -1,10 +1,28 @@
 // Small Node Buffer surface used by sandbox-utils.ts.
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
 
-class Buffer {
+/// A Node Buffer: a fixed-length list of bytes with Node's encodings.
+/// `randomBytes`, `crypto.sign` and friends return this type, so
+/// `randomBytes(8).toString('hex')` and `for (b of randomBytes(n))` work.
+class Buffer with ListMixin<int> {
   Buffer._(this._bytes);
   final Uint8List _bytes;
+
+  /// Wraps [bytes] without copying.
+  Buffer.wrap(Uint8List bytes) : _bytes = bytes;
+
+  static Buffer alloc(int size) => Buffer._(Uint8List(size));
+
+  @override
+  int get length => _bytes.length;
+  @override
+  set length(int value) => throw UnsupportedError('Buffer has a fixed length');
+  @override
+  int operator [](int index) => _bytes[index];
+  @override
+  void operator []=(int index, int value) => _bytes[index] = value & 0xff;
 
   factory Buffer.from(Object value, [String encoding = 'utf8']) {
     if (value is List<int>) return Buffer._(Uint8List.fromList(value));
@@ -24,6 +42,20 @@ class Buffer {
         return Buffer._(Uint8List(0));
       }
     }
+    if (encoding == 'binary' || encoding == 'latin1') {
+      return Buffer._(
+        Uint8List.fromList([for (final c in text.codeUnits) c & 0xff]),
+      );
+    }
+    if (encoding == 'hex') {
+      final out = <int>[];
+      for (var i = 0; i + 1 < text.length; i += 2) {
+        final byte = int.tryParse(text.substring(i, i + 2), radix: 16);
+        if (byte == null) break;
+        out.add(byte);
+      }
+      return Buffer._(Uint8List.fromList(out));
+    }
     return Buffer._(Uint8List.fromList(utf8.encode(text)));
   }
 
@@ -36,6 +68,8 @@ class Buffer {
       return base64Url.encode(_bytes).replaceAll('=', '');
     if (encoding == 'hex')
       return _bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    if (encoding == 'binary' || encoding == 'latin1')
+      return String.fromCharCodes(_bytes);
     return utf8.decode(_bytes, allowMalformed: true);
   }
 
