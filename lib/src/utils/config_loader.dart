@@ -5,8 +5,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../node/errno.dart' show codeForErrno;
-import '../sandbox/sandbox_config.dart' show SandboxRuntimeConfig;
-import '../sandbox/sandbox_config.dart' show SandboxRuntimeConfigSchema;
+import '../sandbox/sandbox_config.dart'
+    show SandboxRuntimeConfig, SandboxRuntimeConfigSchema;
 
 /**
  * Parse and validate sandbox configuration from a string
@@ -76,18 +76,22 @@ class LoadConfigResultInvalid extends LoadConfigResult {
 LoadConfigResult loadConfig(String filePath) {
   late String content;
   try {
-    content = File(filePath).readAsStringSync(encoding: utf8);
-  } on FileSystemException catch (error) {
-    final code = error.osError?.errorCode;
-    final symbolicCode = code == null ? null : codeForErrno(code);
-    if (symbolicCode == 'ENOENT') return const LoadConfigResultMissing();
-    return LoadConfigResultUnreadable(
-      reason:
-          '$filePath could not be read (${symbolicCode ?? error.toString()}).',
-    );
+    // Read first and classify the failure: an existence check ahead of it
+    // would call a file that is there but unsearchable, or a $HOME that is
+    // a file, "missing" — the one answer that falls back to the defaults.
+    content = File(
+      filePath,
+    ).readAsStringSync(encoding: const Utf8Codec(allowMalformed: true));
   } catch (error) {
+    final errno = error is FileSystemException
+        ? error.osError?.errorCode
+        : null;
+    final code = errno == null ? null : codeForErrno(errno);
+    if (code == 'ENOENT') {
+      return const LoadConfigResultMissing();
+    }
     return LoadConfigResultUnreadable(
-      reason: '$filePath could not be read ($error).',
+      reason: '$filePath could not be read (${code ?? error.toString()}).',
     );
   }
 
