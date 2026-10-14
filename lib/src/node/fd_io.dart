@@ -292,6 +292,8 @@ class _FdSocket extends Stream<Uint8List> implements Socket {
     port.listen((Object? m) {
       if (m is SendPort) {
         _toReader = m;
+        // A stop sent before the reader isolate was up was lost.
+        if (_closed || _stopRequested) m.send('stop');
       } else if (m is TransferableTypedData) {
         if (!_controller.isClosed) {
           _controller.add(m.materialize().asUint8List());
@@ -320,7 +322,10 @@ class _FdSocket extends Stream<Uint8List> implements Socket {
     if (!_controller.isPaused) _toReader?.send('more');
   }
 
+  bool _stopRequested = false;
+
   Future<void> _stopReading() async {
+    _stopRequested = true;
     _toReader?.send('stop');
     if (_readerGone) _maybeFinish();
   }
