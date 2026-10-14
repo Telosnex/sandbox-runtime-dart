@@ -750,12 +750,15 @@ NodeHttpServer createServer([Object? options, Function? requestListener]) {
   return server;
 }
 
-/// A limited Agent with one active/idle socket per endpoint. It intentionally
-/// serializes requests when maxSockets is one, matching the TLS proxy policy.
+const int _infinity = 0x7fffffff;
+
+/// A limited Agent with one idle socket per endpoint. maxSockets defaults to
+/// Infinity and keepAlive to false, as in Node; maxSockets: 1 serializes.
+
 class Agent {
   Agent({
-    this.keepAlive = true,
-    this.maxSockets = 1,
+    this.keepAlive = false,
+    this.maxSockets = _infinity,
     this.socketPath,
     this.secure = false,
     this.securityContext,
@@ -875,7 +878,7 @@ class _AgentLease {
   final void Function() release;
 }
 
-final Agent globalAgent = Agent(keepAlive: true, maxSockets: 1);
+final Agent globalAgent = Agent(keepAlive: true);
 
 /// Node ClientRequest subset. Writes are queued until a socket is assigned.
 class ClientRequest extends events.EventEmitter {
