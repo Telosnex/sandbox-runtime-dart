@@ -5,7 +5,8 @@
 import '../node/http.dart' as http;
 import '../node/net.dart' as net;
 import '../node/stream.dart' as stream;
-import 'decider_client.dart' show CredentialPlacement, Decider;
+import 'decider_client.dart'
+    show CredentialPlacement, CredentialPlacementBasic, Decider;
 
 /**
  * Proxy-only mode: SRT's HTTP proxy with no sandboxed child, for a host
