@@ -110,20 +110,35 @@ expected output.
 - mitm-ca, mitm-leaf (forge/tls shims are ready).
 - Credentials: credential-sentinel, -decode, -mask-env, -mask-files,
   -aws-pairs, body-substitution.
-- windows-sandbox-utils (2,457) plus vendored srt-win Rust. Open founder
-  decision: Telosnex uses the Codex restricted-token fork, not srt-win.
-  Recommendation: skip for now and record the gap.
+- windows-sandbox-utils: NOT PORTED, by decision (see below).
 - sandbox-manager (3,144), then index, cli, proxy-cli, proxy-main,
   config-loader.
 - Tests: most of upstream's ~66,000 test lines, mostly sandbox-manager driven.
   The queue is under "Related upstream tests not ported in this batch".
-- Vendor: srt-win and java-proxy-agent sources and their build scripts in
-  Dart. CI.
+- Vendor: java-proxy-agent is done; srt-win is not vendored (Windows is
+  skipped). CI.
 
 Founder decisions (2026-10-13): the Linux sandbox and sandbox-manager come
-before the proxy stack. windows-sandbox-utils: pending; the recommendation is
-to skip it, because Telosnex ADR D6 rejects its model (a separate Windows user
-account, machine-wide firewall filters, an administrator install step).
+before the proxy stack. Windows is skipped (decided 2026-10-13): Telosnex ADR
+D6 rejects srt-win's model (a separate Windows user account, machine-wide
+firewall filters, an administrator install step), and Telosnex uses the Codex
+restricted-token fork on Windows instead.
+
+What skipping means in practice:
+- `src/sandbox/windows-sandbox-utils.ts` (2,457 lines), `vendor/srt-win-src`
+  and `vendor/srt-win/build.ts` are not ported or vendored.
+- sandbox-manager, index and cli import it. Port those files whole; where
+  they call into it, use a STUB `lib/src/sandbox/windows_sandbox_utils.dart`
+  (header `STUB: pending port of src/sandbox/windows-sandbox-utils.ts`)
+  whose functions throw `UnsupportedError('Windows is not supported by this
+  port')`, so the Windows branches stay in upstream's shape and fail loudly.
+  On Windows, the manager's platform check should report "not supported".
+- `test/sandbox/winsrt.test.ts` and `winsrt-paths.property.test.ts`: not
+  ported; listed here as the gap. Tests elsewhere that are Windows-only keep
+  upstream's bodies as comments with `skip: 'Windows not supported by this
+  port'`.
+- Config keys that only Windows reads (`windows.*`) still validate, as
+  upstream's schema does.
 
 **Telosnex follow-ups (outside this repo):** update
 `docs/design/ADR_tool_execution_sandbox.md` to use this port; wire
