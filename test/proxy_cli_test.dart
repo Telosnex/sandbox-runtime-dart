@@ -1,5 +1,4 @@
 // Ported from sandbox-runtime test/proxy-cli.test.ts @ 24eb39e.
-@Tags(['pending'])
 library;
 
 // ignore_for_file: no_leading_underscores_for_local_identifiers, constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments, prefer_interpolation_to_compose_strings
@@ -303,6 +302,7 @@ Future<void> main() async {
         }
       },
       timeout: const Timeout(Duration(milliseconds: 20000)),
+      tags: ['pending'], // Dart: message is 'stopped (decider: decider closed the output stream)' not 'write error' (proxy_cli.dart error text/ordering)
     );
 
     // Each form runs twice. Pinned to one CPU, reads of descriptors that sit
@@ -487,6 +487,9 @@ Future<void> main() async {
           skip: !SERVES_EMITTED_CONNECTIONS || (pin && TASKSET == null)
               ? true
               : null,
+          tags: [
+            'pending',
+          ], // Dart: descriptor-form cases time out after 20s on macOS: handed listener/decider fds not served (handleFd/stdio>3 path?)
         );
       }
     }

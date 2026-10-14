@@ -133,11 +133,10 @@ void main() {
       expect(srt.keys.toList()..sort(), PUBLIC_VALUE_EXPORTS);
     });
 
-    // Dart: VENDORED_SRT_WIN_EXE throws UnsupportedError off Windows (windows_sandbox_utils.dart); upstream's value is defined.
     test('binds every listed name', () {
       for (final name in PUBLIC_VALUE_EXPORTS) {
         expect(srt[name]!(), isNotNull);
       }
-    }, tags: ['pending']);
+    });
   });
 }

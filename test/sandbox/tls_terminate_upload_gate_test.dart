@@ -1,6 +1,6 @@
 // Ported from sandbox-runtime test/sandbox/tls-terminate-upload-gate.test.ts @ 24eb39e.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments
-@Tags(['pending'])
+@Tags(['pending']) // Dart: client gets empty response (no 200) after 60s; stalled-upstream upload hold-back not working
 library;
 
 import 'dart:async';
