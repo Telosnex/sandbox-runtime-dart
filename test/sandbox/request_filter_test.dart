@@ -60,8 +60,6 @@ void main() {
   group(
     'network.filterRequest',
     skip: SERVES_EMITTED_CONNECTIONS ? null : 'TLS termination unavailable',
-    // Dart: intermittent hang (about 40% of runs): whichever test runs first, the first request curl sends through the TLS-terminating proxy in a fresh process never completes (curl --max-time 10 expires); later tests pass. Suspect http_proxy.dart / mitm leaf or upstream TLS leg.
-    tags: ['pending'],
     () {
       // Every test here drives real TLS (CA mint, MITM re-encrypt) through a
       // spawned curl whose functional watchdog is --max-time 10. The per-test
@@ -443,12 +441,12 @@ Future<CurlResult> curl(
   child.stderr!
       .transform(utf8.decoder)
       .listen((_) {}, onDone: () => stderrEnd.complete());
-  await Future.wait([stdoutEnd.future, stderrEnd.future]);
   final exitCompleter = Completer<int>();
   child.on(
     'close',
     (int? code, [Object? _]) => exitCompleter.complete(code ?? 1),
   );
+  await Future.wait([stdoutEnd.future, stderrEnd.future]);
   final exit = await exitCompleter.future;
 
   final sep = out.lastIndexOf('\r\n\r\n');
