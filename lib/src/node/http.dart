@@ -16,10 +16,8 @@ import 'tls.dart' as node_tls;
 const int defaultMaxHeaderSize = 16 * 1024;
 
 /// Node parser error subset. `code` and `message` are stable for clientError.
-class NodeHttpError implements Exception {
-  NodeHttpError(this.code, this.message);
-  final String code;
-  final String message;
+class NodeHttpError extends NodeError {
+  NodeHttpError(String code, String message) : super(message, code: code);
   @override
   String toString() => 'Error: $message';
 }
