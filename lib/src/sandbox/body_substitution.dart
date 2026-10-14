@@ -22,6 +22,8 @@ import 'dart:typed_data';
 
 import '../node/http.dart' as http;
 import '../node/stream.dart' as stream;
+import '../utils/debug.dart';
+import 'request_filter.dart' show BODYLESS_METHODS;
 
 /** One sentinel→real replacement, as raw bytes. */
 class SentinelBufferPair {
@@ -43,9 +45,7 @@ typedef GetBodySubstitutions =
 
 /** True when substitution cannot change the body length. */
 bool allLengthMatched(List<SentinelBufferPair> pairs) =>
-    throw UnimplementedError(
-      'pending port of src/sandbox/body-substitution.ts',
-    );
+    pairs.every((p) => p.sentinel.length == p.realValue.length);
 
 /**
  * Build the substitution Transform for one forwarded request, or undefined
@@ -63,9 +63,26 @@ stream.Transform? prepareBodySubstitution(
   http.IncomingMessage req,
   http.IncomingHttpHeaders fwdHeaders,
   String destHost,
-) => throw UnimplementedError(
-  'pending port of src/sandbox/body-substitution.ts',
-);
+) {
+  if (getBodySubstitutions == null) return null;
+  final declaresBody =
+      req.headers['content-length'] != null ||
+      req.headers['transfer-encoding'] != null;
+  if (BODYLESS_METHODS.contains(req.method ?? 'GET') && !declaresBody) {
+    return null;
+  }
+  final pairs = getBodySubstitutions(destHost);
+  if (pairs == null || pairs.isEmpty) return null;
+  if (req.headers['content-encoding'] != null) {
+    logForDebugging(
+      '[body-substitution] $destHost: request body has Content-Encoding "${req.headers['content-encoding']}"; masked-credential substitution skipped — a sentinel in this body reaches the upstream as the fake value',
+      level: 'warn',
+    );
+    return null;
+  }
+  if (!allLengthMatched(pairs)) fwdHeaders.remove('content-length');
+  return createBodySubstitutionTransform(pairs);
+}
 
 /**
  * Transform that replaces every occurrence of each pair's sentinel bytes
@@ -80,6 +97,66 @@ stream.Transform? prepareBodySubstitution(
  */
 stream.Transform createBodySubstitutionTransform(
   List<SentinelBufferPair> pairs,
-) => throw UnimplementedError(
-  'pending port of src/sandbox/body-substitution.ts',
-);
+) {
+  final maxLen = pairs
+      .map((p) => p.sentinel.length)
+      .reduce((a, b) => a > b ? a : b);
+  Uint8List carry = Uint8List(0);
+  return stream.Transform(
+    transform: (Object chunk, Object? encoding, Function callback) {
+      final bytes = chunk is String
+          ? Uint8List.fromList(chunk.codeUnits)
+          : Uint8List.fromList(chunk as List<int>);
+      final work = Uint8List(carry.length + bytes.length)
+        ..setRange(0, carry.length, carry)
+        ..setRange(carry.length, carry.length + bytes.length, bytes);
+      final result = _substitute(work, pairs, maxLen);
+      carry = result.$2;
+      Function.apply(callback, [null, result.$1]);
+    },
+    flush: (Function callback) {
+      Function.apply(callback, [null, carry.isEmpty ? null : carry]);
+    },
+  );
+}
+
+(Uint8List, Uint8List) _substitute(
+  Uint8List work,
+  List<SentinelBufferPair> pairs,
+  int maxLen,
+) {
+  final out = BytesBuilder(copy: false);
+  var pos = 0;
+  while (true) {
+    var matchIndex = -1;
+    SentinelBufferPair? matchPair;
+    for (final pair in pairs) {
+      final index = _indexOf(work, pair.sentinel, pos);
+      if (index >= 0 && (matchIndex < 0 || index < matchIndex)) {
+        matchIndex = index;
+        matchPair = pair;
+      }
+    }
+    if (matchPair == null) break;
+    out.add(work.sublist(pos, matchIndex));
+    out.add(matchPair.realValue);
+    pos = matchIndex + matchPair.sentinel.length;
+  }
+  final tailStart = (work.length - (maxLen - 1)).clamp(pos, work.length);
+  out.add(work.sublist(pos, tailStart));
+  return (out.takeBytes(), Uint8List.fromList(work.sublist(tailStart)));
+}
+
+int _indexOf(List<int> haystack, List<int> needle, int start) {
+  for (var i = start; i + needle.length <= haystack.length; i++) {
+    var found = true;
+    for (var j = 0; j < needle.length; j++) {
+      if (haystack[i + j] != needle[j]) {
+        found = false;
+        break;
+      }
+    }
+    if (found) return i;
+  }
+  return -1;
+}
