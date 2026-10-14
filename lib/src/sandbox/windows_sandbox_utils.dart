@@ -5,6 +5,7 @@
 // ignore_for_file: prefer_interpolation_to_compose_strings
 
 import 'dart:convert';
+import 'dart:io' show File, Platform;
 
 import 'package:path/path.dart' as path;
 
@@ -511,6 +512,26 @@ class WindowsSandboxParams {
 // Binary resolution
 // ────────────────────────────────────────────────────────────────────
 
+String repoRoot() {
+  // src/sandbox/windows-sandbox-utils.ts → repo root (compiled: dist/sandbox/…)
+  // Dart: the package root, from the package config (as child_process.dart finds the spawn helper).
+  final cfg = Platform.packageConfig;
+  if (cfg == null)
+    throw StateError('no package config: cannot locate the package root');
+  final cfgUri = cfg.startsWith('file:') ? Uri.parse(cfg) : Uri.file(cfg);
+  final config = jsonDecode(File.fromUri(cfgUri).readAsStringSync()) as Map;
+  for (final e in config['packages'] as List) {
+    if ((e as Map)['name'] == 'sandbox_runtime') {
+      return path.normalize(
+        cfgUri.resolve(e['rootUri'] as String).toFilePath(),
+      );
+    }
+  }
+  throw StateError('sandbox_runtime not in the package config');
+}
+
+const Map<String, String> nodeArchToDir = {'x64': 'x64', 'arm64': 'arm64'};
+
 /**
  * The srt-win binary packaged with this module
  * (`vendor/srt-win/<arch>/srt-win.exe`, arch from `process.arch`).
@@ -521,8 +542,13 @@ class WindowsSandboxParams {
  * write grant — a sandboxed process could overwrite it; prefer a
  * binary outside any grant (e.g. your own signed executable).
  */
-String get VENDORED_SRT_WIN_EXE =>
-    throw UnsupportedError('Windows is not supported by this port');
+final String VENDORED_SRT_WIN_EXE = path.join(
+  repoRoot(),
+  'vendor',
+  'srt-win',
+  nodeArchToDir[process.arch] ?? process.arch,
+  'srt-win.exe',
+);
 
 /**
  * Locate a built `srt-win.exe` for development/CI. Checks, in order:
