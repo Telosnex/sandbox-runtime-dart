@@ -16,6 +16,7 @@ import 'dart:typed_data';
 import 'dns.dart' as dns;
 import 'errno.dart';
 import 'events.dart';
+import 'fd_io.dart';
 import 'stream.dart' as stream;
 
 /// Node's net.connect DNS callback contract. `options` describes the requested
@@ -40,6 +41,12 @@ int isIP(String input) {
   if (_ipv6Regex.hasMatch(input)) return 6;
   return 0;
 }
+
+/// Node `net.isIPv4`.
+bool isIPv4(String input) => _ipv4Regex.hasMatch(input);
+
+/// Node `net.isIPv6`.
+bool isIPv6(String input) => _ipv6Regex.hasMatch(input);
 
 const _v4Seg = r'(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])';
 final _v4Str = '(?:$_v4Seg\\.){3}$_v4Seg';
@@ -251,6 +258,23 @@ class NodeSocket extends stream.Duplex {
     : _connecting = false,
       super(allowHalfOpen: allowHalfOpen, emitClose: false, autoDestroy: true) {
     _attach(socket);
+  }
+
+  /// Node `new net.Socket({fd, readable, writable})`: wrap an open stream
+  /// descriptor (a socket or a pipe). macOS and Linux; elsewhere it throws
+  /// ERR_FEATURE_UNAVAILABLE_ON_PLATFORM.
+  NodeSocket({
+    required int fd,
+    bool readable = true,
+    bool writable = true,
+    bool allowHalfOpen = false,
+  }) : _connecting = false,
+       super(
+         allowHalfOpen: allowHalfOpen,
+         emitClose: false,
+         autoDestroy: true,
+       ) {
+    _attach(fdSocket(fd, readable: readable, writable: writable));
   }
 
   /// A socket that will run over another, already connected one; see
@@ -942,16 +966,18 @@ class NodeServer extends EventEmitter {
     String? path;
     int? port;
     String? host;
+    int? fd;
     final first = args.isEmpty ? null : args.first;
     if (first is Map) {
       for (final key in first.keys) {
-        if (!const {'port', 'host', 'path'}.contains(key)) {
+        if (!const {'port', 'host', 'path', 'fd'}.contains(key)) {
           throw UnimplementedError('net.Server.listen option "$key"');
         }
       }
       path = first['path'] as String?;
       port = first['port'] as int?;
       host = first['host'] as String?;
+      fd = first['fd'] as int?;
     } else if (first is String) {
       path = first;
     } else if (first is int) {
@@ -962,13 +988,23 @@ class NodeServer extends EventEmitter {
     }
     if (callback != null) once('listening', callback);
     _binding = true;
-    unawaited(_bind(path, port ?? 0, host));
+    unawaited(_bind(path, port ?? 0, host, fd));
     return this;
   }
 
-  Future<void> _bind(String? path, int port, String? host) async {
+  Future<void> _bind(String? path, int port, String? host, [int? fd]) async {
     try {
-      if (path != null) {
+      if (fd != null) {
+        // Node: listen on an already-open listening descriptor.
+        final tcp = fdServerSocket(fd);
+        _tcp = tcp;
+        if (tcp.address.type == InternetAddressType.unix) {
+          _unixPath = tcp.address.address;
+        } else {
+          _host = tcp.address.address;
+          _port = tcp.port;
+        }
+      } else if (path != null) {
         _unixPath = path;
         if (Platform.isWindows) {
           // Windows has no Unix-domain listener here: bind loopback TCP.

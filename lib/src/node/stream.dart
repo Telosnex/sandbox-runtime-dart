@@ -403,8 +403,8 @@ class Readable extends NodeStream {
   }
 
   /// Node `Readable.fromWeb(readableStream)`.
-  static Readable fromWeb(
-    ReadableStream<Object?> readableStream, {
+  static Readable fromWeb<T>(
+    ReadableStream<T> readableStream, {
     bool objectMode = false,
     int? highWaterMark,
     String? encoding,
@@ -457,16 +457,16 @@ class Readable extends NodeStream {
   }
 
   /// Node `Readable.toWeb(streamReadable)`.
-  static ReadableStream<Object?> toWeb(Readable streamReadable) {
+  static ReadableStream<T> toWeb<T>(Readable streamReadable) {
     if (streamReadable.destroyed || !streamReadable.readable) {
-      final s = ReadableStream<Object?>();
+      final s = ReadableStream<T>();
       s.cancel();
       return s;
     }
     final objectMode = streamReadable.readableObjectMode;
-    late ReadableStreamDefaultController<Object?> controller;
+    late ReadableStreamDefaultController<T> controller;
     void onData(Object? chunk) {
-      controller.enqueue(chunk);
+      controller.enqueue(chunk as T);
       final size = controller.desiredSize;
       if (size != null && size <= 0) streamReadable.pause();
     }
@@ -487,7 +487,7 @@ class Readable extends NodeStream {
     streamReadable.on('data', onData);
     cleanup = finished(streamReadable, onFinished);
     assert(objectMode || !objectMode);
-    return ReadableStream<Object?>(
+    return ReadableStream<T>(
       start: (c) => controller = c,
       pull: (_) => streamReadable.resume(),
       cancel: (reason) => streamReadable.destroy(reason),
@@ -941,8 +941,9 @@ class Readable extends NodeStream {
   /// update the flow state as Node's removeListener hook does.
   @override
   bool emit(String event, [Object? a, Object? b, Object? c, Object? d]) {
+    final before = event == 'readable' ? listenerCount('readable') : 0;
     final result = super.emit(event, a, b, c, d);
-    if (event == 'readable' && _r != null && listenerCount('readable') == 0) {
+    if (before > 0 && _r != null && listenerCount('readable') == 0) {
       _nextTick(_updateReadableListening);
     }
     return result;

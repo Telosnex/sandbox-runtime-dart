@@ -13,6 +13,19 @@ Future<void> settle([int ms = 20]) =>
 String str(Object? c) => c is String ? c : utf8.decode(c! as List<int>);
 
 void main() {
+  test('resume() without a data listener drains and ends', () async {
+    final r = Readable(read: (int _) {});
+    var ended = false;
+    r.resume();
+    r.on('end', () => ended = true);
+    await settle();
+    r.push(Uint8List.fromList([1, 2]));
+    await settle();
+    r.push(null);
+    await settle();
+    expect(ended, isTrue);
+  });
+
   test(
     'once(readable), read(n), unshift, then on(data) resumes flowing',
     () async {
