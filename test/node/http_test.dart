@@ -74,6 +74,42 @@ void main() {
     });
 
     test(
+      'req.destroy() after finish keeps the reply while the body arrives',
+      () async {
+        final server = http.createServer();
+        server.on('request', (
+          http.IncomingMessage request,
+          http.ServerResponse response,
+        ) {
+          response.statusCode = 403;
+          response.on('finish', request.destroy);
+          response.end('denied');
+        });
+        final (port, close) = await _listen(server);
+        final client = net.connect({'host': '127.0.0.1', 'port': port});
+        final got = StringBuffer();
+        client.on(
+          'data',
+          (Object? d) => got.write(latin1.decode(d as List<int>)),
+        );
+        client.on('error', (Object _) {});
+        final closed = Completer<void>();
+        client.on('close', (Object? _) => closed.complete());
+        client.write(
+          'POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 200000\r\n\r\n${'a' * 1000}',
+        );
+        for (var i = 1; i <= 20; i++) {
+          Timer(Duration(milliseconds: i * 10), () {
+            if (!client.destroyed) client.write('b' * 9950);
+          });
+        }
+        await closed.future.timeout(const Duration(seconds: 5));
+        expect(got.toString(), startsWith('HTTP/1.1 403'));
+        await close();
+      },
+    );
+
+    test(
       'ClientRequest auth sends Basic, maxSockets allows parallel sockets',
       () async {
         final seen = <String?>[];
