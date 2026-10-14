@@ -1,3 +1,18 @@
+/**
+ * How an entry of `denyRead`, `allowRead`, `allowWrite` or `denyWrite` is
+ * read: as the pattern its characters spell, as the path they name, or both.
+ *
+ * An entry with `*`, `?`, `[` or `]` is a pattern. A directory may hold those
+ * in its own name (`[WIP] project`), so such an entry is ALSO read as what it
+ * names wherever the part that holds the characters exists on disk. An entry
+ * marked `{ path, literal: true }` is the name and nothing else.
+ *
+ * The decision is made by the functions here only, for each stage that
+ * needs it (the manager and the wrapper's fold on Linux, the profile builder
+ * on macOS, `expandWindowsFsPaths` on Windows). One wrap may ask about an
+ * entry more than once, and the disk may change in between.
+ */
+
 // Ported from sandbox-runtime src/sandbox/path-entries.ts @ 24eb39e.
 // ignore_for_file: slash_for_doc_comments, dangling_library_doc_comments
 // ignore_for_file: constant_identifier_names

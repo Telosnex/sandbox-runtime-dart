@@ -1,6 +1,6 @@
 // Ported from sandbox-runtime src/sandbox/macos-sandbox-utils.ts @ 24eb39e.
 // ignore_for_file: constant_identifier_names, dangling_library_doc_comments
-// ignore_for_file: slash_for_doc_comments, curly_braces_in_flow_control_structures
+// ignore_for_file: doc_directive_unknown, slash_for_doc_comments, curly_braces_in_flow_control_structures
 // ignore_for_file: prefer_interpolation_to_compose_strings, non_constant_identifier_names
 
 import 'dart:convert';
@@ -284,6 +284,10 @@ class _LiteralPathEntry extends PathEntry {
 
 /// The [PathEntry] members that carry a pattern.
 class _GlobPathEntry extends PathEntry {
+  /// Set when this glob is anchored at a directory that is a name on
+  /// disk (the cwd, for the mandatory `**\/<name>` patterns, or an
+  /// existing one that holds glob characters): the prefix of
+  /// `path` that is a literal path rather than part of the pattern.
   final String? anchor;
   const _GlobPathEntry(String path, {this.anchor}) : super(path, true);
 }
@@ -474,9 +478,13 @@ _ResolvedReadConfig _resolveReadConfig(
 /// unnecessary carve-out only reproduces today's behavior for that entry,
 /// and a missed one (e.g. a glob allow whose sample path the deny regex
 /// happens not to match) leaves the deny wider — never opens anything.
-({List<String> filters, bool coversRoot}) _lateReadDenyFilters(
-  _ResolvedReadConfig resolved,
-) {
+({
+  List<String> filters,
+
+  /// Some emitted glob deny matches "/" itself (a `/*`-shaped pattern).
+  bool coversRoot,
+})
+_lateReadDenyFilters(_ResolvedReadConfig resolved) {
   final filters = <String>[];
   var coversRoot = false;
   final literalAllowDirs = resolved.allows
@@ -703,15 +711,14 @@ class _LiteralDenyGroup {
 }
 
 ///
-/// Fold literal deny paths into [_LiteralDenyGroup]s. Each group renders as
-/// one anchored regex per chunk of names instead of one `subpath` filter per
-/// path, so a directory with many same-shaped children costs bytes and profile
-/// compile time proportional to the names, not to the repeated absolute prefix
-/// (sandbox-exec compiles a few thousand path filters in seconds; a few dozen
-/// regexes in milliseconds). Globs, paths that do not fit a group of at least
-/// [_MIN_DENY_GROUP_SIZE] names, and names too long for one regex are returned
-/// in `rest` unchanged.
-///
+/// Fold literal deny paths into {@link LiteralDenyGroup}s. Each group renders
+/// as one anchored regex per chunk of names instead of one `subpath` filter
+/// per path, so a directory with many same-shaped children costs bytes and
+/// profile compile time proportional to the names, not to the repeated
+/// absolute prefix (sandbox-exec compiles a few thousand path filters in
+/// seconds; a few dozen regexes in milliseconds). Globs, paths that do not
+/// fit a group of at least {@link MIN_DENY_GROUP_SIZE} names, and names too
+/// long for one regex are returned in `rest` unchanged.
 ({List<_LiteralDenyGroup> groups, List<PathEntry> rest}) _groupLiteralDenyPaths(
   List<PathEntry> entries,
 ) {
@@ -773,12 +780,11 @@ String _groupDenyTail(_LiteralDenyGroup group) =>
     ')/(${group.leaves.map(_escapeRegexLiteral).join('|')})(/.*)?' + r'$';
 
 ///
-/// Regex filters for a [_LiteralDenyGroup], chunked so no regex exceeds
-/// [_SBPL_STRING_MAX_BYTES]. `deny` matches each `<dir>/<name>/<leaf>` and
-/// everything beneath it (the `subpath` semantics of a literal deny); `pins`
-/// match each `<dir>/<name>` directory itself, the move-blocking literal a
-/// per-path deny would have added for its parent.
-///
+/// Regex filters for a {@link LiteralDenyGroup}, chunked so no regex exceeds
+/// {@link SBPL_STRING_MAX_BYTES}. `deny` matches each `<dir>/<name>/<leaf>`
+/// and everything beneath it (the `subpath` semantics of a literal deny);
+/// `pins` match each `<dir>/<name>` directory itself, the move-blocking
+/// literal a per-path deny would have added for its parent.
 ({List<String> deny, List<String> pins}) _literalDenyGroupFilters(
   _LiteralDenyGroup group,
 ) {
@@ -853,6 +859,7 @@ Set<String> _moveBlockingFilters(List<PathEntry> entries) {
       if (baseDir == '/') continue;
       filters.add('(literal ${_escapePath(baseDir)})');
     }
+    // Block moves of ancestor directories
     for (final ancestor in _getAncestorDirectories(baseDir))
       filters.add('(literal ${_escapePath(ancestor)})');
   }
@@ -1032,6 +1039,8 @@ List<String> _generateWriteRules(
 ///
 String _generateSandboxProfile({
   required FsReadRestrictionConfig? readConfig,
+
+  /// Library-resolved read denies; see {@link resolveReadConfig}.
   required List<PathEntry> libraryDenyEntries,
   required FsWriteRestrictionConfig? writeConfig,
   int? httpProxyPort,

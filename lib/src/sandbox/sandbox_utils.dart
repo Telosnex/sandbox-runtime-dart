@@ -175,12 +175,13 @@ String stripExtendedPathPrefix(String p) {
 /// True for a Windows UNC path in any spelling — `\\server\share\…`,
 /// extended-length `\\?\UNC\server\share\…`, device-namespace
 /// `\\.\UNC\server\share\…` (all any casing, either separator).
-/// Uses Windows path-context normalization in place of
-/// `path.win32.toNamespacedPath` — every UNC spelling is recognized as a UNC
-/// server/share form — so the check is for either regular or extended UNC
-/// paths. Drive-local forms (`C:\…`, `\\?\C:\…`), other device paths
-/// (`\\.\pipe\…`), relative paths (resolved against a local cwd), and
-/// server-only `\\srv` (no share) are all false.
+/// Delegates path-form normalization to
+/// `path.win32.toNamespacedPath` — every UNC spelling canonicalizes
+/// to `\\?\UNC\…` — so the check is "namespaced form starts with
+/// `\\?\UNC\` (or `\\.\UNC\`)". Drive-local forms (`C:\…`,
+/// `\\?\C:\…`), other device paths (`\\.\pipe\…`), relative paths
+/// (resolved against a local cwd), and server-only `\\srv` (no
+/// share) are all false.
 ///
 /// The broker uses this to skip `stat`/`realpath` on UNC **literals**
 /// (see {@link normalizePathForSandbox}): any such call is an SMB
@@ -1153,13 +1154,16 @@ String _globPartToRegex(String part) => part
     // Escape unclosed brackets (no matching ])
     .replaceAllMapped(RegExp(r'\[([^\]]*?)$'), (match) => '\\[${match[1]}')
     // Convert glob patterns to regex (order matters - ** before *)
-    .replaceAll('**/', '__GLOBSTAR_SLASH__')
-    .replaceAll('**', '__GLOBSTAR__')
-    .replaceAll('*', '[^/]*')
-    .replaceAll('?', '[^/]')
+    .replaceAll('**/', '__GLOBSTAR_SLASH__') // Placeholder for **/
+    .replaceAll('**', '__GLOBSTAR__') // Placeholder for **
+    .replaceAll('*', '[^/]*') // * matches anything except /
+    .replaceAll('?', '[^/]') // ? matches single character except /
     // Restore placeholders
-    .replaceAll('__GLOBSTAR_SLASH__', '(.${'*'}/)?')
-    .replaceAll('__GLOBSTAR__', '.*');
+    .replaceAll(
+      '__GLOBSTAR_SLASH__',
+      '(.${'*'}/)?',
+    ) // **/ matches zero or more dirs
+    .replaceAll('__GLOBSTAR__', '.*'); // ** matches anything including /
 
 /// Regex for a glob used in a DENY rule: {@link globToRegex} plus an optional
 /// `/…` tail, so the deny covers everything beneath each match the way
