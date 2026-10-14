@@ -4,12 +4,13 @@ import 'dart:io';
 
 import 'package:test/test.dart';
 
-import '../../lib/src/sandbox/credential_mask_files.dart';
-import '../../lib/src/sandbox/credential_sentinel.dart';
-import '../../lib/src/sandbox/macos_sandbox_utils.dart';
-import '../../lib/src/sandbox/sandbox_config.dart' show CredentialFileConfig;
-import '../../lib/src/sandbox/sandbox_schemas.dart';
-import '../../lib/src/sandbox/sandbox_utils.dart';
+import 'package:sandbox_runtime/src/sandbox/credential_mask_files.dart';
+import 'package:sandbox_runtime/src/sandbox/credential_sentinel.dart';
+import 'package:sandbox_runtime/src/sandbox/macos_sandbox_utils.dart';
+import 'package:sandbox_runtime/src/sandbox/sandbox_config.dart'
+    show CredentialFileConfig;
+import 'package:sandbox_runtime/src/sandbox/sandbox_schemas.dart';
+import 'package:sandbox_runtime/src/sandbox/sandbox_utils.dart';
 
 /// A path the library computed is a name on disk, not a pattern: the
 /// mandatory write denies are joined onto the cwd, a caller's relative

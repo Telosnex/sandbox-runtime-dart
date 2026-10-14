@@ -1,8 +1,8 @@
 // Ported from sandbox-runtime test/helpers/emitted-connections.ts @ 24eb39e.
 import 'package:test/test.dart';
-import '../../lib/src/sandbox/emitted_connection.dart'
+import 'package:sandbox_runtime/src/sandbox/emitted_connection.dart'
     show servesEmittedConnections;
-import '../../lib/src/node/console.dart' as console;
+import 'package:sandbox_runtime/src/node/console.dart' as console;
 
 /**
  * Whether this runtime's http.Server serves a connection handed to it with

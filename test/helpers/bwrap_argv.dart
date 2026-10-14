@@ -1,5 +1,5 @@
 // Ported from sandbox-runtime test/helpers/bwrap-argv.ts @ 24eb39e.
-import '../../lib/src/utils/shell_quote.dart' show quote;
+import 'package:sandbox_runtime/src/utils/shell_quote.dart' show quote;
 
 /** The $0 renderBwrapInvocation gives the shell that opens an over-long
  * profile's argument file. Its presence means the mount words are in that

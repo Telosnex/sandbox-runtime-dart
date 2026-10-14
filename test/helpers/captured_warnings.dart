@@ -1,6 +1,6 @@
 // Ported from sandbox-runtime test/helpers/captured-warnings.ts @ 24eb39e.
-import '../../lib/src/node/console.dart' as console;
-import '../../lib/src/node/process.dart' as process;
+import 'package:sandbox_runtime/src/node/console.dart' as console;
+import 'package:sandbox_runtime/src/node/process.dart' as process;
 
 /**
  * Run `fn` with debug logging on and console.warn/error captured, and return

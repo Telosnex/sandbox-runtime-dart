@@ -2,7 +2,7 @@
 import 'dart:io';
 
 import 'package:test/test.dart';
-import '../../lib/src/sandbox/macos_sandbox_utils.dart';
+import 'package:sandbox_runtime/src/sandbox/macos_sandbox_utils.dart';
 
 ProcessResult runInSandbox(String pythonCode, bool allowLocalBinding) {
   final command = 'python3 -c "$pythonCode"';
