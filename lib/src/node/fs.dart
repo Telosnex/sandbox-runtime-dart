@@ -359,7 +359,7 @@ Stats Function(String path) statSync = _statSync;
 
 /// Reproduce `fs.existsSync(path)`: true when `stat` succeeds, so a dangling
 /// symbolic link does not exist.
-bool existsSync(String path) {
+bool _existsSync(String path) {
   try {
     _stat(path, 'stat', followLinks: true);
     return true;
@@ -367,6 +367,10 @@ bool existsSync(String path) {
     return false;
   }
 }
+
+/// Node's `fs.existsSync`. A variable so a test can replace it, as upstream's
+/// tests do with `spyOn(fs, 'existsSync')`.
+bool Function(String path) existsSync = _existsSync;
 
 /// Reproduce `fs.readdirSync(path, {withFileTypes: true})`.
 List<Dirent> _readdirSync(String path, {bool withFileTypes = false}) {
