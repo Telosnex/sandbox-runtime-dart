@@ -500,11 +500,17 @@ class NodeHttpServer extends net.NodeServer {
     }
   }
 
-  void serveConnection(net.NodeSocket socket) {
+  /// Protected hook for a subclass (node/https.dart): return the socket the HTTP
+  /// parser should read, e.g. [accepted] wrapped in a server-side TLS socket.
+  /// Called once per accepted connection, before any byte is parsed.
+  net.NodeSocket wrapConnection(net.NodeSocket accepted) => accepted;
+
+  void serveConnection(net.NodeSocket accepted) {
     if (_closed) {
-      socket.destroy();
+      accepted.destroy();
       return;
     }
+    final socket = wrapConnection(accepted);
     _connections.add(socket);
     _idleConnections.add(socket);
     socket.allowHalfOpen = true;
@@ -763,9 +769,10 @@ class Agent {
   final SecurityContext? securityContext;
   final Object? ca;
   final Function? checkServerIdentity;
-  final Map<String, net.NodeSocket> _idle = {};
+  final Map<String, List<net.NodeSocket>> _idle = {};
   final Set<net.NodeSocket> _active = {};
-  final Map<String, Completer<void>> _locks = {};
+  final Map<String, int> _inUse = {};
+  final Map<String, List<Completer<void>>> _waiting = {};
   bool _destroyed = false;
 
   Future<_AgentLease> _acquire(
@@ -773,29 +780,50 @@ class Agent {
     Future<net.NodeSocket> Function() create,
   ) async {
     if (_destroyed) throw StateError('Agent is destroyed');
-    while (_locks.containsKey(key)) {
-      await _locks[key]!.future;
+    while ((_inUse[key] ?? 0) >= (maxSockets < 1 ? 1 : maxSockets)) {
+      final waiter = Completer<void>();
+      (_waiting[key] ??= []).add(waiter);
+      await waiter.future;
       if (_destroyed) throw StateError('Agent is destroyed');
     }
-    final lock = Completer<void>();
-    _locks[key] = lock;
+    _inUse[key] = (_inUse[key] ?? 0) + 1;
+    void freeSlot() {
+      final n = (_inUse[key] ?? 1) - 1;
+      if (n <= 0) {
+        _inUse.remove(key);
+      } else {
+        _inUse[key] = n;
+      }
+      final waiters = _waiting[key];
+      if (waiters != null && waiters.isNotEmpty) {
+        waiters.removeAt(0).complete();
+      }
+    }
+
     try {
-      final idle = _idle.remove(key);
-      final reused = idle != null && !idle.destroyed && !idle.closed;
+      final pool = _idle[key];
+      net.NodeSocket? idle;
+      while (pool != null && pool.isNotEmpty) {
+        final candidate = pool.removeLast();
+        if (!candidate.destroyed && !candidate.closed) {
+          idle = candidate;
+          break;
+        }
+      }
+      final reused = idle != null;
       final socket = reused ? idle : await create();
       _active.add(socket);
       return _AgentLease(socket, reused, () {
         _active.remove(socket);
-        if (!_destroyed && keepAlive && !socket.destroyed && !socket.closed)
-          _idle[key] = socket;
-        else
+        if (!_destroyed && keepAlive && !socket.destroyed && !socket.closed) {
+          (_idle[key] ??= []).add(socket);
+        } else {
           socket.destroy();
-        _locks.remove(key);
-        lock.complete();
+        }
+        freeSlot();
       });
     } catch (_) {
-      _locks.remove(key);
-      lock.complete();
+      freeSlot();
       rethrow;
     }
   }
@@ -805,12 +833,39 @@ class Agent {
     for (final socket in _active) {
       socket.destroy();
     }
-    for (final socket in _idle.values) {
-      socket.destroy();
+    for (final sockets in _idle.values) {
+      for (final socket in sockets) {
+        socket.destroy();
+      }
     }
     _active.clear();
     _idle.clear();
   }
+}
+
+Object? _headerOption(Object? headers, String name) {
+  if (headers is! Map) return null;
+  for (final entry in headers.entries) {
+    if ('${entry.key}'.toLowerCase() == name) return entry.value;
+  }
+  return null;
+}
+
+/// Node's SNI choice: `servername` if given ('' disables), else the Host
+/// header's name, else the host. An IP literal gets none.
+String? _servernameFor(Object? option, Object? hostHeader, String host) {
+  if (option is String) return option.isEmpty ? null : option;
+  var name = hostHeader?.toString() ?? host;
+  if (name.startsWith('[')) {
+    final end = name.indexOf(']');
+    if (end > 0) name = name.substring(1, end);
+  } else {
+    final colon = name.indexOf(':');
+    if (colon >= 0 && name.indexOf(':', colon + 1) < 0) {
+      name = name.substring(0, colon);
+    }
+  }
+  return net.isIP(name) == 0 ? name : null;
 }
 
 class _AgentLease {
@@ -931,8 +986,15 @@ class ClientRequest extends events.EventEmitter {
       final secure =
           _options['secure'] == true || protocol == 'https:' || _agent.secure;
       final socketPath = _agent.socketPath ?? _options['socketPath'] as String?;
+      final hostHeader = _headerOption(_options['headers'], 'host');
+      final servername = _servernameFor(
+        _options['servername'],
+        hostHeader,
+        host,
+      );
+      final ca = _options['ca'] ?? _agent.ca;
       final key = socketPath == null
-          ? '$protocol//$host:$port'
+          ? '$protocol//$host:$port${secure ? ':sni=${servername ?? '\u0000'}:ca=${ca == null ? '' : identityHashCode(ca)}' : ''}'
           : 'unix:$socketPath';
       final lease = await _agent._acquire(key, () async {
         if (_options['socket'] is net.NodeSocket)
@@ -950,7 +1012,8 @@ class ClientRequest extends events.EventEmitter {
             'host': host,
             'port': port,
             'lookup': lookup,
-            'ca': _options['ca'] ?? _agent.ca,
+            'servername': servername ?? '',
+            'ca': ca,
             'secureContext': _agent.securityContext,
             'rejectUnauthorized': _options['rejectUnauthorized'],
             'checkServerIdentity':
@@ -980,6 +1043,11 @@ class ClientRequest extends events.EventEmitter {
         });
       if (!headers.keys.any((key) => key.toLowerCase() == 'host'))
         headers['Host'] = host;
+      final auth = _options['auth'];
+      if (auth is String &&
+          !headers.keys.any((key) => key.toLowerCase() == 'authorization')) {
+        headers['Authorization'] = 'Basic ${base64.encode(utf8.encode(auth))}';
+      }
       if (!headers.keys.any((key) => key.toLowerCase() == 'connection'))
         headers['Connection'] = _agent.keepAlive ? 'keep-alive' : 'close';
       final contentLength = headers.entries.any(

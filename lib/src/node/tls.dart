@@ -171,8 +171,12 @@ TLSSocket connect(Map<Object?, Object?> options, [Function? listener]) {
     }
   }
   final host = opts['host'] as String? ?? 'localhost';
-  final servername =
-      opts['servername'] as String? ?? (net.isIP(host) == 0 ? host : null);
+  // An empty servername asks for no SNI. Gap: dart:io always sends the name
+  // it validates against, so '' only stops the name overriding [host].
+  final requestedName = opts['servername'] as String?;
+  final servername = requestedName == null
+      ? (net.isIP(host) == 0 ? host : null)
+      : (requestedName.isEmpty ? null : requestedName);
   final rejectUnauthorized = opts['rejectUnauthorized'] != false;
   final identity =
       opts['checkServerIdentity'] as Function? ?? checkServerIdentity;

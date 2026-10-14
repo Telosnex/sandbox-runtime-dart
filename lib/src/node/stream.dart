@@ -941,8 +941,9 @@ class Readable extends NodeStream {
   /// update the flow state as Node's removeListener hook does.
   @override
   bool emit(String event, [Object? a, Object? b, Object? c, Object? d]) {
+    final before = event == 'readable' ? listenerCount('readable') : 0;
     final result = super.emit(event, a, b, c, d);
-    if (event == 'readable' && _r != null && listenerCount('readable') == 0) {
+    if (before > 0 && _r != null && listenerCount('readable') == 0) {
       _nextTick(_updateReadableListening);
     }
     return result;
