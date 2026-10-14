@@ -1085,7 +1085,9 @@ class ClientRequest extends events.EventEmitter {
       _chunked =
           transferEncoding?.toLowerCase().split(',').last.trim() == 'chunked' ||
           ((!_ended || hasBody) && !contentLength && !hasTransferEncoding);
-      if (_chunked) headers['Transfer-Encoding'] = 'chunked';
+      if (_chunked && !hasTransferEncoding) {
+        headers['Transfer-Encoding'] = 'chunked';
+      }
       final requestHead = StringBuffer('$method $path HTTP/1.1\r\n');
       headers.forEach((name, value) {
         for (final part in _headerValues(value))

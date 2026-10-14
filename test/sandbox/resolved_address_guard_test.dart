@@ -999,8 +999,6 @@ void main() {
           'POST /submit host=devbox.example.com:$upstreamPort body=$body',
         ]);
       },
-      // Dart: pending a chunked-body re-framing fix (PORT_WORKLOG).
-      tags: ['pending'],
     );
 
     test('plain HTTP: an embedder-configured range is refused too', () async {
