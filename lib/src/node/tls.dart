@@ -92,6 +92,8 @@ class TLSSocket extends net.NodeSocket {
       );
     }
     final protocols = (opts['ALPNProtocols'] as List?)?.cast<String>();
+    final requestCert = opts['requestCert'] == true;
+    final rejectUnauthorized = opts['rejectUnauthorized'] != false;
     // dart:io's server selects a protocol only from the context's list.
     if (protocols != null) context.setAlpnProtocols(protocols, true);
     startServerTlsOver(socket, (raw, buffered) async {
@@ -102,6 +104,8 @@ class TLSSocket extends net.NodeSocket {
           context,
           bufferedData: buffered,
           supportedProtocols: protocols,
+          requestClientCertificate: requestCert,
+          requireClientCertificate: requestCert && rejectUnauthorized,
         );
       } on HandshakeException catch (error) {
         throw NodeError(error.message, code: 'ERR_SSL_HANDSHAKE_FAILURE');
@@ -109,10 +113,30 @@ class TLSSocket extends net.NodeSocket {
         throw NodeError(error.message, code: 'ERR_SSL_HANDSHAKE_FAILURE');
       }
       _setPeer(secured);
+      // dart:io verifies a presented client certificate against the
+      // context's trusted roots during the handshake.
+      // Verified, not merely presented: the chain must lead to `ca`.
+      final peer = secured.peerCertificate;
+      authorized =
+          !requestCert || (peer != null && _chainTrusted(peer, opts['ca']));
+      if (requestCert && !authorized) {
+        authorizationError = NodeError(
+          peer == null
+              ? 'no client certificate'
+              : 'unable to verify the first certificate',
+          code: peer == null
+              ? 'UNABLE_TO_GET_ISSUER_CERT'
+              : 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+        );
+      }
       secureEstablished = true;
       return secured;
     });
   }
+
+  /// Node `tlsSocket.getProtocol()`. Gap: dart:io does not expose the
+  /// negotiated version; BoringSSL negotiates the highest, TLSv1.3.
+  String? getProtocol() => secureEstablished ? 'TLSv1.3' : null;
 
   /// Node `tlsSocket.encrypted`.
   bool get encrypted => true;
@@ -138,9 +162,17 @@ class TLSSocket extends net.NodeSocket {
   X509Certificate? getPeerCertificate() => _peer;
 }
 
-const _tlsSocketOptions = {'isServer', 'secureContext', 'ALPNProtocols'};
+const _tlsSocketOptions = {
+  'isServer',
+  'secureContext',
+  'ALPNProtocols',
+  'requestCert',
+  'rejectUnauthorized',
+};
 
 const _tlsConnectOptions = {
+  'minVersion',
+  'maxVersion',
   'host',
   'port',
   'path',
@@ -190,10 +222,16 @@ TLSSocket connect(Map<Object?, Object?> options, [Function? listener]) {
   final rejectUnauthorized = opts['rejectUnauthorized'] != false;
   final identity =
       opts['checkServerIdentity'] as Function? ?? checkServerIdentity;
-  final context = secureContextFor(
-    opts['ca'],
-    opts['secureContext'] as SecurityContext?,
-  );
+  final minVersion = opts['minVersion'] as String?;
+  final maxVersion = opts['maxVersion'] as String?;
+  // Gap: dart:io (BoringSSL) cannot cap the version, so it always speaks
+  // TLSv1.3 where the peer does; a cap below that cannot be honoured.
+  if (maxVersion != null && maxVersion != 'TLSv1.3') {
+    throw UnimplementedError('tls.connect maxVersion "$maxVersion"');
+  }
+  final context = minVersion == null
+      ? secureContextFor(opts['ca'], opts['secureContext'] as SecurityContext?)
+      : _contextWithMinVersion(opts, minVersion);
   final protocols = (opts['ALPNProtocols'] as List?)?.cast<String>();
   final socket = TLSSocket.pending(allowHalfOpen: opts['allowHalfOpen'] == true)
     ..servername = servername;
@@ -271,6 +309,28 @@ TLSSocket connect(Map<Object?, Object?> options, [Function? listener]) {
     },
   );
   return socket;
+}
+
+SecurityContext _contextWithMinVersion(
+  Map<Object?, Object?> opts,
+  String minVersion,
+) {
+  final supplied = opts['secureContext'] as SecurityContext?;
+  if (supplied != null && opts['ca'] != null) {
+    throw ArgumentError('Cannot combine a SecurityContext with a CA bundle');
+  }
+  // Never mutate a shared context: use a fresh one.
+  final context =
+      supplied ??
+      (opts['ca'] == null
+          ? SecurityContext(withTrustedRoots: true)
+          : secureContextFor(opts['ca'], null));
+  context.minimumTlsProtocolVersion = switch (minVersion) {
+    'TLSv1.2' => TlsProtocolVersion.tls1_2,
+    'TLSv1.3' => TlsProtocolVersion.tls1_3,
+    _ => throw UnimplementedError('tls.connect minVersion "$minVersion"'),
+  };
+  return context;
 }
 
 extension on TLSSocket {
@@ -706,6 +766,8 @@ class Server extends net.NodeServer {
         secured = TLSSocket(accepted, {
           'isServer': true,
           'secureContext': serverContextFor(options),
+          'requestCert': options['requestCert'],
+          'rejectUnauthorized': options['rejectUnauthorized'],
         });
       } catch (error) {
         accepted.destroy();

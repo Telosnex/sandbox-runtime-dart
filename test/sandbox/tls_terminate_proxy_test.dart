@@ -502,8 +502,6 @@ void main() {
 
       test(
         'terminating proxy cannot reach an mTLS upstream (502): it has no client cert to present',
-        // Dart: node/tls.dart (https.createServer) ignores requestCert/rejectUnauthorized, so the upstream never demands a client cert.
-        tags: ['pending'],
         () async {
           final proxy = createHttpProxyServer(
             _HttpOptions(
@@ -641,8 +639,6 @@ void main() {
 
       test(
         'shouldTerminateTLS=false without a client cert still fails: the upstream really demands mTLS',
-        // Dart: node/tls.dart (https.createServer) ignores requestCert/rejectUnauthorized, so the upstream never demands a client cert.
-        tags: ['pending'],
         () async {
           // Negative control for the test above — proves the 200 there can only
           // come from curl's client cert being presented and verified end-to-end.
@@ -680,8 +676,6 @@ void main() {
 
       test(
         'shouldTerminateTLS=true keeps terminating (explicit default)',
-        // Dart: node/tls.dart (https.createServer) ignores requestCert/rejectUnauthorized, so the upstream never demands a client cert.
-        tags: ['pending'],
         () async {
           final proxy = createHttpProxyServer(
             _HttpOptions(
@@ -987,9 +981,11 @@ Future<CurlResult> curlViaProxy(
       .listen((c) => stderr += c, onDone: () => stderrEnd.complete());
   // Drain both streams to 'end' before reading the exit code — Bun's
   // ChildProcess 'close' can fire before all 'data' events are delivered.
-  await Future.wait([stdoutEnd.future, stderrEnd.future]);
+  // Dart: listen for 'close' first; it can fire before the streams end, and
+  // a late listener would wait forever.
   final exitCompleter = Completer<int>();
   child.on('close', (int? code) => exitCompleter.complete(code ?? 1));
+  await Future.wait([stdoutEnd.future, stderrEnd.future]);
   final exit = await exitCompleter.future;
 
   // -D - prints headers (possibly multiple blocks: CONNECT response, then the

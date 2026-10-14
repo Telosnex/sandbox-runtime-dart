@@ -27,6 +27,23 @@ class Buffer with ListMixin<int> {
     return v;
   }
 
+  /// Node's `buf.readUInt8/16/32` and `writeUInt8/16/32`, both endians.
+  int readUInt8([int offset = 0]) => readUIntBE(offset, 1);
+  int readUInt16BE([int offset = 0]) => readUIntBE(offset, 2);
+  int readUInt16LE([int offset = 0]) => readUIntLE(offset, 2);
+  int readUInt32BE([int offset = 0]) => readUIntBE(offset, 4);
+  int readUInt32LE([int offset = 0]) => readUIntLE(offset, 4);
+  int writeUInt8(int value, [int offset = 0]) =>
+      _writeUInt(this, value, offset, 1, true);
+  int writeUInt16BE(int value, [int offset = 0]) =>
+      _writeUInt(this, value, offset, 2, true);
+  int writeUInt16LE(int value, [int offset = 0]) =>
+      _writeUInt(this, value, offset, 2, false);
+  int writeUInt32BE(int value, [int offset = 0]) =>
+      _writeUInt(this, value, offset, 4, true);
+  int writeUInt32LE(int value, [int offset = 0]) =>
+      _writeUInt(this, value, offset, 4, false);
+
   Buffer._(this._bytes);
   final Uint8List _bytes;
 
@@ -176,4 +193,15 @@ void _checkUInt(List<int> buf, int offset, int byteLength) {
     throw RangeError.range(byteLength, 1, 6, 'byteLength');
   }
   _bounds(buf, offset, byteLength);
+}
+
+int _writeUInt(List<int> buf, int value, int offset, int size, bool big) {
+  _bounds(buf, offset, size);
+  final max = (1 << (8 * size)) - 1;
+  if (value < 0 || value > max) throw RangeError.range(value, 0, max, 'value');
+  for (var i = 0; i < size; i++) {
+    final shift = 8 * (big ? size - 1 - i : i);
+    buf[offset + i] = (value >> shift) & 0xff;
+  }
+  return offset + size;
 }
