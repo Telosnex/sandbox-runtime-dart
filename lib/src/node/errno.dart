@@ -246,6 +246,24 @@ String _reasonForCode(String code) {
       return 'file already exists';
     case 'EISDIR':
       return 'illegal operation on a directory';
+    case 'EROFS':
+      return 'read-only file system';
+    case 'EPERM':
+      return 'operation not permitted';
+    case 'ENOTEMPTY':
+      return 'directory not empty';
+    case 'EBADF':
+      return 'bad file descriptor';
+    case 'EMFILE':
+      return 'too many open files';
+    case 'EPIPE':
+      return 'broken pipe';
+    case 'ENOSPC':
+      return 'no space left on device';
+    case 'EXDEV':
+      return 'cross-device link not permitted';
+    case 'EBUSY':
+      return 'resource busy or locked';
     default:
       return 'operating system error';
   }
