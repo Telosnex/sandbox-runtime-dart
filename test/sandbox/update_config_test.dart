@@ -20,7 +20,7 @@ import 'package:sandbox_runtime/src/sandbox/sandbox_utils.dart'
     show encodeSandboxedCommand, proxyUsernameFor;
 import 'package:sandbox_runtime/src/utils/platform.dart' show getPlatform;
 import '../helpers/platform.dart' show isLinux, isMacOS;
-import '../helpers/spawn.dart' show spawnAsync;
+import '../helpers/spawn.dart' show RunOpts, spawnAsync;
 
 String b64(String s) => base64Encode(utf8.encode(s));
 
@@ -1914,5 +1914,238 @@ void main() {
       final result = await proxyRequest(proxyPort!, 'example.com');
       expect(result.allowed, isTrue);
     });
+  });
+
+  group('SandboxManager.updateConfig integration (wrapWithSandbox)', () {
+    tearDown(() async {
+      await SandboxManager.reset();
+    });
+
+    test(
+      'should block then allow domain after updateConfig with sandboxed curl',
+      () async {
+        // Initialize with empty allowlist (blocks all)
+        await SandboxManager.initialize(
+          const SandboxRuntimeConfig(
+            network: NetworkConfig(allowedDomains: [], deniedDomains: []),
+            filesystem: noFs,
+          ),
+        );
+
+        // First request should be blocked
+        final cmd1 = await SandboxManager.wrapWithSandbox(
+          'curl -s --max-time 3 http://example.com 2>&1',
+        );
+        final result1 = await spawnAsync(
+          cmd1,
+          const RunOpts(shell: true, encoding: 'utf8', timeout: 5000),
+        );
+        final output1 = (result1.stdout + result1.stderr).toLowerCase();
+        // With empty allowlist, network is completely blocked (no proxy)
+        expect(output1, isNot(contains('example domain')));
+
+        // Update config to allow example.com
+        SandboxManager.updateConfig(
+          const SandboxRuntimeConfig(
+            network: NetworkConfig(
+              allowedDomains: ['example.com'],
+              deniedDomains: [],
+            ),
+            filesystem: noFs,
+          ),
+        );
+
+        // Second request should succeed
+        // Note: wrapWithSandbox() generates new command with updated config
+        final cmd2 = await SandboxManager.wrapWithSandbox(
+          'curl -s --max-time 5 http://example.com 2>&1',
+        );
+        final result2 = await spawnAsync(
+          cmd2,
+          const RunOpts(shell: true, encoding: 'utf8', timeout: 10000),
+        );
+
+        expect(result2.status, 0);
+        expect(result2.stdout, contains('Example Domain'));
+      },
+      skip: isLinux ? false : 'requires Linux',
+      timeout: const Timeout(Duration(milliseconds: 20000)),
+    );
+
+    test(
+      'should allow then block domain after updateConfig with sandboxed curl',
+      () async {
+        // Initialize with example.com allowed
+        await SandboxManager.initialize(
+          const SandboxRuntimeConfig(
+            network: NetworkConfig(
+              allowedDomains: ['example.com'],
+              deniedDomains: [],
+            ),
+            filesystem: noFs,
+          ),
+        );
+
+        // First request should succeed
+        final cmd1 = await SandboxManager.wrapWithSandbox(
+          'curl -s --max-time 5 http://example.com 2>&1',
+        );
+        final result1 = await spawnAsync(
+          cmd1,
+          const RunOpts(shell: true, encoding: 'utf8', timeout: 10000),
+        );
+        expect(result1.status, 0);
+        expect(result1.stdout, contains('Example Domain'));
+
+        // Update config to block all
+        SandboxManager.updateConfig(
+          const SandboxRuntimeConfig(
+            network: NetworkConfig(allowedDomains: [], deniedDomains: []),
+            filesystem: noFs,
+          ),
+        );
+
+        // Second request should be blocked
+        final cmd2 = await SandboxManager.wrapWithSandbox(
+          'curl -s --max-time 3 http://example.com 2>&1',
+        );
+        final result2 = await spawnAsync(
+          cmd2,
+          const RunOpts(shell: true, encoding: 'utf8', timeout: 5000),
+        );
+        final output2 = (result2.stdout + result2.stderr).toLowerCase();
+        expect(output2, isNot(contains('example domain')));
+      },
+      skip: isLinux ? false : 'requires Linux',
+      timeout: const Timeout(Duration(milliseconds: 20000)),
+    );
+
+    test(
+      'should allow network via curl after updateConfig when started with empty allowlist',
+      () async {
+        // Initialize with EMPTY allowlist
+        await SandboxManager.initialize(
+          const SandboxRuntimeConfig(
+            network: NetworkConfig(allowedDomains: [], deniedDomains: []),
+            filesystem: noFs,
+          ),
+        );
+
+        // Update config to allow example.com
+        SandboxManager.updateConfig(
+          const SandboxRuntimeConfig(
+            network: NetworkConfig(
+              allowedDomains: ['example.com'],
+              deniedDomains: [],
+            ),
+            filesystem: noFs,
+          ),
+        );
+
+        // Full integration: sandboxed curl should work
+        final cmd = await SandboxManager.wrapWithSandbox(
+          'curl -s --max-time 5 http://example.com 2>&1',
+        );
+        final result = await spawnAsync(
+          cmd,
+          const RunOpts(shell: true, encoding: 'utf8', timeout: 10000),
+        );
+
+        expect(result.status, 0);
+        expect(result.stdout, contains('Example Domain'));
+      },
+      skip: isLinux ? false : 'requires Linux',
+      timeout: const Timeout(Duration(milliseconds: 20000)),
+    );
+
+    /**
+     * This test verifies the exact user scenario:
+     * 1. Start sandbox with allowedDomains: [], deniedDomains: ["example.com"]
+     * 2. Generate wrapper (should include proxy config even with empty allowlist)
+     * 3. Update config to allow example.com
+     * 4. Proxy should now allow requests (tested via raw TCP)
+     *
+     * The fix: even with empty allowlist, wrapper includes proxy config so
+     * updateConfig() can enable network access for sandboxed processes.
+     */
+    test(
+      'should allow network after updateConfig when started with empty allowlist and denylist',
+      () async {
+        // Initialize with empty allowlist, example.com in denylist (user's exact scenario)
+        await SandboxManager.initialize(
+          const SandboxRuntimeConfig(
+            network: NetworkConfig(
+              allowedDomains: [],
+              deniedDomains: ['example.com'],
+            ),
+            filesystem: noFs,
+          ),
+        );
+
+        // Wrapper should include proxy config even with empty allowlist
+        final cmd = await SandboxManager.wrapWithSandbox('echo test');
+        final platform = getPlatform();
+        if (platform == 'macos') {
+          expect(cmd, contains('HTTP_PROXY'));
+        } else if (platform == 'linux') {
+          expect(cmd, matches(RegExp(r'HTTP_PROXY|\.sock')));
+        }
+
+        // Proxy should be running
+        final proxyPort = SandboxManager.getProxyPort();
+        expect(proxyPort, isNotNull);
+
+        // Initially, example.com should be blocked (empty allowlist = block all)
+        final blockedResult = await proxyRequest(proxyPort!, 'example.com');
+        expect(blockedResult.allowed, isFalse);
+
+        // Update config to allow example.com
+        SandboxManager.updateConfig(
+          const SandboxRuntimeConfig(
+            network: NetworkConfig(
+              allowedDomains: ['example.com'],
+              deniedDomains: [],
+            ),
+            filesystem: noFs,
+          ),
+        );
+
+        // Now example.com should be allowed
+        final allowedResult = await proxyRequest(proxyPort, 'example.com');
+        expect(allowedResult.allowed, isTrue);
+      },
+    );
+
+    /**
+     * This test verifies the core fix: sandbox wrapper should include proxy config
+     * even with empty allowlist, enabling dynamic updates.
+     */
+    test(
+      'should include proxy in sandbox wrapper even with empty allowlist',
+      () async {
+        // Initialize with EMPTY allowlist - this is the bug scenario
+        await SandboxManager.initialize(
+          const SandboxRuntimeConfig(
+            network: NetworkConfig(allowedDomains: [], deniedDomains: []),
+            filesystem: noFs,
+          ),
+        );
+
+        // Get the sandbox wrapper command
+        final wrapper = await SandboxManager.wrapWithSandbox('echo test');
+
+        // The wrapper should include proxy configuration
+        // On macOS: HTTP_PROXY and HTTPS_PROXY env vars
+        // On Linux: socket paths
+        final platform = getPlatform();
+        if (platform == 'macos') {
+          expect(wrapper, contains('HTTP_PROXY'));
+          expect(wrapper, contains('HTTPS_PROXY'));
+        } else if (platform == 'linux') {
+          // Linux uses unix sockets, check for socket paths or proxy env vars
+          expect(wrapper, matches(RegExp(r'HTTP_PROXY|http_proxy|\.sock')));
+        }
+      },
+    );
   });
 }
