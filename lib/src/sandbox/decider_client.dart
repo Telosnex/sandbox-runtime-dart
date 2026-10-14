@@ -443,7 +443,10 @@ class _DeciderObject implements Decider {
   int bodyBytesHeld() => _bodyBytesHeld();
 }
 
-Decider createDecider(DeciderOptions opts) {
+/// A variable so a test can replace it.
+Decider Function(DeciderOptions opts) createDecider = _createDecider;
+
+Decider _createDecider(DeciderOptions opts) {
   final timeoutMs = opts.timeoutMs ?? 5000;
   final waiters = <int, _Waiter>{};
   // Ids this end gave up on (timed out), with whether a need_body had

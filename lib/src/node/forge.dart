@@ -90,7 +90,13 @@ class ForgeMessageDigest {
 
 class ForgeRandomApi {
   const ForgeRandomApi();
+
+  /// Test spy: when set, [getBytesSync] returns its result instead.
+  static String Function(int length)? getBytesSyncSpy;
+
   String getBytesSync(int length) {
+    final spy = getBytesSyncSpy;
+    if (spy != null) return spy(length);
     final random = Random.secure();
     return _binary(List<int>.generate(length, (_) => random.nextInt(256)));
   }

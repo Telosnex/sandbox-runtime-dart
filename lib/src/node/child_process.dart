@@ -720,8 +720,16 @@ Object? _decodeOutput(List<int>? bytes, Object? encoding) {
 /// Node's `spawnSync(command, args, options)`. Options: `cwd`, `env`,
 /// `input` (String or bytes, written to a piped stdin), `stdio`, `timeout`
 /// (ms), `killSignal`, `encoding`, `maxBuffer`, `argv0`. A launch failure
-/// or timeout is reported in `error`, never thrown.
-SpawnSyncResult spawnSync(
+/// or timeout is reported in `error`, never thrown. A variable so a test
+/// can replace it.
+SpawnSyncResult Function(
+  String command, [
+  List<String> args,
+  Map<String, Object?> options,
+])
+spawnSync = _spawnSync;
+
+SpawnSyncResult _spawnSync(
   String command, [
   List<String> args = const [],
   Map<String, Object?> options = const {},
@@ -1156,26 +1164,35 @@ String execSync(String command, List<String> arguments, {Duration? timeout}) {
   return result.stdout as String;
 }
 
-/// Node's `execFileSync(file, args, options)`: stdout as a [Buffer], or a
-/// String with `encoding`; throws when the command fails or exits non-zero.
-Object execFileSync(
+/// Node's `execFileSync(file, args, options)`: runs [file] without a shell,
+/// returns stdout (a String with `encoding`, else a [Buffer]); throws on
+/// launch failure or non-zero exit with `status`, `stdout`, `stderr` set.
+/// Options are those of [spawnSync]; stderr is piped unless `stdio` is given.
+Object? execFileSync(
   String file, [
   List<String> args = const [],
   Map<String, Object?> options = const {},
 ]) {
   final result = spawnSync(file, args, {
-    'stdio': ['pipe', 'pipe', 'inherit'],
+    'stdio': ['pipe', 'pipe', 'pipe'],
     ...options,
   });
   final error = result.error;
-  if (error != null) throw error;
-  if (result.status != 0) {
-    throw NodeError(
-      'Command failed: $file ${args.join(' ')}',
+  if (error != null) {
+    if (error is NodeError) {
+      error.status = result.status;
+    }
+    throw error;
+  }
+  if (result.status != 0 || result.signal != null) {
+    final err = NodeError(
+      'Command failed: ${[file, ...args].join(' ')}'
+      '${result.stderr == null ? '' : '\n${result.stderr}'}',
       code: 'ERR_CHILD_PROCESS',
     )..status = result.status;
+    throw err;
   }
-  return result.stdout!;
+  return result.stdout;
 }
 
 /// Asynchronously run a command and return stdout, or null on an exec error.
