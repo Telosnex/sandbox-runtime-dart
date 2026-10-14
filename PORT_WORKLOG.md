@@ -73,7 +73,26 @@ expected output.
 - To test: `git clone /media/psf/Home/dev/sandbox-runtime-dart /root/srt-dart`,
   then `dart pub get`, `dart run tool/build_seccomp.dart` and `dart test`.
 
-### Wave 1: RUNNING (started 2026-10-13)
+### Wave 1: PAUSED after first attempt (2026-10-13). Read before restarting
+
+All 16 phase A agents stopped within about 30 minutes with partial work,
+and each said so (none claimed done falsely). Several wrote "simplified"
+code instead of a port (http_proxy basic CONNECT, socks5 state machine,
+decider_client partial): do not merge that; it gets redone. Causes:
+- Task size: one agent per 1,000-3,600-line file. Agents said the work
+  "exceeds available task window". Wave 0 worked because each task was small.
+- reasoning_effort was not set, so agents inherited /root's (low).
+- Shim chain: stream.dart is barely started and NodeSocket/IncomingMessage
+  do not extend it yet, so every proxy port is blocked behind it.
+Restart (user direction): agents are now more capable subinstances; run
+them at low effort, one agent per file as before, concise reports. Brief
+addendum at the end of WAVE1_BRIEF.md: no stopping for stubs, no
+simplified logic, read long files in ranges and commit per chunk. Branch state at pause: see `git log main..port/<name>` in each
+worktree; gate PASS of port/shim-sys e568f3f + port/shim-web 96abefc
+(unreviewed, not merged; shim-sys signs with an openssl subprocess, which
+Rule 3 does not allow).
+
+### Wave 1 plan (first attempt)
 
 Brief: ~/dev/srt-wt/WAVE1_BRIEF.md; review brief: ~/dev/srt-wt/REVIEW1_BRIEF.md.
 Each agent has worktree ~/dev/srt-wt/<name>, branch port/<name>. /root
