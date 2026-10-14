@@ -74,7 +74,7 @@ class TerminateTarget {
    * roots + NODE_EXTRA_CA_CERTS. Primarily a test seam (NODE_EXTRA_CA_CERTS
    * is read at process start, so tests can't set it from inside the suite).
    */
-  final Object? upstreamCA;
+  final Object? upstreamCA; // String | Uint8List | List<String | Uint8List>
 
   /// Upstream-leg name resolution, already bound for this target (see HttpProxyServerOptions.lookupFor).
   final net.LookupFunction? lookup;
