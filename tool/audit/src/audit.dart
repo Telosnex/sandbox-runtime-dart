@@ -236,10 +236,18 @@ String? _literalAt(String t, int i) {
 
 /// Titles of `describe`/`it`/`test` (TS) or `group`/`test` (Dart) calls,
 /// in source order, including `.skip`/`.if(...)`/`.each(...)` forms.
-List<String> testTitles(String t, List<String> kinds) {
+List<String> testTitles(String t, List<String> declared) {
+  // `const onLinux = it.if(isLinux)`: calls of the alias are tests too.
+  final kinds = [
+    ...declared,
+    for (final m in RegExp(
+      '(?:const|let|final)\\s+(\\w+)\\s*=\\s*(?:[^;\\n=]*\\?\\s*)?(?:${declared.join('|')})(?:\\.|\\s*(?:\\n|;|:|\$))',
+    ).allMatches(t))
+      m[1]!,
+  ];
   final call = RegExp('(?<![\\w.\$])(?:${kinds.join('|')})(?=[.(\\s])');
   final modifier = RegExp(
-    r'\.(skip|skipIf|if|only|todo|each|concurrent|serial)\b',
+    r'\.(skip|skipIf|if|only|failing|todo|each|concurrent|serial)\b',
   );
   final titles = <String>[];
   for (final m in call.allMatches(t)) {
