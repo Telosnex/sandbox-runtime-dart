@@ -405,13 +405,13 @@ void terminateAndForward(
     // from node:_http_server).
     req.on('error', (dynamic err) {
       logForDebugging(
-        '[tls-terminate] client request error: ${err.message}',
+        '[tls-terminate] client request error: ${errorMessage(err)}',
         level: 'error',
       );
     });
     res.on('error', (dynamic err) {
       logForDebugging(
-        '[tls-terminate] client response error: ${err.message}',
+        '[tls-terminate] client response error: ${errorMessage(err)}',
         level: 'error',
       );
     });
@@ -460,7 +460,7 @@ void terminateAndForward(
     // uncaughtException, same class as the request-stream errors handled
     // above.
     logForDebugging(
-      '[tls-terminate] client connection error for ${target.hostname}: ${err.message}',
+      '[tls-terminate] client connection error for ${target.hostname}: ${errorMessage(err)}',
       level: 'error',
     );
     if (target.maxHeaderSize != null &&
@@ -493,7 +493,7 @@ void terminateAndForward(
   // read, too) only ends its own tunnel.
   socket.on('error', (dynamic err) {
     logForDebugging(
-      '[tls-terminate] client connection error for ${target.hostname}: ${err.message}',
+      '[tls-terminate] client connection error for ${target.hostname}: ${errorMessage(err)}',
     );
     socket.destroy();
   });
@@ -511,7 +511,7 @@ void terminateAndForward(
         })
         .catchError((Object err) {
           logForDebugging(
-            '[tls-terminate] tunnel setup failed for ${target.hostname}: ${(err as dynamic).message}',
+            '[tls-terminate] tunnel setup failed for ${target.hostname}: ${errorMessage(err)}',
             level: 'error',
           );
           socket.destroy();
@@ -577,7 +577,7 @@ void terminateAndForward(
     });
     tls.on('error', (dynamic err) {
       logForDebugging(
-        '[tls-terminate] client TLS error for ${target.hostname}: ${err.message}',
+        '[tls-terminate] client TLS error for ${target.hostname}: ${errorMessage(err)}',
         level: 'error',
       );
       socket.destroy();
@@ -975,7 +975,7 @@ void _forwardUpstreamGuarded(
       maxSigv4BodyBytes,
     ).catchError((Object err) {
       logForDebugging(
-        '[tls-terminate] forwardUpstream failed: ${(err as dynamic).message}',
+        '[tls-terminate] forwardUpstream failed: ${errorMessage(err)}',
         level: 'error',
       );
       respondUpstreamError(res, err as Error, target.denyHeader);
@@ -1219,7 +1219,7 @@ Future<void> _forwardUpstream(
           return;
         }
         logForDebugging(
-          '[tls-terminate] failed to buffer body for SigV4 re-sign: ${(err as dynamic).message}',
+          '[tls-terminate] failed to buffer body for SigV4 re-sign: ${errorMessage(err)}',
           level: 'error',
         );
         res.destroy();
@@ -1238,10 +1238,7 @@ Future<void> _forwardUpstream(
       // Fail closed on any signer error — a request the proxy claimed to
       // handle must not go upstream half-rewritten, and a client-crafted
       // header set must not become an unhandled rejection.
-      respondDenied(
-        res,
-        'AWS SigV4 re-signing failed: ${(err as dynamic).message}',
-      );
+      respondDenied(res, 'AWS SigV4 re-signing failed: ${errorMessage(err)}');
       _endDeniedRequest(req, res, body);
       return;
     }
@@ -1267,7 +1264,7 @@ Future<void> _forwardUpstream(
 
   void failUpstream(Object err, [http.ClientRequest? sent]) {
     logForDebugging(
-      '[tls-terminate] upstream ${target.hostname}:${target.port} failed: ${(err as dynamic).message}',
+      '[tls-terminate] upstream ${target.hostname}:${target.port} failed: ${errorMessage(err)}',
       level: 'error',
     );
     leg.forgetAddress();
@@ -1319,7 +1316,7 @@ Future<void> _forwardUpstream(
       // pipe() does not handle source errors.
       upRes.on('error', (dynamic err) {
         logForDebugging(
-          '[tls-terminate] upstream response error: ${err.message}',
+          '[tls-terminate] upstream response error: ${errorMessage(err)}',
           level: 'error',
         );
         res.destroy();
