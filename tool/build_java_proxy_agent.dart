@@ -11,7 +11,9 @@
  * `javaAgentJarPath` config key. The jar is reproducible: `jar --date`
  * pins entry timestamps, and STORED entries in a fixed order.
  *
- *   dart run tool/build_java_proxy_agent.dart  (needs a JDK >= 17 on PATH or JAVA_HOME)
+ *   npm run build:java-agent        (needs a JDK >= 17 on PATH or JAVA_HOME)
+ *
+ * In this port: dart run tool/build_java_proxy_agent.dart
  */
 import 'dart:io';
 

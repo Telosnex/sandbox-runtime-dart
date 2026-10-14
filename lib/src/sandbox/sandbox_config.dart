@@ -85,6 +85,24 @@ void _addIssue(
   );
 }
 
+/// zod `.strict()`: one issue at the object's path naming every unknown key,
+/// added after the object's own properties are checked.
+void _unrecognizedKeys(
+  Map<Object?, Object?> obj,
+  Set<String> known,
+  List<ConfigIssue> issues,
+  List<Object> path,
+) {
+  final unknown = obj.keys.where((key) => !known.contains(key)).toList();
+  if (unknown.isEmpty) return;
+  _addIssue(
+    issues,
+    path,
+    "Unrecognized key(s) in object: '${unknown.join("', '")}'",
+    code: 'unrecognized_keys',
+  );
+}
+
 String _received(Object? value) {
   if (value == null) return 'null';
   if (value is bool) return 'boolean';
@@ -712,21 +730,6 @@ final ConfigSchema<CredentialsConfig> CredentialsConfigSchema = _notNull((
 ) {
   final obj = _object(value, path, issues);
   if (obj == null) return null;
-  for (final key in obj.keys) {
-    if (!{
-      'files',
-      'envVars',
-      'allowPlaintextInject',
-      'awsPairs',
-      'sigv4',
-    }.contains(key))
-      _addIssue(
-        issues,
-        [...path, key],
-        'Unrecognized key(s) in object: \'$key\'',
-        code: 'unrecognized_keys',
-      );
-  }
   List<T>? entries<T>(
     String key,
     T? Function(Object?, List<ConfigIssue>, List<Object>) parser,
@@ -754,6 +757,12 @@ final ConfigSchema<CredentialsConfig> CredentialsConfigSchema = _notNull((
   final sigv4 = _has(obj, 'sigv4')
       ? _parseSigv4(obj['sigv4'], issues, [...path, 'sigv4'])
       : null;
+  _unrecognizedKeys(
+    obj,
+    const {'files', 'envVars', 'allowPlaintextInject', 'awsPairs', 'sigv4'},
+    issues,
+    path,
+  );
   return CredentialsConfig(
     files: files,
     envVars: envVars,
@@ -1370,19 +1379,6 @@ AwsPairConfig? _parseAwsPair(
 ) {
   final obj = _object(value, path, issues);
   if (obj == null) return null;
-  for (final key in obj.keys) {
-    if (!{
-      'accessKeyIdVar',
-      'secretAccessKeyVar',
-      'sessionTokenVar',
-    }.contains(key))
-      _addIssue(
-        issues,
-        [...path, key],
-        'Unrecognized key(s) in object: \'$key\'',
-        code: 'unrecognized_keys',
-      );
-  }
   final before = issues.length;
   String? envName(String key) =>
       _envVarNameSchema._parser(obj[key], issues, [...path, key]);
@@ -1391,7 +1387,16 @@ AwsPairConfig? _parseAwsPair(
   final session = _has(obj, 'sessionTokenVar')
       ? envName('sessionTokenVar')
       : null;
-  if (access == null || secret == null || issues.length != before) return null;
+  final valid = access != null && secret != null && issues.length == before;
+  // Unknown keys leave zod's result dirty, not aborted: the credentials
+  // refinement still sees the pair.
+  _unrecognizedKeys(
+    obj,
+    const {'accessKeyIdVar', 'secretAccessKeyVar', 'sessionTokenVar'},
+    issues,
+    path,
+  );
+  if (!valid) return null;
   return AwsPairConfig(
     accessKeyIdVar: access,
     secretAccessKeyVar: secret,
@@ -1421,6 +1426,12 @@ Sigv4Config? _parseSigv4(
   final sigv4a = _has(obj, 'sigv4a')
       ? _sigv4PolicySchema._parser(obj['sigv4a'], issues, [...path, 'sigv4a'])
       : null;
+  _unrecognizedKeys(
+    obj,
+    const {'streaming', 'presigned', 'sigv4a'},
+    issues,
+    path,
+  );
   return Sigv4Config(
     streaming: streaming,
     presigned: presigned,
