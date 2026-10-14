@@ -1551,7 +1551,14 @@ String wrapCommandWithSandboxMacOS(MacOSSandboxParams params) {
 /// Start monitoring macOS system logs for sandbox violations
 /// Look for sandbox-related kernel deny events ending in {logTag}
 ///
-void Function() startMacOSSandboxLogMonitor(
+void Function() Function(
+  SandboxViolationCallback callback,
+  IgnoreViolationsConfig? ignoreViolations,
+  String Function(String decodedKey) resolveCommandText,
+)
+startMacOSSandboxLogMonitor = _startMacOSSandboxLogMonitor;
+
+void Function() _startMacOSSandboxLogMonitor(
   SandboxViolationCallback callback,
   IgnoreViolationsConfig? ignoreViolations,
 
