@@ -484,6 +484,27 @@ String readlinkSync(String path) {
   }
 }
 
+/// The real path of [path] as the kernel names it, by opening it with O_PATH
+/// and reading /proc/self/fd. Null when that cannot be done or says nothing.
+String? _realpathViaProc(String path) {
+  final libc = _libc;
+  if (libc == null) return null;
+  const oPath = 0x200000; // O_PATH, asm-generic (arm64) value is 0x200000
+  final open = libc.lookupFunction<_OpenN, _OpenD>('open');
+  final fd = _withPath(path, (p) => open(p, oPath | 0x80000, 0));
+  if (fd < 0) return null;
+  try {
+    final target = readlinkSync('/proc/self/fd/$fd');
+    return target.startsWith('/') && !target.endsWith(' (deleted)')
+        ? target
+        : null;
+  } on Object {
+    return null;
+  } finally {
+    libc.lookupFunction<_CloseN, _CloseD>('close')(fd);
+  }
+}
+
 /// Reproduce `fs.realpathSync(path)` using libc realpath on POSIX hosts.
 String _realpathSync(String path) {
   _observe('realpathSync', path);
@@ -501,6 +522,12 @@ String _realpathSync(String path) {
       final result = realpath(nativePath.cast(), nullptr);
       if (result.address == 0) {
         final errno = _readErrno?.call() ?? 0;
+        if (Platform.isLinux && codeForErrno(errno) == 'ENAMETOOLONG') {
+          // glibc fails when a link is followed to a name over PATH_MAX, but
+          // the kernel resolves it: ask it for the opened object's location.
+          final viaProc = _realpathViaProc(resolvedPath);
+          if (viaProc != null) return viaProc;
+        }
         throw nodeError(codeForErrno(errno), 'realpath', path);
       }
       try {
