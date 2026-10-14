@@ -119,12 +119,9 @@ class TLSSocket extends net.NodeSocket {
           context,
           bufferedData: isFdSocket(raw) ? null : buffered,
           supportedProtocols: protocols,
-          // Dart: dart:io aborts the handshake on an untrusted client
-          // certificate and has no server-side bad-certificate callback, so
-          // with rejectUnauthorized:false none is requested: the handshake
-          // completes with authorized false (Node's result for an untrusted
-          // certificate).
-          requestClientCertificate: requestCert && rejectUnauthorized,
+          // Dart: dart:io aborts the handshake on an untrusted client cert
+          // (no server-side bad-certificate hook): fail-closed.
+          requestClientCertificate: requestCert,
           requireClientCertificate: requestCert && rejectUnauthorized,
         );
       } on HandshakeException catch (error) {
@@ -509,6 +506,14 @@ bool _anchorUsable(asn1lib.ASN1Sequence tbs, DateTime now) {
     }
   }
   return true;
+}
+
+/// For tests: parses a certificate time of ASN.1 [tag] (0x17/0x18).
+DateTime asn1TimeForTest(int tag, String text) {
+  final b = latin1.encode(text);
+  return _asn1Time(
+    asn1lib.ASN1Object.fromBytes(Uint8List.fromList([tag, b.length, ...b])),
+  );
 }
 
 /// For tests: [_chainTrusted].
@@ -1088,8 +1093,8 @@ String _serverNameIn(Uint8List r) {
 
 DateTime _asn1Time(asn1lib.ASN1Object o) {
   final str = latin1.decode(o.valueBytes());
-  final gen = o is asn1lib.ASN1GeneralizedTime;
-  if (!gen && o is! asn1lib.ASN1UtcTime) {
+  final gen = o.tag == 0x18;
+  if (!gen && o.tag != 0x17) {
     throw const FormatException('bad certificate time');
   }
   final m = RegExp(
