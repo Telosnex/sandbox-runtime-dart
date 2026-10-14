@@ -544,7 +544,10 @@ void main() {
           final seen = isolated('''
       final openFds = () => Directory('/proc/self/fd').listSync().length;
       // The runtime opens event-loop fds of its own on the first wrap.
+      // (Dart: an over-long wrap too, as Linux opens one more such fd then.)
       await wrap(small);
+      await wrap(overLong);
+      cleanupBwrapMountPoints(force: true);
       final baseline = openFds();
       await wrap(overLong);
       await wrap(overLong);
