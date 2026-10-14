@@ -62,7 +62,7 @@ void main() {
       which.whichSync = (String bin) => bin == 'rg' ? null : '/usr/bin/$bin';
 
       final p = SandboxManager.checkDependenciesAsync();
-      expect(p, isA<Future>());
+      expect(p, isA<Future<SandboxDependencyCheck>>());
       final awaited = await p;
       final sync = SandboxManager.checkDependencies();
       // Dart: SandboxDependencyCheck has no ==; toEqual compares both fields.
