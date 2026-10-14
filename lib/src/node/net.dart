@@ -191,6 +191,50 @@ bool _matches(List<int> address, List<int> network, int prefix) {
   return (address[wholeBytes] & mask) == (network[wholeBytes] & mask);
 }
 
+/// Node's `HTTPParser` (`process.binding('http_parser')`) as `socket.parser`
+/// exposes it: a table of callback slots indexed by the `kOn*` constants,
+/// which Node's server fills in and which code such as
+/// `keepFlushedHeaderBatches` wraps. `parser.constructor.kOnHeaders` in JS is
+/// `HTTPParser.kOnHeaders` here. Slots are called positionally with Node's
+/// arity (a slot is a Dart [Function]; call it with `Function.apply`):
+///
+/// - `kOnHeaders(List<String> headers, String url)`: a batch of raw header
+///   name/value strings (31 header lines at a time) and the URL so far, or a
+///   chunked request's trailers.
+/// - `kOnHeadersComplete(versionMajor, versionMinor, headers, method, url,
+///   statusCode, statusMessage, upgrade, shouldKeepAlive)`: `headers` and
+///   `url` are null when `kOnHeaders` flushed them; `method` is the method
+///   name; returns 0 (Node: skip-body flag).
+/// - `kOnBody(Uint8List chunk)`, `kOnMessageComplete()`.
+///
+/// [incoming] is the message the default slots are filling (Node's
+/// `parser.incoming`).
+class HTTPParser {
+  static const int kOnMessageBegin = 0;
+  static const int kOnHeaders = 1;
+  static const int kOnHeadersComplete = 2;
+  static const int kOnBody = 3;
+  static const int kOnMessageComplete = 4;
+  static const int kOnExecute = 5;
+  static const int kOnTimeout = 6;
+  static const int REQUEST = 1;
+  static const int RESPONSE = 2;
+
+  final List<Function?> _slots = List<Function?>.filled(7, null);
+
+  /// The callback in slot [index] (one of the `kOn*` constants), or null.
+  Function? operator [](int index) => _slots[index];
+
+  void operator []=(int index, Function? callback) => _slots[index] = callback;
+
+  /// Node's `parser.incoming`.
+  Object? incoming;
+
+  /// Node's `parser._headers` and `parser._url`: what `kOnHeaders` collected.
+  List<String> headersSoFar = [];
+  String urlSoFar = '';
+}
+
 /// Node-like byte duplex over dart:io Socket. This is intentionally limited
 /// to the event and stream operations consumed by the sandbox proxies.
 /// Node `net.Socket`.
@@ -214,6 +258,10 @@ class NodeSocket extends stream.Duplex {
   NodeSocket.over({bool allowHalfOpen = false})
     : _connecting = false,
       super(allowHalfOpen: allowHalfOpen, emitClose: false, autoDestroy: true);
+
+  /// Node's `socket.parser`: set while an HTTP server parses on this socket
+  /// (null otherwise, as on a Node socket that is not an HTTP connection).
+  HTTPParser? parser;
 
   Socket? _socket;
   StreamSubscription<Uint8List>? _subscription;

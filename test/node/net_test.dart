@@ -211,6 +211,8 @@ void main() {
       'connect, write-before-close, error, and close events are ordered',
       () async {
         final server = net.createServer();
+        // Unread bytes would keep the server side from ever ending (as in Node).
+        server.on('connection', (net.NodeSocket s) => s.resume());
         final port = await _listen(server);
         final socket = net.connect(port, '127.0.0.1');
         final order = <String>[];
