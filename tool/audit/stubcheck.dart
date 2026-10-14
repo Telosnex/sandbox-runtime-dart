@@ -157,10 +157,11 @@ List<_Export> _exports(List<String> up) {
         }.contains(kind))) {
       // Members at depth 1 of the body, up to its closing brace.
       var depth = 0;
+      var parens = 0; // Inside a multi-line signature: parameters, not members.
       var k = i;
       for (; k < up.length; k++) {
         final l = up[k];
-        if (k > i && depth == 1) {
+        if (k > i && depth == 1 && parens == 0) {
           final mm = _member.firstMatch(l);
           final private =
               RegExp(r'^\s+(private|protected|#)').hasMatch(l) ||
@@ -177,6 +178,10 @@ List<_Export> _exports(List<String> up) {
           }
         }
         depth += '{'.allMatches(l).length - '}'.allMatches(l).length;
+        if (k > i) {
+          parens += '('.allMatches(l).length - ')'.allMatches(l).length;
+          if (parens < 0) parens = 0;
+        }
         if (k > i && depth <= 0) break;
       }
       i = k;
