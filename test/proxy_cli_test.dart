@@ -542,9 +542,10 @@ Future<void> main() async {
       ));
     });
 
-    // Descriptors 100 to 103 are closed in the child
-    // (Dart: not 3 to 6, which the Dart VM itself uses on Linux): starting on them fails, so
+    // Descriptors 3 to 6 are closed in the child: starting on them fails, so
     // the same answer shows that none of them was opened or read.
+    // Dart: 100 to 103 stand in for 3 to 6, which the Dart VM itself opens
+    // on Linux (a pipe, an eventpoll and a timerfd).
     const CLOSED_FDS = [
       '--listen-fd',
       '100',
