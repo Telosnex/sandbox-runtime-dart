@@ -1,6 +1,15 @@
-// STUB: pending port of src/sandbox/credential-mask-env.ts @ 24eb39e.
-// ignore_for_file: dangling_library_doc_comments, slash_for_doc_comments
+// Ported from sandbox-runtime src/sandbox/credential-mask-env.ts @ 24eb39e.
+// ignore_for_file: constant_identifier_names, dangling_library_doc_comments, slash_for_doc_comments
 
+import 'dart:convert';
+
+import '../node/console.dart' as console;
+import '../node/crypto.dart' show randomUUID;
+import '../node/errno.dart' show NodeException;
+import '../node/process.dart' as process;
+import '../utils/debug.dart' show logForDebugging;
+import 'credential_decode.dart' show maskJwtClaims, mintFakeJwt, verifyJwt;
+import 'credential_extract.dart' show extractAndSubstitute;
 import 'sandbox_config.dart' show CredentialEnvVarConfig;
 import 'credential_sentinel.dart' show SentinelRegistry;
 
@@ -20,6 +29,14 @@ import 'credential_sentinel.dart' show SentinelRegistry;
  * valid syntax. See {@link extractAndSubstitute} and
  * {@link CredentialEnvVarConfigSchema}.
  */
+
+/**
+ * Sentinel-registry key prefix for structured (extract) env-var captures.
+ * Whole-value env masking keys on the bare variable name; extract captures
+ * key on `env:<NAME>#<i>` so the two forms — and masked files, which use
+ * `file:<path>` — can never collide (env var names cannot contain `:`).
+ */
+const String _ENV_EXTRACT_KEY_PREFIX = 'env:';
 
 /** Result of {@link buildMaskedEnvVars}. */
 class MaskedEnvBuildResult {
@@ -83,6 +100,153 @@ MaskedEnvBuildResult buildMaskedEnvVars(
   List<String> allowedDomains,
   SentinelRegistry registry, [
   Map<String, String?>? env,
-]) => throw UnimplementedError(
-  'pending port of src/sandbox/credential-mask-env.ts',
-);
+]) {
+  env ??= process.env;
+  final setEnvVars = <String, String>{};
+  final degradeToUnsetNames = <String>[];
+  for (final v in envVars) {
+    if (v.mode != 'mask') continue;
+    final real = env[v.name];
+    if (real == null) continue;
+
+    // Effective injectHosts: per-entry narrows; if unset, default to
+    // every reachable host (network.allowedDomains). injectHosts is an
+    // *optional narrowing*, not a required allowlist. Trade-off: a
+    // masked credential with no injectHosts is injectable at every host
+    // the sandbox can reach — narrow it explicitly when the credential
+    // should only go to a subset.
+    final injectHosts = v.injectHosts ?? allowedDomains;
+
+    if (v.decode == 'jwt') {
+      if (!verifyJwt(real)) {
+        // Nothing was masked — the operator declared the value a JWT but
+        // it isn't one. Fail open with a loud warning (parallel to the
+        // extract onExtractNoMatch "warn" default).
+        final msg =
+            '[sandbox-runtime] WARNING: credentials.envVars entry '
+            '"${v.name}" has decode "jwt" but its value did not verify '
+            'as a JWT. The variable is left UNPROTECTED (real value '
+            'visible as-is inside the sandbox). Fix the config or remove '
+            'the entry.';
+        console.warn(msg);
+        logForDebugging(msg, level: 'warn');
+        continue;
+      }
+      if (v.maskClaims?.isNotEmpty ?? false) {
+        // Claim-level masking: sentinels go INSIDE the payload; the
+        // rebuilt fake token is itself registered as a sentinel for the
+        // whole real token, so both the bearer path (token sent
+        // verbatim) and the extracted-claim path substitute on egress.
+        final masked = maskJwtClaims(
+          real,
+          v.maskClaims!,
+          (claim, value) => registry.register(
+            '$_ENV_EXTRACT_KEY_PREFIX${v.name}#$claim',
+            value,
+            injectHosts,
+          ),
+        );
+        if (masked == null) {
+          // A verified JWT none of whose named claims are present as
+          // strings: nothing was masked — same fail-open posture as a
+          // value that does not verify.
+          final msg =
+              '[sandbox-runtime] WARNING: credentials.envVars entry '
+              '"${v.name}" has maskClaims '
+              '${jsonEncode(v.maskClaims)} but none is present as a '
+              'string claim in its JWT value. The variable is left '
+              'UNPROTECTED (real value visible as-is inside the sandbox). '
+              'Fix the config or remove the entry.';
+          console.warn(msg);
+          logForDebugging(msg, level: 'warn');
+          continue;
+        }
+        final skipped = v.maskClaims!
+            .where((c) => !masked.claimSentinels.containsKey(c))
+            .toList();
+        if (skipped.isNotEmpty) {
+          logForDebugging(
+            '[credential-mask] env var "${v.name}": maskClaims '
+            '${jsonEncode(skipped)} absent or non-string in the '
+            'JWT — skipped.',
+          );
+        }
+        setEnvVars[v.name] = registry.registerWithSentinel(
+          '$_ENV_EXTRACT_KEY_PREFIX${v.name}',
+          masked.fakeToken,
+          real,
+          injectHosts,
+        );
+        continue;
+      }
+      // JWT-shaped fake so token-parsing tools inside the sandbox keep
+      // working; the proxy swaps the whole fake token on egress. Keyed
+      // env:<NAME> — caller-minted keys stay disjoint from the file:
+      // namespace and from plain masked env vars.
+      setEnvVars[v.name] = registry.registerWithSentinel(
+        '$_ENV_EXTRACT_KEY_PREFIX${v.name}',
+        mintFakeJwt(randomUUID()),
+        real,
+        injectHosts,
+      );
+      continue;
+    }
+
+    if (v.extract == null) {
+      // Whole-value: one sentinel for the entire value.
+      setEnvVars[v.name] = registry.register(v.name, real, injectHosts);
+      continue;
+    }
+
+    final extracted = extractAndSubstitute(
+      real,
+      v.extract!,
+      (cap, i) => registry.register(
+        '$_ENV_EXTRACT_KEY_PREFIX${v.name}#$i',
+        cap,
+        injectHosts,
+      ),
+    );
+    if (extracted == null) {
+      final onNoMatch = v.onExtractNoMatch ?? 'warn';
+      if (onNoMatch == 'error') {
+        throw NodeException(
+          'credentials.envVars entry "${v.name}": extract pattern '
+          '"${v.extract}" matched nothing (onExtractNoMatch: "error"). '
+          'Fix the regex, change to "warn"/"deny", or remove the entry.',
+        );
+      }
+      if (onNoMatch == 'deny') {
+        // Fail-closed: the operator declared this variable as containing
+        // a credential. Masking can't apply — degrade to unset so the
+        // sandboxed process cannot read the credential at all.
+        logForDebugging(
+          '[credential-mask] extract pattern /${v.extract}/ matched '
+          'nothing in the value of ${v.name} — unsetting the variable.',
+          level: 'warn',
+        );
+        degradeToUnsetNames.add(v.name);
+        continue;
+      }
+      // 'warn' (default): fail-open. A non-matching pattern is a config
+      // error to surface, not a reason to break a tool that needs the
+      // variable. Skip the entry — the variable is inherited with its
+      // real value — and warn loudly on stderr so the operator fixes
+      // the regex.
+      final msg =
+          '[sandbox-runtime] WARNING: credentials.envVars entry '
+          '"${v.name}" has extract pattern "${v.extract}" that matched '
+          "nothing in the variable's value. The variable is left "
+          'UNPROTECTED (visible as-is inside the sandbox). Fix the regex, '
+          'set onExtractNoMatch to "deny" or "error", or remove the entry.';
+      console.warn(msg);
+      logForDebugging(msg, level: 'warn');
+      continue;
+    }
+    setEnvVars[v.name] = extracted.fakeContent;
+  }
+  return MaskedEnvBuildResult(
+    setEnvVars: setEnvVars,
+    degradeToUnsetNames: degradeToUnsetNames,
+  );
+}

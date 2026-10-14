@@ -42,6 +42,8 @@ class ForgePkiApi {
       ForgeRsaPrivateKey.fromPem(pem);
   ForgeAsn1 distinguishedNameToAsn1(ForgeDistinguishedName name) =>
       name.toAsn1();
+  ForgeRsaPublicKey setRsaPublicKey(BigInt n, BigInt e) =>
+      ForgeRsaPublicKey(n, e);
   ForgeAsn1 getTBSCertificate(ForgeCertificate cert) =>
       cert.getTBSCertificate();
 }
@@ -670,11 +672,15 @@ ForgeAsn1 _nameAsn1(List<Map<String, String>> attrs) {
               ),
             ),
           ),
+          // node-forge _dnToAsn1: valueTagClass defaults to PRINTABLESTRING;
+          // UTF8 values are UTF-8 encoded, others are binary strings.
           ForgeAsn1(
             0,
-            attr['name'] == 'countryName' ? 19 : 12,
+            int.tryParse(attr['valueTagClass'] ?? '') ?? 19,
             false,
-            attr['value'] ?? '',
+            attr['valueTagClass'] == '12'
+                ? _binary(utf8.encode(attr['value'] ?? ''))
+                : attr['value'] ?? '',
           ),
         ]),
       ]),
@@ -783,10 +789,19 @@ ForgeDistinguishedName _parseName(asn1lib.ASN1Sequence name) {
       final oid =
           (entry.elements[0] as asn1lib.ASN1ObjectIdentifier).identifier!;
       final valueObject = entry.elements[1];
-      final value = valueObject is asn1lib.ASN1OctetString
-          ? utf8.decode(valueObject.octets, allowMalformed: true)
-          : utf8.decode(valueObject.valueBytes(), allowMalformed: true);
-      attrs.add({'name': names[oid] ?? oid, 'oid': oid, 'value': value});
+      // node-forge keeps the parsed tag as valueTagClass and decodes only
+      // UTF8String values; other string types stay binary strings.
+      final tag = valueObject.tag & 0x1f;
+      final bytes = valueObject.valueBytes();
+      final value = tag == 12
+          ? utf8.decode(bytes, allowMalformed: true)
+          : _binary(bytes);
+      attrs.add({
+        'name': names[oid] ?? oid,
+        'oid': oid,
+        'value': value,
+        'valueTagClass': '$tag',
+      });
     }
   }
   return ForgeDistinguishedName(attrs);
@@ -804,6 +819,8 @@ Map<String, String> _normalizeAttribute(Map<String, dynamic> source) {
     if (source['name'] != null) 'name': source['name'].toString(),
     if (source['oid'] != null) 'oid': source['oid'].toString(),
     'value': value?.toString() ?? '',
+    if (source['valueTagClass'] != null)
+      'valueTagClass': source['valueTagClass'].toString(),
   };
 }
 
@@ -870,7 +887,9 @@ String _pem(String type, List<int> der) {
     for (var i = 0; i < encoded.length; i += 64)
       encoded.substring(i, min(i + 64, encoded.length)),
   ];
-  return '-----BEGIN $type-----\n${lines.join('\n')}\n-----END $type-----\n';
+  // forge.pem.encode: CRLF line endings, 64-column body.
+  return '-----BEGIN $type-----\r\n${lines.join('\r\n')}\r\n'
+      '-----END $type-----\r\n';
 }
 
 List<int> _ipAddressBytes(String address) {

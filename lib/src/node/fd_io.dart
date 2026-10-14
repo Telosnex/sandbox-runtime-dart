@@ -1,0 +1,450 @@
+// Descriptor-backed dart:io sockets for `net.Socket({fd})` and
+// `server.listen({fd})`. dart:io cannot adopt a file descriptor, so reading,
+// writing and accepting go to libc through FFI: a reader isolate polls and
+// reads (so a stop request is honoured within 100 ms), writes are blocking
+// write(2) calls, and an accept isolate does the same for a listening
+// descriptor. macOS and Linux only; anything else fails closed.
+import 'dart:async';
+import 'dart:convert';
+import 'dart:ffi';
+import 'dart:io';
+import 'dart:isolate';
+import 'dart:typed_data';
+
+import 'package:ffi/ffi.dart';
+
+import 'errno.dart';
+
+typedef _IntIntN = Int32 Function(Int32);
+typedef _IntInt = int Function(int);
+typedef _ReadN = IntPtr Function(Int32, Pointer<Uint8>, IntPtr);
+typedef _ReadD = int Function(int, Pointer<Uint8>, int);
+typedef _PollN = Int32 Function(Pointer<Uint8>, Uint64, Int32);
+typedef _PollD = int Function(Pointer<Uint8>, int, int);
+typedef _AcceptN = Int32 Function(Int32, Pointer<Uint8>, Pointer<Uint32>);
+typedef _AcceptD = int Function(int, Pointer<Uint8>, Pointer<Uint32>);
+typedef _SockNameN = Int32 Function(Int32, Pointer<Uint8>, Pointer<Uint32>);
+typedef _SockNameD = int Function(int, Pointer<Uint8>, Pointer<Uint32>);
+typedef _ShutdownN = Int32 Function(Int32, Int32);
+typedef _ShutdownD = int Function(int, int);
+typedef _ErrnoN = Pointer<Int32> Function();
+
+class _Libc {
+  _Libc() {
+    if (!(Platform.isMacOS || Platform.isLinux)) {
+      throw NodeError(
+        'Descriptor sockets are not supported on this platform',
+        code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM',
+      );
+    }
+    final lib = DynamicLibrary.process();
+    read = lib.lookupFunction<_ReadN, _ReadD>('read');
+    write = lib.lookupFunction<_ReadN, _ReadD>('write');
+    close = lib.lookupFunction<_IntIntN, _IntInt>('close');
+    poll = lib.lookupFunction<_PollN, _PollD>('poll');
+    accept = lib.lookupFunction<_AcceptN, _AcceptD>('accept');
+    getsockname = lib.lookupFunction<_SockNameN, _SockNameD>('getsockname');
+    getpeername = lib.lookupFunction<_SockNameN, _SockNameD>('getpeername');
+    shutdown = lib.lookupFunction<_ShutdownN, _ShutdownD>('shutdown');
+    final loc = lib.lookupFunction<_ErrnoN, Pointer<Int32> Function()>(
+      Platform.isMacOS ? '__error' : '__errno_location',
+    );
+    errno = () => loc().value;
+  }
+  late final _ReadD read, write;
+  late final _IntInt close;
+  late final _PollD poll;
+  late final _AcceptD accept;
+  late final _SockNameD getsockname, getpeername;
+  late final _ShutdownD shutdown;
+  late final int Function() errno;
+}
+
+const int _eintr = 4;
+const int _eagain = 35; // macOS; Linux is 11 (both handled below)
+
+bool _again(int e) => e == _eintr || e == 11 || e == _eagain;
+
+/// poll(2) one descriptor for readability: true when readable (or hung up).
+bool _pollIn(_Libc c, int fd, int ms) {
+  final pfd = calloc<Uint8>(8);
+  try {
+    final view = pfd
+        .asTypedList(8)
+        .buffer
+        .asByteData(pfd.asTypedList(8).offsetInBytes);
+    view.setInt32(0, fd, Endian.host);
+    view.setInt16(4, 1, Endian.host); // POLLIN
+    final r = c.poll(pfd, 1, ms);
+    return r > 0;
+  } finally {
+    calloc.free(pfd);
+  }
+}
+
+Never _fail(String syscall, int errno) =>
+    throw SocketException('$syscall failed', osError: OSError('', errno));
+
+void _readEntry(List<Object> args) async {
+  final out = args[0] as SendPort;
+  final fd = args[1] as int;
+  final c = _Libc();
+  final inbox = ReceivePort();
+  out.send(inbox.sendPort);
+  var stopped = false;
+  var credits = 1;
+  inbox.listen((Object? m) {
+    if (m == 'stop') {
+      stopped = true;
+    } else if (m == 'more') {
+      credits++;
+    }
+  });
+  final buf = malloc<Uint8>(65536);
+  try {
+    while (!stopped) {
+      if (credits <= 0 || !_pollIn(c, fd, 100)) {
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+        continue;
+      }
+      final n = c.read(fd, buf, 65536);
+      if (n < 0) {
+        final e = c.errno();
+        if (_again(e)) continue;
+        out.send(e);
+        break;
+      }
+      if (n == 0) {
+        out.send(null);
+        break;
+      }
+      credits--;
+      out.send(
+        TransferableTypedData.fromList([
+          Uint8List.fromList(buf.asTypedList(n)),
+        ]),
+      );
+      await Future<void>.delayed(Duration.zero);
+    }
+  } finally {
+    malloc.free(buf);
+    out.send('exit');
+    inbox.close();
+  }
+}
+
+/// A connected stream descriptor as a dart:io [Socket].
+Socket fdSocket(int fd, {bool readable = true, bool writable = true}) =>
+    _FdSocket(fd, readable, writable);
+
+/// A listening stream descriptor as a dart:io [ServerSocket].
+ServerSocket fdServerSocket(int fd) => _FdServerSocket(fd);
+
+(InternetAddress, int) _name(_Libc c, int fd, bool peer) {
+  final buf = calloc<Uint8>(128);
+  final len = calloc<Uint32>()..value = 128;
+  try {
+    final r = peer ? c.getpeername(fd, buf, len) : c.getsockname(fd, buf, len);
+    if (r != 0) _fail(peer ? 'getpeername' : 'getsockname', c.errno());
+    final b = buf.asTypedList(128);
+    final view = ByteData.sublistView(b);
+    final family = Platform.isMacOS ? b[1] : view.getUint16(0, Endian.host);
+    if (family == 2) {
+      return (
+        InternetAddress.fromRawAddress(Uint8List.fromList(b.sublist(4, 8))),
+        view.getUint16(2, Endian.big),
+      );
+    }
+    if (family == 10 || family == 30) {
+      return (
+        InternetAddress.fromRawAddress(Uint8List.fromList(b.sublist(8, 24))),
+        view.getUint16(2, Endian.big),
+      );
+    }
+    if (family == 1) {
+      final start = Platform.isMacOS ? 2 : 2;
+      var end = start;
+      while (end < len.value && b[end] != 0) {
+        end++;
+      }
+      return (
+        InternetAddress(
+          utf8.decode(b.sublist(start, end)),
+          type: InternetAddressType.unix,
+        ),
+        0,
+      );
+    }
+    return (InternetAddress.loopbackIPv4, 0);
+  } finally {
+    calloc.free(buf);
+    calloc.free(len);
+  }
+}
+
+class _FdSocket extends Stream<Uint8List> implements Socket {
+  _FdSocket(this._fd, this._readable, this._writable) {
+    _libc = _Libc();
+    _controller = StreamController<Uint8List>(
+      onListen: _startReading,
+      onResume: () => _more(),
+      onCancel: _stopReading,
+    );
+    if (!_readable) _controller.close();
+  }
+
+  final int _fd;
+  final bool _readable, _writable;
+  late final _Libc _libc;
+  late final StreamController<Uint8List> _controller;
+  final Completer<void> _done = Completer<void>();
+  ReceivePort? _port;
+  SendPort? _toReader;
+  bool _closed = false;
+  bool _readerGone = true;
+  bool _writeClosed = false;
+
+  void _startReading() {
+    if (!_readable || _port != null || _closed) return;
+    final port = _port = ReceivePort();
+    _readerGone = false;
+    port.listen((Object? m) {
+      if (m is SendPort) {
+        _toReader = m;
+      } else if (m is TransferableTypedData) {
+        if (!_controller.isClosed) {
+          _controller.add(m.materialize().asUint8List());
+          _more();
+        }
+      } else if (m == null) {
+        if (!_controller.isClosed) _controller.close();
+      } else if (m is int) {
+        if (!_controller.isClosed) {
+          _controller.addError(
+            SocketException('read failed', osError: OSError('', m)),
+          );
+          _controller.close();
+        }
+      } else if (m == 'exit') {
+        _readerGone = true;
+        port.close();
+        _port = null;
+        _maybeFinish();
+      }
+    });
+    Isolate.spawn(_readEntry, <Object>[port.sendPort, _fd]);
+  }
+
+  void _more() {
+    if (!_controller.isPaused) _toReader?.send('more');
+  }
+
+  Future<void> _stopReading() async {
+    _toReader?.send('stop');
+    if (_readerGone) _maybeFinish();
+  }
+
+  void _maybeFinish() {
+    if (_closed && _readerGone && !_done.isCompleted) {
+      _libc.close(_fd);
+      _done.complete();
+    }
+  }
+
+  @override
+  StreamSubscription<Uint8List> listen(
+    void Function(Uint8List event)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) => _controller.stream.listen(
+    onData,
+    onError: onError,
+    onDone: onDone,
+    cancelOnError: cancelOnError,
+  );
+
+  @override
+  void add(List<int> data) {
+    if (!_writable || _writeClosed) {
+      throw StateError('Socket is not writable');
+    }
+    final bytes = data is Uint8List ? data : Uint8List.fromList(data);
+    final p = malloc<Uint8>(bytes.length == 0 ? 1 : bytes.length);
+    try {
+      p.asTypedList(bytes.length).setAll(0, bytes);
+      var off = 0;
+      while (off < bytes.length) {
+        final n = _libc.write(_fd, p + off, bytes.length - off);
+        if (n < 0) {
+          final e = _libc.errno();
+          if (e == _eintr) continue;
+          if (_again(e)) {
+            _pollOut();
+            continue;
+          }
+          _fail('write', e);
+        }
+        off += n;
+      }
+    } finally {
+      malloc.free(p);
+    }
+  }
+
+  void _pollOut() {
+    final pfd = calloc<Uint8>(8);
+    try {
+      final view = ByteData.sublistView(pfd.asTypedList(8));
+      view.setInt32(0, _fd, Endian.host);
+      view.setInt16(4, 4, Endian.host); // POLLOUT
+      _libc.poll(pfd, 1, 100);
+    } finally {
+      calloc.free(pfd);
+    }
+  }
+
+  @override
+  Future<void> flush() async {}
+
+  @override
+  Future<void> close() async {
+    if (!_writeClosed) {
+      _writeClosed = true;
+      _libc.shutdown(_fd, 1); // SHUT_WR
+    }
+    if (!_readable) destroy();
+  }
+
+  Future<void> destroyAndWait() async {
+    destroy();
+    await _done.future;
+  }
+
+  @override
+  void destroy() {
+    if (_closed) return;
+    _closed = true;
+    _toReader?.send('stop');
+    if (_port == null) _readerGone = true;
+    if (!_controller.isClosed) _controller.close();
+    _maybeFinish();
+  }
+
+  @override
+  Future<void> get done => _done.future;
+
+  @override
+  InternetAddress get address => _name(_libc, _fd, false).$1;
+
+  @override
+  int get port => _name(_libc, _fd, false).$2;
+
+  @override
+  InternetAddress get remoteAddress => _name(_libc, _fd, true).$1;
+
+  @override
+  int get remotePort => _name(_libc, _fd, true).$2;
+
+  @override
+  bool setOption(SocketOption option, bool enabled) => false;
+
+  @override
+  Encoding encoding = utf8;
+
+  @override
+  void write(Object? object) => add(encoding.encode('$object'));
+
+  @override
+  void writeln([Object? object = '']) => write('$object\n');
+
+  @override
+  void writeAll(Iterable<Object?> objects, [String separator = '']) =>
+      write(objects.join(separator));
+
+  @override
+  void writeCharCode(int charCode) => write(String.fromCharCode(charCode));
+
+  @override
+  void addError(Object error, [StackTrace? stackTrace]) =>
+      throw UnsupportedError('addError on a descriptor socket');
+
+  @override
+  Future<void> addStream(Stream<List<int>> stream) async {
+    await for (final chunk in stream) {
+      add(chunk);
+    }
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
+    'Descriptor sockets do not support ${invocation.memberName}',
+  );
+}
+
+class _FdServerSocket extends Stream<Socket> implements ServerSocket {
+  _FdServerSocket(this._fd) {
+    _libc = _Libc();
+    final name = _name(_libc, _fd, false);
+    address = name.$1;
+    port = name.$2;
+    _controller = StreamController<Socket>(onListen: _start);
+  }
+
+  final int _fd;
+  late final _Libc _libc;
+  late final StreamController<Socket> _controller;
+  Timer? _timer;
+  bool _closed = false;
+
+  @override
+  late final InternetAddress address;
+  @override
+  late final int port;
+
+  void _start() {
+    _timer = Timer.periodic(const Duration(milliseconds: 20), (_) {
+      while (!_closed && _pollIn(_libc, _fd, 0)) {
+        final fd = _libc.accept(_fd, nullptr.cast(), nullptr.cast());
+        if (fd < 0) {
+          final e = _libc.errno();
+          if (_again(e)) return;
+          _controller.addError(
+            SocketException('accept failed', osError: OSError('', e)),
+          );
+          return;
+        }
+        _controller.add(_FdSocket(fd, true, true));
+      }
+    });
+  }
+
+  @override
+  StreamSubscription<Socket> listen(
+    void Function(Socket event)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) => _controller.stream.listen(
+    onData,
+    onError: onError,
+    onDone: onDone,
+    cancelOnError: cancelOnError,
+  );
+
+  @override
+  Future<ServerSocket> close() async {
+    if (!_closed) {
+      _closed = true;
+      _timer?.cancel();
+      _libc.close(_fd);
+      await _controller.close();
+    }
+    return this;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
+    'Descriptor server sockets do not support ${invocation.memberName}',
+  );
+}
