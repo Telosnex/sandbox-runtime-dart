@@ -6,6 +6,7 @@
 // usage: srt-spawn STATUSFD:KEEP FILE ARGV0 [ARG...]
 // pipe protocol: 8 bytes {int32 pid, int32 errno} once the command has been
 // exec'd (errno != 0: exec failed, pid 0), then 4 bytes {int32 wait status}.
+#include <dirent.h>
 #include <errno.h>
 #include <sys/syscall.h>
 #include <fcntl.h>
@@ -46,11 +47,38 @@ int main(int argc, char **argv) {
     char *colon = strchr(argv[1], ':');
     int keep = colon ? atoi(colon + 1) : 3;
     if (keep < 3) keep = 3;
+    int ok = 1;
     if (sfd >= keep) {
-      syscall(SYS_close_range, (unsigned)keep, (unsigned)sfd - 1, 0);
-      syscall(SYS_close_range, (unsigned)sfd + 1, ~0U, 0);
-    } else {
-      syscall(SYS_close_range, (unsigned)keep, ~0U, 0);
+      if (sfd > keep &&
+          syscall(SYS_close_range, (unsigned)keep, (unsigned)sfd - 1, 0) != 0)
+        ok = 0;
+      if (syscall(SYS_close_range, (unsigned)sfd + 1, ~0U, 0) != 0) ok = 0;
+    } else if (syscall(SYS_close_range, (unsigned)keep, ~0U, 0) != 0) {
+      ok = 0;
+    }
+    if (!ok) {
+      // close_range unavailable (old kernel, seccomp): close one by one.
+      int failed = 0;
+      DIR *d = opendir("/proc/self/fd");
+      if (d) {
+        int dfd = dirfd(d);
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+          if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+          int fd = atoi(e->d_name);
+          if (fd < keep || fd == sfd || fd == dfd) continue;
+          close(fd);
+        }
+        closedir(d);
+      } else {
+        failed = errno ? errno : EMFILE;
+      }
+      if (failed) {
+        // Cannot enumerate descriptors: fail closed, do not exec.
+        int msg[2] = {0, failed};
+        write_all(sfd, msg, sizeof msg);
+        return 125;
+      }
     }
   }
   int ep[2];
