@@ -902,6 +902,9 @@ class ClientRequest extends events.EventEmitter {
     if (responseListener != null) on('response', responseListener);
     if (options is Map && options['agent'] is Agent) {
       _agent = options['agent'] as Agent;
+    } else if (_options['agent'] == false) {
+      // Node: `agent: false` makes a one-off Agent (no keep-alive).
+      _agent = Agent();
     } else {
       _agent = _options['agent'] is Agent
           ? _options['agent'] as Agent
