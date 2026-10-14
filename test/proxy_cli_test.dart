@@ -302,7 +302,9 @@ Future<void> main() async {
         }
       },
       timeout: const Timeout(Duration(milliseconds: 20000)),
-      tags: ['pending'], // Dart: message is 'stopped (decider: decider closed the output stream)' not 'write error' (proxy_cli.dart error text/ordering)
+      tags: [
+        'pending',
+      ], // Dart: message is 'stopped (decider: decider closed the output stream)' not 'write error' (proxy_cli.dart error text/ordering)
     );
 
     // Each form runs twice. Pinned to one CPU, reads of descriptors that sit

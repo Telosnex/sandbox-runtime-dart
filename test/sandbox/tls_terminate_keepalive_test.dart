@@ -1,5 +1,7 @@
 // Ported from sandbox-runtime test/sandbox/tls-terminate-keepalive.test.ts @ 24eb39e.
-@Tags(['pending']) // Dart: all fail status 0 (client sees no response) + setUpAll/teardown hang >60s
+@Tags(
+  ['pending'],
+) // Dart: all fail status 0 (client sees no response) + setUpAll/teardown hang >60s
 library;
 
 // ignore_for_file: non_constant_identifier_names
