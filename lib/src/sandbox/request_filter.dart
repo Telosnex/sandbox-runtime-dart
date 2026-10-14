@@ -693,7 +693,7 @@ bool _isThenable(Object? value) {
 
 void _logResponseFailure(Object? err) {
   logForDebugging(
-    '[request-filter] onResponse failed: ${errorMessage(err) ?? '$err'}',
+    '[request-filter] onResponse failed: ${errorMessage(err)}',
     level: 'error',
   );
 }
@@ -865,7 +865,7 @@ void respondUpstreamError(
   if (isResolvedAddressDenied(err)) {
     respondDenied(
       res,
-      errorMessage(err)!,
+      errorMessage(err),
       denyHeader != null
           ? (name: denyHeader, value: 'address_not_allowed')
           : null,

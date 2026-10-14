@@ -21,7 +21,7 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import '../node/buffer.dart' show Buffer;
+import '../node/buffer.dart' show Buffer, bufferIndexOf;
 import '../node/http.dart' as http;
 import '../node/stream.dart' as stream;
 import '../utils/debug.dart' show logForDebugging;
@@ -119,11 +119,14 @@ stream.Transform createBodySubstitutionTransform(
   Uint8List? carry;
   return stream.Transform(
     transform: (Object chunk, String? encoding, Function callback) {
-      final buf = Buffer.isBuffer(chunk)
-          ? chunk as Uint8List
+      // Dart: stream chunks arrive as Uint8List as well as Buffer.
+      final buf = chunk is Uint8List
+          ? chunk
+          : Buffer.isBuffer(chunk)
+          ? (chunk as Buffer).toUint8List()
           : Buffer.from(chunk, encoding ?? 'utf8').toUint8List();
       final work = (carry?.length ?? 0) > 0
-          ? Buffer.concat([carry!, buf])
+          ? Buffer.concat([carry!, buf]).toUint8List()
           : buf;
       final (:out, :tail) = _substitute(work, pairs, maxLen);
       carry = tail;
@@ -152,7 +155,7 @@ stream.Transform createBodySubstitutionTransform(
     var matchIdx = -1;
     SentinelBufferPair? matchPair;
     for (final p in pairs) {
-      final i = Buffer.indexOf(work, p.sentinel, pos);
+      final i = bufferIndexOf(work, p.sentinel, pos);
       if (i != -1 && (matchIdx == -1 || i < matchIdx)) {
         matchIdx = i;
         matchPair = p;
@@ -176,7 +179,7 @@ stream.Transform createBodySubstitutionTransform(
       .toInt();
   parts.add(Uint8List.sublistView(work, pos, tailStart));
   return (
-    out: Buffer.concat(parts),
+    out: Buffer.concat(parts).toUint8List(),
     tail: Buffer.from(Uint8List.sublistView(work, tailStart)).toUint8List(),
   );
 }
