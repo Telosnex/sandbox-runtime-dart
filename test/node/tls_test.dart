@@ -293,6 +293,32 @@ void main() {
         await events.once(server, 'close').timeout(_wait);
       });
 
+      test(
+        'an SNICallback answering (null, undefined) uses the default',
+        () async {
+          final (:certPem, :keyPem) = _certificate('srv.example.test');
+          final server = node_tls.createServer({
+            'cert': certPem,
+            'key': keyPem,
+            'SNICallback': (String name, Function cb) => cb(null, null),
+          });
+          server.on('secureConnection', (node_tls.TLSSocket s) => s.end('ok'));
+          server.listen(0, '127.0.0.1');
+          await events.once(server, 'listening');
+          final port = (server.address() as net.NodeAddress).port;
+          final socket = node_tls.connect({
+            'host': '127.0.0.1',
+            'port': port,
+            'servername': 'srv.example.test',
+            'ca': certPem,
+          });
+          final data = await events.once(socket, 'data').timeout(_wait);
+          expect(data.single, 'ok'.codeUnits);
+          socket.destroy();
+          server.close();
+        },
+      );
+
       test('a non-TLS client is a tlsClientError', () async {
         final (:certPem, :keyPem) = _certificate('srv.example.test');
         final server = node_tls.createServer({'cert': certPem, 'key': keyPem});
@@ -361,6 +387,23 @@ void main() {
         }
         await closed.timeout(_wait);
         tlsServer.close();
+      });
+
+      test('checkServerIdentity gets subject.CN', () async {
+        Object? seen;
+        final socket = node_tls.connect({
+          'host': '127.0.0.1',
+          'port': server.port,
+          'servername': 'tls.example.test',
+          'ca': server.certPem,
+          'checkServerIdentity': (String name, Object? cert) {
+            seen = (cert as node_tls.PeerCertificate).subject.CN;
+            return null;
+          },
+        });
+        await events.once(socket, 'secureConnect').timeout(_wait);
+        expect(seen, 'tls.example.test');
+        socket.destroy();
       });
 
       test('returns at once, queues writes, emits secureConnect', () async {

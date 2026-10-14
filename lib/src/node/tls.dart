@@ -267,7 +267,38 @@ Object? applyIdentity(
   Function identity,
   String hostname,
   X509Certificate? certificate,
-) => Function.apply(identity, [hostname, certificate]);
+) => Function.apply(identity, [
+  hostname,
+  identical(identity, checkServerIdentity) || certificate == null
+      ? certificate
+      : PeerCertificate(certificate),
+]);
+
+/// A distinguished name as Node's peer certificate shows it: `CN` is the
+/// common name (null when absent) and [raw] the dart:io string.
+class CertName {
+  CertName(this.raw) : CN = _commonName(raw);
+  final String raw;
+  // ignore: non_constant_identifier_names
+  final String? CN;
+  @override
+  String toString() => raw;
+}
+
+/// What a custom `checkServerIdentity` receives: Node's certificate shape
+/// (`subject.CN`, `issuer.CN`, `raw`) over the dart:io certificate.
+class PeerCertificate {
+  PeerCertificate(this.certificate)
+    : subject = CertName(certificate.subject),
+      issuer = CertName(certificate.issuer);
+  final X509Certificate certificate;
+  final CertName subject;
+  final CertName issuer;
+  Uint8List get raw => certificate.der;
+  String get pem => certificate.pem;
+  DateTime get validFrom => certificate.startValidity;
+  DateTime get validTo => certificate.endValidity;
+}
 
 /// The context for a client connection: [context] as given, or one that
 /// trusts [ca] (PEM text or bytes, or a list of them), or else
@@ -309,8 +340,11 @@ SecurityContext secureContextFor(Object? ca, SecurityContext? context) {
 /// matches; errors are returned (rather than thrown) like Node's API.
 NodeTlsIdentityError? checkServerIdentity(
   String hostname,
-  X509Certificate? certificate,
+  Object? peerCertificate,
 ) {
+  final certificate = peerCertificate is PeerCertificate
+      ? peerCertificate.certificate
+      : peerCertificate as X509Certificate?;
   if (certificate == null) {
     return NodeTlsIdentityError(
       hostname,
@@ -505,13 +539,16 @@ SecurityContext serverContextFor(Map<Object?, Object?> options) {
     if (sni is Function) {
       // dart:io does not report the client's server name: ask with ''.
       Object? chosen;
+      var answered = false;
       sni('', (Object? err, Object? ctx) {
         if (err != null) throw err;
+        answered = true;
         chosen = ctx;
       });
-      if (chosen == null) {
+      if (!answered) {
         throw UnimplementedError('SNICallback that answers later');
       }
+      // Answered (null, undefined): the default context, as in Node.
       context = chosen;
     }
   }
