@@ -4,7 +4,6 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:path/path.dart' show join;
 import 'package:sandbox_runtime/src/node/buffer.dart';
