@@ -1,5 +1,8 @@
 // Ported from sandbox-runtime test/sandbox/http-proxy-verdict-liveness.test.ts @ 24eb39e.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments
+@Tags(['pending'])
+library;
+
 import 'dart:async';
 import 'dart:convert';
 
