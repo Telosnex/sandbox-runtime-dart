@@ -8,7 +8,12 @@ import 'package:ffi/ffi.dart';
 
 import 'process.dart' as process;
 
-/// Node's `os.homedir()` spelling, using the process environment at call time.
+/// Node's `os.endianness()`: 'BE' or 'LE' for this CPU.
+String endianness() => Endian.host == Endian.little ? 'LE' : 'BE';
+
+/// Node's `os.EOL`.
+final String EOL = Platform.isWindows ? '\r\n' : '\n';
+
 String homedir() {
   final env = process.env;
   // As libuv's uv_os_homedir: a set variable wins even when it is empty

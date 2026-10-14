@@ -73,6 +73,94 @@ expected output.
 - To test: `git clone /media/psf/Home/dev/sandbox-runtime-dart /root/srt-dart`,
   then `dart pub get`, `dart run tool/build_seccomp.dart` and `dart test`.
 
+### Wave 1 restart: STATE (2026-10-13 late; rate-limit suspension)
+
+Agents are gone (new run); worktrees and branches are the state. Main =
+3da14cd: shim-web, shim-sys to e5ded96, impl-linux-small, impl-mitm-ca,
+impl-socks, impl-cred, helpers, config_loader, index+fd. Unmerged:
+- port/shim-stream 56c175e (+ dirty net.dart): stream.dart done; NodeSocket
+  is a Duplex; http.dart compiles. Left: IncomingMessage extends Readable
+  (+unpipe), closeAllConnections, unshift/flowing bug (mux test),
+  NodeSocket.parser per the positional kOn* contract, setDefaultEncoding,
+  listen({fd}), Socket({fd,readable,writable}).unref(), isIPv4/isIPv6,
+  ClientRequest servername/auth/reusedSocket + https.Agent options,
+  fs.createReadStream({fd}) (approved edit in fs.dart), https server TLS
+  hook for shim-web, drop emitted_http.dart from http_test.
+- port/shim-sys ca7c0ce: macOS green; Linux: VM's waitpid(-1) reaper steals
+  posix_spawn children's status (even under `dart test` alone). Decision:
+  (b) a tiny helper that is our child and reports the real child's wait
+  status over a pipe, built like the seccomp helper; until then skip the 4-5
+  Linux child_process tests with that reason so ca7c0ce can merge.
+- Waiting only on shim-stream (reviewed, MERGE when deps land):
+  impl-http 7f0b01a, impl-tls db1cf6d, impl-filter 64bc71b; impl-manager
+  805d68f (needs closeAllConnections); impl-front c0de812 (needs
+  Socket({fd}), createReadStream, isIPv4); impl-proxy-only 4a67c99 (mux
+  test: unshift bug + rmSync from ca7c0ce).
+- impl-linux 6caa80c: full port, un-skips done; not reviewed.
+- impl-decider cfb2b21: analyzes clean; not reviewed (rev ran on e6535dd,
+  result lost); no decider tests until phase B.
+Decisions this round: parser kOn* slots called positionally with Node's
+arity; structuredClone in node/structured_clone.dart (impl-manager);
+commander/globals/readline shims (impl-front); RipgrepConfig stays two
+types with boundary conversions (as upstream).
+
+### Wave 1: PAUSED after first attempt (2026-10-13). Read before restarting
+
+All 16 phase A agents stopped within about 30 minutes with partial work,
+and each said so (none claimed done falsely). Several wrote "simplified"
+code instead of a port (http_proxy basic CONNECT, socks5 state machine,
+decider_client partial): do not merge that; it gets redone. Causes:
+- Task size: one agent per 1,000-3,600-line file. Agents said the work
+  "exceeds available task window". Wave 0 worked because each task was small.
+- reasoning_effort was not set, so agents inherited /root's (low).
+- Shim chain: stream.dart is barely started and NodeSocket/IncomingMessage
+  do not extend it yet, so every proxy port is blocked behind it.
+Restart (user direction): agents are now more capable subinstances; run
+them at low effort, one agent per file as before, concise reports. Brief
+addendum at the end of WAVE1_BRIEF.md: no stopping for stubs, no
+simplified logic, read long files in ranges and commit per chunk. Branch state at pause: see `git log main..port/<name>` in each
+worktree; gate PASS of port/shim-sys e568f3f + port/shim-web 96abefc
+(unreviewed, not merged; shim-sys signs with an openssl subprocess, which
+Rule 3 does not allow).
+
+### Wave 1 plan (first attempt)
+
+Brief: ~/dev/srt-wt/WAVE1_BRIEF.md; review brief: ~/dev/srt-wt/REVIEW1_BRIEF.md.
+Each agent has worktree ~/dev/srt-wt/<name>, branch port/<name>. /root
+reviews each finished branch with a read-only reviewer, then merges through
+~/dev/srt-wt/gate. Ported tests whose module is a stub merge with
+`@Tags(['pending'])` (Rule 1a); the implementer removes the tag.
+
+Phase A (shims, helpers, implementations), owners:
+- shim-stream: node/{stream,net,http,tls,events,dns}.dart. NodeSocket
+  extends Duplex; IncomingMessage extends Readable; ServerResponse,
+  ClientRequest extend Writable. Proxy shim requests go here.
+- shim-web: node/{fetch,url,console}.dart, new node/https.dart.
+- shim-sys: node/{crypto,fs,os,process,child_process,buffer,errno,abort}
+  .dart, new node/zlib.dart, utils/which.dart spy point. Spy-point requests.
+- helpers: test/helpers/*.
+- impl-linux: linux_sandbox_utils (+ un-skips in seccomp_filter_test,
+  path_canonicalization_test).
+- impl-linux-small: linux_violation_monitor, read_deny_glob, own_files.
+- impl-manager: sandbox_manager, utils/config_loader (+ java_proxy_agent_test
+  un-skip).
+- impl-front: new src/index.dart, src/cli.dart, src/proxy_main.dart,
+  proxy_cli.dart, lib/sandbox_runtime.dart, bin/srt.dart,
+  bin/srt_proxy.dart, new node/fd.dart (control-fd CLOEXEC).
+- impl-http: http_proxy (+ resolved_address_guard_test un-skips).
+- impl-tls: tls_terminate_proxy, mitm_leaf.
+- impl-mitm-ca: mitm_ca, node/forge.dart.
+- impl-socks: socks_proxy, new node/socks5_server.dart.
+- impl-proxy-only: proxy_only, parent_proxy, mux_proxy,
+  emitted_connection, node/emitted_http.dart (+ mux_proxy_test un-skips).
+- impl-filter: request_filter, body_substitution.
+- impl-decider: decider_client.
+- impl-cred: credential_{sentinel,decode,mask_env,mask_files,aws_pairs}
+  (+ macos_literal_deny_brackets_test un-skips).
+
+Phase B (test porters, about 23 agents) starts when helpers and the
+https/crypto/zlib declarations are on main. Not ported: winsrt tests.
+
 ### Wave 0: DONE (2026-10-13, retry)
 
 Merged to main as a67c74b (gate PASS: 0 analyzer errors, 0 warnings;
