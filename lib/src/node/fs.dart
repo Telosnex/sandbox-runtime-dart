@@ -918,9 +918,10 @@ void rmSync(String path, [Map<String, Object?> options = const {}]) {
     }
   } else {
     try {
-      Link(path).deleteSync();
-    } on FileSystemException catch (error) {
-      throw nodeError(_codeFromIoError(error), 'rm', path);
+      unlinkSync(path);
+    } on NodeError catch (error) {
+      if (error.code == 'ENOENT' && options['force'] == true) return;
+      rethrow;
     }
   }
 }

@@ -126,4 +126,20 @@ void main() {
       throwsA(isA<NodeError>().having((e) => e.syscall, 's', 'unlink')),
     );
   }, testOn: '!windows');
+
+  test('rmSync removes a bound unix socket', () async {
+    final sock = p.join(dir, 's.sock');
+    final server = await ServerSocket.bind(
+      InternetAddress(sock, type: InternetAddressType.unix),
+      0,
+    );
+    fs.rmSync(sock);
+    expect(FileSystemEntity.typeSync(sock), FileSystemEntityType.notFound);
+    expect(
+      () => fs.rmSync(sock),
+      throwsA(isA<NodeError>().having((e) => e.code, 'code', 'ENOENT')),
+    );
+    fs.rmSync(sock, {'force': true});
+    await server.close();
+  }, testOn: '!windows');
 }
