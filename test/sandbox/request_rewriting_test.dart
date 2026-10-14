@@ -1079,7 +1079,6 @@ Future<void> main() async {
             expect(seen.length, before + 1);
             expect(sinkGot, lastSeen().url);
           },
-          tags: label == 'TLS-terminated' ? ['pending'] : null,
           skip: _tlsSkip,
           timeout: const Timeout(Duration(milliseconds: 15000)),
         );
@@ -1104,7 +1103,6 @@ Future<void> main() async {
             },
           );
         },
-        tags: label == 'TLS-terminated' ? ['pending'] : null,
         skip: _tlsSkip,
         timeout: const Timeout(Duration(milliseconds: 15000)),
       );
