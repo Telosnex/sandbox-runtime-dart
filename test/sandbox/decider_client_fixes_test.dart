@@ -1,7 +1,10 @@
+// No upstream counterpart: review-fix regression tests for decider_client.dart.
 import 'dart:async';
 
+import 'package:sandbox_runtime/src/node/fetch.dart' as fetch;
 import 'package:sandbox_runtime/src/node/stream.dart' as stream;
 import 'package:sandbox_runtime/src/sandbox/decider_client.dart';
+import 'package:sandbox_runtime/src/sandbox/request_filter.dart';
 import 'package:test/test.dart';
 
 import '../helpers/fake_decider.dart';
@@ -23,6 +26,29 @@ void main() {
     d.close();
     await Future<void>.delayed(Duration.zero);
     expect(dead, ['closed']);
+  });
+
+  test('close after hello fails pending waiters', () async {
+    final f = fakeDecider(['a.com'], (_) => 'hang');
+    final s = f['streams']! as Map<String, Object>;
+    final d = createDecider(
+      DeciderOptions(
+        input: s['input']! as stream.Readable,
+        output: s['output']! as stream.Writable,
+      ),
+    );
+    await d.hello;
+    final pending = d
+        .filterRequest(fetch.Request('http://a.com/'))
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    d.close();
+    final r = await pending.timeout(const Duration(seconds: 1));
+    if (r is RequestDecision) {
+      expect(r.action, 'deny');
+    } else {
+      expect(r.toString(), contains('closed'));
+    }
   });
 
   test('deeply nested frame dies cleanly', () async {

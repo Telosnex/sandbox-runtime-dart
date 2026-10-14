@@ -2,7 +2,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
-import '../../lib/src/node/stream.dart' as stream;
+import 'package:sandbox_runtime/src/node/stream.dart' as stream;
 
 /** A frame: the 4-byte big-endian length, then the JSON text as given. */
 Uint8List frameOf(String json) {
