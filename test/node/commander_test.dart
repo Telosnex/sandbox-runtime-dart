@@ -75,4 +75,82 @@ void main() {
     ).parse(['-s', 'f.json', '--control-fd=5', '-c', 'ls']);
     expect(got![1], {'settings': 'f.json', 'controlFd': 5, 'c': 'ls'});
   });
+
+  // Expected codes/messages from commander 12.1.0 with exitOverride().
+  Command strict() {
+    final p = Command();
+    p.name('srt').description('d').version('1.0.0').exitOverride();
+    p
+        .command('proxy')
+        .description('Run proxy')
+        .allowUnknownOption()
+        .helpOption(false)
+        .argument('[args...]')
+        .action((a) async {});
+    p
+        .argument('[command...]', 'command to run')
+        .option('-d, --debug', 'enable debug logging')
+        .option('-s, --settings <path>', 'path to config')
+        .option('-c <command>', 'run string')
+        .option('--control-fd <fd>', 'x', (v) {
+          final n = int.tryParse(v);
+          if (n == null || n < 3) throw InvalidArgumentError('must be >= 3');
+          return n;
+        })
+        .action((a) async {});
+    return p;
+  }
+
+  Future<CommanderError?> run(List<String> argv) async {
+    try {
+      await strict().parse(argv);
+    } on CommanderError catch (e) {
+      return e;
+    }
+    return null;
+  }
+
+  test('exitOverride: --version', () async {
+    final e = (await run(['--version']))!;
+    expect([e.code, e.exitCode], ['commander.version', 0]);
+  });
+
+  test('exitOverride: -h', () async {
+    final e = (await run(['-h']))!;
+    expect([e.code, e.exitCode], ['commander.helpDisplayed', 0]);
+  });
+
+  test('unknown option', () async {
+    final e = (await run(['--bogus']))!;
+    expect([e.code, e.exitCode], ['commander.unknownOption', 1]);
+    expect(e.message, "error: unknown option '--bogus'");
+  });
+
+  test('unknown option suggests a similar one', () async {
+    final e = (await run(['--debg']))!;
+    expect([e.code, e.exitCode], ['commander.unknownOption', 1]);
+    expect(e.message, contains('(Did you mean --debug?)'));
+  });
+
+  test('InvalidArgumentError from an option parser', () async {
+    for (final v in ['1', 'x']) {
+      final e = (await run(['--control-fd', v]))!;
+      expect([e.code, e.exitCode], ['commander.invalidArgument', 1]);
+      expect(
+        e.message,
+        "error: option '--control-fd <fd>' argument '$v' is invalid. "
+        'must be >= 3',
+      );
+    }
+  });
+
+  test('missing option argument', () async {
+    final e = (await run(['-s']))!;
+    expect([e.code, e.exitCode], ['commander.optionMissingArgument', 1]);
+    expect(e.message, "error: option '-s, --settings <path>' argument missing");
+  });
+
+  test('subcommand with helpOption(false) takes -h as an argument', () async {
+    expect(await run(['proxy', '-h']), isNull);
+  });
 }

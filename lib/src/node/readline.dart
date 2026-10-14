@@ -55,7 +55,6 @@ class Interface extends EventEmitter {
         _sawReturn = false;
         _line.write(c);
       }
-      if (closed) return;
     }
   }
 
@@ -67,7 +66,7 @@ class Interface extends EventEmitter {
 
   void _onEnd([Object? _]) {
     if (closed) return;
-    _decoder.close();
+    // A partial UTF-8 sequence at the end is dropped, as Node does.
     if (_line.isNotEmpty) _emitLine();
     close();
   }

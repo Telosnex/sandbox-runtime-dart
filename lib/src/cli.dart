@@ -25,7 +25,7 @@ import 'node/os.dart' as os;
 import 'node/abort.dart' show AbortController;
 import 'node/console.dart' as console;
 import 'node/emitted_http.dart' show runsOnBun;
-import 'node/errno.dart' show NodeError, errorMessage;
+import 'node/errno.dart' show NodeError, NodeException, errorMessage;
 import 'node/globals.dart';
 import 'node/process.dart' as process;
 import 'node/stream.dart' as stream;
@@ -132,9 +132,8 @@ stream.Readable _openControlFd(int fd) {
         // out of uv_pipe_open, which has already switched the fd to
         // non-blocking mode: an fs stream over it would read EAGAIN
         // forever, so no fallback is left to take.
-        throw NodeError(
+        throw NodeException(
           'could not be adopted as a stream (${code ?? '$err'})',
-          code: 'ERR_CONTROL_FD',
         );
       }
       logForDebugging(

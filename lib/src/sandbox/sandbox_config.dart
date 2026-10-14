@@ -1896,6 +1896,11 @@ class MitmProxyConfig {
   /// Domains to route through the MITM proxy (e.g., ["api.example.com", "*.internal.org"])
   final List<String> domains;
   const MitmProxyConfig({required this.socketPath, required this.domains});
+
+  Map<String, Object?> toJson() => {
+    'socketPath': socketPath,
+    'domains': domains,
+  };
 }
 
 class ParentProxyConfig {
@@ -1908,6 +1913,12 @@ class ParentProxyConfig {
   /// Comma-separated NO_PROXY list (hostname suffixes and CIDR ranges). Matching destinations connect directly instead of via the parent proxy.
   final String? noProxy;
   const ParentProxyConfig({this.http, this.https, this.noProxy});
+
+  Map<String, Object?> toJson() => {
+    if (http != null) 'http': http,
+    if (https != null) 'https': https,
+    if (noProxy != null) 'noProxy': noProxy,
+  };
 }
 
 class TlsTerminateConfig {
@@ -1936,6 +1947,15 @@ class TlsTerminateConfig {
     this.maxTunnels,
     this.handshakeTimeoutMs,
   });
+
+  Map<String, Object?> toJson() => {
+    if (caCertPath != null) 'caCertPath': caCertPath,
+    if (caKeyPath != null) 'caKeyPath': caKeyPath,
+    if (excludeDomains != null) 'excludeDomains': excludeDomains,
+    if (extraCaCertPaths != null) 'extraCaCertPaths': extraCaCertPaths,
+    if (maxTunnels != null) 'maxTunnels': maxTunnels,
+    if (handshakeTimeoutMs != null) 'handshakeTimeoutMs': handshakeTimeoutMs,
+  };
 }
 
 class NetworkConfig {
@@ -2016,6 +2036,30 @@ class NetworkConfig {
     this.tlsTerminate,
     this.parentProxy,
   });
+
+  Map<String, Object?> toJson() => {
+    'allowedDomains': allowedDomains,
+    'deniedDomains': deniedDomains,
+    if (deniedDomainReasons != null) 'deniedDomainReasons': deniedDomainReasons,
+    if (strictAllowlist != null) 'strictAllowlist': strictAllowlist,
+    if (deniedResolvedAddresses != null)
+      'deniedResolvedAddresses': deniedResolvedAddresses,
+    if (allowUnixSockets != null) 'allowUnixSockets': allowUnixSockets,
+    if (allowAllUnixSockets != null) 'allowAllUnixSockets': allowAllUnixSockets,
+    if (allowLocalBinding != null) 'allowLocalBinding': allowLocalBinding,
+    if (allowMachLookup != null) 'allowMachLookup': allowMachLookup,
+    if (httpProxyPort != null) 'httpProxyPort': httpProxyPort,
+    if (socksProxyPort != null) 'socksProxyPort': socksProxyPort,
+    if (mitmProxy != null) 'mitmProxy': mitmProxy!.toJson(),
+    if (allowPlaintextHeaderSet != null)
+      'allowPlaintextHeaderSet': allowPlaintextHeaderSet,
+    if (stripResponseHeaders != null)
+      'stripResponseHeaders': stripResponseHeaders,
+    if (refuseOpaqueTunnels != null) 'refuseOpaqueTunnels': refuseOpaqueTunnels,
+    if (requireHostMatch != null) 'requireHostMatch': requireHostMatch,
+    if (tlsTerminate != null) 'tlsTerminate': tlsTerminate!.toJson(),
+    if (parentProxy != null) 'parentProxy': parentProxy!.toJson(),
+  };
 }
 
 class FilesystemConfig {
@@ -2044,15 +2088,28 @@ class FilesystemConfig {
     required this.denyWrite,
     this.allowGitConfig,
   });
+
+  Map<String, Object?> toJson() => {
+    if (disabled != null) 'disabled': disabled,
+    'denyRead': [for (final e in denyRead) e.toJson()],
+    if (allowRead != null)
+      'allowRead': [for (final e in allowRead!) e.toJson()],
+    'allowWrite': [for (final e in allowWrite) e.toJson()],
+    'denyWrite': [for (final e in denyWrite) e.toJson()],
+    if (allowGitConfig != null) 'allowGitConfig': allowGitConfig,
+  };
 }
 
 sealed class FilesystemPathEntry {
   const FilesystemPathEntry();
+  Object toJson();
 }
 
 class FilesystemPathSpelling extends FilesystemPathEntry {
   final String path;
   const FilesystemPathSpelling(this.path);
+  @override
+  Object toJson() => path;
   @override
   String toString() => path;
 }
@@ -2061,6 +2118,8 @@ class FilesystemPathLiteral extends FilesystemPathEntry {
   final String path;
   const FilesystemPathLiteral(this.path);
   bool get literal => true;
+  @override
+  Object toJson() => {'path': path, 'literal': true};
   @override
   String toString() => path;
 }
@@ -2142,6 +2201,17 @@ class CredentialFileConfig {
     this.maskDuplicates,
     this.injectHosts,
   });
+
+  Map<String, Object?> toJson() => {
+    'path': path,
+    'mode': mode,
+    if (extract != null) 'extract': extract,
+    if (onExtractNoMatch != null) 'onExtractNoMatch': onExtractNoMatch,
+    if (decode != null) 'decode': decode,
+    if (maskClaims != null) 'maskClaims': maskClaims,
+    if (maskDuplicates != null) 'maskDuplicates': maskDuplicates,
+    if (injectHosts != null) 'injectHosts': injectHosts,
+  };
 }
 
 class CredentialEnvVarConfig {
@@ -2209,6 +2279,16 @@ class CredentialEnvVarConfig {
     this.maskClaims,
     this.injectHosts,
   });
+
+  Map<String, Object?> toJson() => {
+    'name': name,
+    'mode': mode,
+    if (extract != null) 'extract': extract,
+    if (onExtractNoMatch != null) 'onExtractNoMatch': onExtractNoMatch,
+    if (decode != null) 'decode': decode,
+    if (maskClaims != null) 'maskClaims': maskClaims,
+    if (injectHosts != null) 'injectHosts': injectHosts,
+  };
 }
 
 class CredentialsConfig {
@@ -2233,6 +2313,15 @@ class CredentialsConfig {
     this.awsPairs,
     this.sigv4,
   });
+
+  Map<String, Object?> toJson() => {
+    if (files != null) 'files': [for (final e in files!) e.toJson()],
+    if (envVars != null) 'envVars': [for (final e in envVars!) e.toJson()],
+    if (allowPlaintextInject != null)
+      'allowPlaintextInject': allowPlaintextInject,
+    if (awsPairs != null) 'awsPairs': [for (final e in awsPairs!) e.toJson()],
+    if (sigv4 != null) 'sigv4': sigv4!.toJson(),
+  };
 }
 
 typedef Sigv4Policy = String;
@@ -2252,6 +2341,12 @@ class AwsPairConfig {
     required this.secretAccessKeyVar,
     this.sessionTokenVar,
   });
+
+  Map<String, Object?> toJson() => {
+    'accessKeyIdVar': accessKeyIdVar,
+    'secretAccessKeyVar': secretAccessKeyVar,
+    if (sessionTokenVar != null) 'sessionTokenVar': sessionTokenVar,
+  };
 }
 
 class Sigv4Config {
@@ -2264,6 +2359,12 @@ class Sigv4Config {
   /// Policy for SigV4A (AWS4-ECDSA-P256-SHA256) asymmetric signatures: there is no shared-key HMAC to recompute. Default "deny".
   final Sigv4Policy? sigv4a;
   const Sigv4Config({this.streaming, this.presigned, this.sigv4a});
+
+  Map<String, Object?> toJson() => {
+    if (streaming != null) 'streaming': streaming,
+    if (presigned != null) 'presigned': presigned,
+    if (sigv4a != null) 'sigv4a': sigv4a,
+  };
 }
 
 /// Map of command patterns to filesystem paths to ignore violations for. Use "*" to match all commands
@@ -2279,12 +2380,20 @@ class RipgrepConfig {
   /// Override argv[0] when spawning (for multicall binaries that dispatch on argv[0])
   final String? argv0;
   const RipgrepConfig({required this.command, this.args, this.argv0});
+
+  Map<String, Object?> toJson() => {
+    'command': command,
+    if (args != null) 'args': args,
+    if (argv0 != null) 'argv0': argv0,
+  };
 }
 
 class GitConfig {
   /// Directories git should treat as safe (`safe.directory`) even though they're owned by a different user inside the sandbox. Use for the repo top-level when launching from a subdirectory. Does NOT grant write.
   final List<String> safeDirectories;
   const GitConfig({this.safeDirectories = const []});
+
+  Map<String, Object?> toJson() => {'safeDirectories': safeDirectories};
 }
 
 class SeccompConfig {
@@ -2294,12 +2403,19 @@ class SeccompConfig {
   /// Invoke apply-seccomp as a multicall binary that dispatches on the ARGV0 environment variable. When set, applyPath is used verbatim (no existence check) and the invocation inside bwrap is prefixed with ARGV0=<this value>. The caller is responsible for ensuring applyPath resolves inside the bwrap namespace and that the target binary implements the apply-seccomp interface when ARGV0 matches.
   final String? argv0;
   const SeccompConfig({this.applyPath, this.argv0});
+
+  Map<String, Object?> toJson() => {
+    if (applyPath != null) 'applyPath': applyPath,
+    if (argv0 != null) 'argv0': argv0,
+  };
 }
 
 class SrtWinConfig {
   /// Path to the srt-win binary. Pass the exported VENDORED_SRT_WIN_EXE constant to use the packaged vendor/srt-win/<arch>/srt-win.exe (see its WARNING: in a dev checkout that file may sit inside your sandbox write grant). The binary is spawned with the `--srt-win` argv[1] sentinel so a multicall dispatcher can route to srt-win's CLI.
   final String path;
   const SrtWinConfig({required this.path});
+
+  Map<String, Object?> toJson() => {'path': path};
 }
 
 class WindowsConfig {
@@ -2324,6 +2440,15 @@ class WindowsConfig {
     this.proxyPortRange,
     this.srtWin,
   });
+
+  Map<String, Object?> toJson() => {
+    if (sandboxUser != null) 'sandboxUser': sandboxUser,
+    if (sublayerGuid != null) 'sublayerGuid': sublayerGuid,
+    if (wfpSublayerGuid != null) 'wfpSublayerGuid': wfpSublayerGuid,
+    if (proxyPortRange != null)
+      'proxyPortRange': [proxyPortRange!.$1, proxyPortRange!.$2],
+    if (srtWin != null) 'srtWin': srtWin!.toJson(),
+  };
 }
 
 class SandboxRuntimeConfig {
@@ -2392,4 +2517,26 @@ class SandboxRuntimeConfig {
     this.windows,
     this.git,
   });
+
+  Map<String, Object?> toJson() => {
+    'network': network.toJson(),
+    'filesystem': filesystem.toJson(),
+    if (credentials != null) 'credentials': credentials!.toJson(),
+    if (ignoreViolations != null) 'ignoreViolations': ignoreViolations,
+    if (enableWeakerNestedSandbox != null)
+      'enableWeakerNestedSandbox': enableWeakerNestedSandbox,
+    if (enableWeakerNetworkIsolation != null)
+      'enableWeakerNetworkIsolation': enableWeakerNetworkIsolation,
+    if (allowAppleEvents != null) 'allowAppleEvents': allowAppleEvents,
+    if (ripgrep != null) 'ripgrep': ripgrep!.toJson(),
+    if (mandatoryDenySearchDepth != null)
+      'mandatoryDenySearchDepth': mandatoryDenySearchDepth,
+    if (allowPty != null) 'allowPty': allowPty,
+    if (seccomp != null) 'seccomp': seccomp!.toJson(),
+    if (bwrapPath != null) 'bwrapPath': bwrapPath,
+    if (socatPath != null) 'socatPath': socatPath,
+    if (javaAgentJarPath != null) 'javaAgentJarPath': javaAgentJarPath,
+    if (windows != null) 'windows': windows!.toJson(),
+    if (git != null) 'git': git!.toJson(),
+  };
 }
