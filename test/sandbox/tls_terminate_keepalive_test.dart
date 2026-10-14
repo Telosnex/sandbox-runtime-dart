@@ -13,7 +13,7 @@ import 'package:test/test.dart';
 
 // Every case here runs a proxy configured to terminate TLS, so each is
 // skipped where this runtime cannot terminate it in-process.
-import '../helpers/emitted_connections.dart' show describeWithTls;
+import '../helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
 import 'package:sandbox_runtime/src/node/https.dart' as https;
 import 'package:sandbox_runtime/src/node/net.dart'
     show connect, LookupFunction, NodeAddress, NodeServer, NodeSocket;
@@ -205,135 +205,139 @@ class _HttpProxyServerOptions implements HttpProxyServerOptions {
 }
 
 void main() {
-  describeWithTls('tls-terminate-proxy: upstream keep-alive', () {
-    final ca = createMitmCA(caCertPath: CA_CERT, caKeyPath: CA_KEY);
+  group(
+    'tls-terminate-proxy: upstream keep-alive',
+    skip: SERVES_EMITTED_CONNECTIONS ? false : 'TLS termination unavailable',
+    () {
+      final ca = createMitmCA(caCertPath: CA_CERT, caKeyPath: CA_KEY);
 
-    late https.Server upstream;
-    late int upstreamPort;
-    late NodeServer proxy;
-    late int proxyPort;
-    /**
+      late https.Server upstream;
+      late int upstreamPort;
+      late NodeServer proxy;
+      late int proxyPort;
+      /**
      * Upstream connections that carried a request, by the id the reply body
      * reports. (The vetting probe also connects, but never sends a request.)
      */
-    final upstreamSockets = <int, NodeSocket>{};
-    var lookups = 0;
+      final upstreamSockets = <int, NodeSocket>{};
+      var lookups = 0;
 
-    final LookupFunction lookup = (hostname_, options, callback) {
-      lookups++;
-      final all = options.all == true;
-      if (all) {
-        callback(
-          null,
-          LookupResultAll([LookupAddress(address: '127.0.0.1', family: 4)]),
+      final LookupFunction lookup = (hostname_, options, callback) {
+        lookups++;
+        final all = options.all == true;
+        if (all) {
+          callback(
+            null,
+            LookupResultAll([LookupAddress(address: '127.0.0.1', family: 4)]),
+          );
+        } else {
+          callback(null, LookupResultAddress('127.0.0.1'), 4);
+        }
+      };
+
+      setUpAll(() async {
+        final upCert = mintLeafCert(ca, UPSTREAM_NAME);
+        final upLeafOnly = RegExp(
+          r'-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----\r?\n?',
+        ).firstMatch(upCert.certPem)!.group(0)!;
+        final ids = <NodeSocket, int>{};
+        upstream = https.createServer(
+          {'cert': upLeafOnly, 'key': upCert.keyPem},
+          (https.IncomingMessage req, https.ServerResponse res) {
+            if (!ids.containsKey(req.socket)) {
+              ids[req.socket] = ids.length + 1;
+              upstreamSockets[ids.length] = req.socket;
+            }
+            if (req.url == '/drop') {
+              req.socket.destroy();
+              return;
+            }
+            res.end(ids[req.socket].toString());
+          },
         );
-      } else {
-        callback(null, LookupResultAddress('127.0.0.1'), 4);
-      }
-    };
+        await () {
+          final r = Completer<void>();
+          upstream.listen(0, '127.0.0.1', r.complete);
+          return r.future;
+        }();
+        upstreamPort = (upstream.address()! as NodeAddress).port;
 
-    setUpAll(() async {
-      final upCert = mintLeafCert(ca, UPSTREAM_NAME);
-      final upLeafOnly = RegExp(
-        r'-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----\r?\n?',
-      ).firstMatch(upCert.certPem)!.group(0)!;
-      final ids = <NodeSocket, int>{};
-      upstream = https.createServer(
-        {'cert': upLeafOnly, 'key': upCert.keyPem},
-        (https.IncomingMessage req, https.ServerResponse res) {
-          if (!ids.containsKey(req.socket)) {
-            ids[req.socket] = ids.length + 1;
-            upstreamSockets[ids.length] = req.socket;
-          }
-          if (req.url == '/drop') {
-            req.socket.destroy();
-            return;
-          }
-          res.end(ids[req.socket].toString());
+        proxy = createHttpProxyServer(
+          _HttpProxyServerOptions(
+            mitmCA: ca,
+            tlsTerminateUpstreamCA: CA_PEM,
+            lookupFor: (int port, [String? encodedCommand]) => lookup,
+          ),
+        );
+        await () {
+          final r = Completer<void>();
+          proxy.listen(0, '127.0.0.1', () => r.complete());
+          return r.future;
+        }();
+        proxyPort = (proxy.address()! as NodeAddress).port;
+      });
+
+      tearDownAll(() async {
+        for (final s in upstreamSockets.values) {
+          s.destroy();
+        }
+        await () {
+          final r = Completer<void>();
+          proxy.close(() => r.complete());
+          return r.future;
+        }();
+        await () {
+          final r = Completer<void>();
+          upstream.close(() => r.complete());
+          return r.future;
+        }();
+      });
+
+      test(
+        'requests on one client connection share one upstream connection, vetted once',
+        () async {
+          final tls = await openTunnel(proxyPort, UPSTREAM_NAME, upstreamPort);
+          final first = await get(tls, '/a');
+          final lookupsAfterFirst = lookups;
+          final second = await get(tls, '/b');
+          final third = await get(tls, '/c');
+          tls.destroy();
+
+          expect(first, isA<Reply>().having((r) => r.status, 'status', 200));
+          expect(second, equals(first));
+          expect(third, equals(first));
+          expect(lookupsAfterFirst, greaterThan(0));
+          expect(lookups, lookupsAfterFirst);
         },
       );
-      await () {
-        final r = Completer<void>();
-        upstream.listen(0, '127.0.0.1', r.complete);
-        return r.future;
-      }();
-      upstreamPort = (upstream.address()! as NodeAddress).port;
 
-      proxy = createHttpProxyServer(
-        _HttpProxyServerOptions(
-          mitmCA: ca,
-          tlsTerminateUpstreamCA: CA_PEM,
-          lookupFor: (int port, [String? encodedCommand]) => lookup,
-        ),
+      test('an upstream that closed the idle connection is redialed', () async {
+        final tls = await openTunnel(proxyPort, UPSTREAM_NAME, upstreamPort);
+        final first = (await get(tls, '/a')) as Reply;
+        expect(first.status, 200);
+
+        upstreamSockets[int.parse(first.body)]!.destroy();
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+
+        final second = (await get(tls, '/b')) as Reply;
+        tls.destroy();
+        expect(second.status, 200);
+        expect(second.body, isNot(first.body));
+      });
+
+      test(
+        'a reused upstream connection dropped mid-request closes the client connection, not 502',
+        () async {
+          final tls = await openTunnel(proxyPort, UPSTREAM_NAME, upstreamPort);
+          expect(
+            await get(tls, '/a'),
+            isA<Reply>().having((r) => r.status, 'status', 200),
+          );
+          final dropped = await get(tls, '/drop');
+          tls.destroy();
+          expect(dropped, 'closed');
+        },
       );
-      await () {
-        final r = Completer<void>();
-        proxy.listen(0, '127.0.0.1', () => r.complete());
-        return r.future;
-      }();
-      proxyPort = (proxy.address()! as NodeAddress).port;
-    });
-
-    tearDownAll(() async {
-      for (final s in upstreamSockets.values) {
-        s.destroy();
-      }
-      await () {
-        final r = Completer<void>();
-        proxy.close(() => r.complete());
-        return r.future;
-      }();
-      await () {
-        final r = Completer<void>();
-        upstream.close(() => r.complete());
-        return r.future;
-      }();
-    });
-
-    test(
-      'requests on one client connection share one upstream connection, vetted once',
-      () async {
-        final tls = await openTunnel(proxyPort, UPSTREAM_NAME, upstreamPort);
-        final first = await get(tls, '/a');
-        final lookupsAfterFirst = lookups;
-        final second = await get(tls, '/b');
-        final third = await get(tls, '/c');
-        tls.destroy();
-
-        expect(first, isA<Reply>().having((r) => r.status, 'status', 200));
-        expect(second, equals(first));
-        expect(third, equals(first));
-        expect(lookupsAfterFirst, greaterThan(0));
-        expect(lookups, lookupsAfterFirst);
-      },
-    );
-
-    test('an upstream that closed the idle connection is redialed', () async {
-      final tls = await openTunnel(proxyPort, UPSTREAM_NAME, upstreamPort);
-      final first = (await get(tls, '/a')) as Reply;
-      expect(first.status, 200);
-
-      upstreamSockets[int.parse(first.body)]!.destroy();
-      await Future<void>.delayed(const Duration(milliseconds: 200));
-
-      final second = (await get(tls, '/b')) as Reply;
-      tls.destroy();
-      expect(second.status, 200);
-      expect(second.body, isNot(first.body));
-    });
-
-    test(
-      'a reused upstream connection dropped mid-request closes the client connection, not 502',
-      () async {
-        final tls = await openTunnel(proxyPort, UPSTREAM_NAME, upstreamPort);
-        expect(
-          await get(tls, '/a'),
-          isA<Reply>().having((r) => r.status, 'status', 200),
-        );
-        final dropped = await get(tls, '/drop');
-        tls.destroy();
-        expect(dropped, 'closed');
-      },
-    );
-  });
+    },
+  );
 }
