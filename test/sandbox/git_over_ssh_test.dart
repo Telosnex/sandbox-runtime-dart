@@ -476,7 +476,7 @@ void main() {
     );
 
     test(
-      'what a letter is does not follow the locale${absent({'shell that collates by locale': COLLATING_SH})}',
+      "what a letter is does not follow the locale${absent({'shell that collates by locale': COLLATING_SH})}",
       () async {
         final proxy = await tcp((_, _) {});
         final t = runScript(
