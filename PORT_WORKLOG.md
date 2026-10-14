@@ -501,7 +501,13 @@ Declarations:
   named `<Union><Branch>` (precedent: `FilesystemPathEntry`). A union of
   string literals: `String` (Conventions: Unions).
 - `Promise<T> | T`: `FutureOr<T>`. `Record<string, T>`: `Map<String, T>`.
-  `unknown`: `Object?`. `readonly T[]`: `List<T>`.
+  `unknown`: `Object?`. `readonly T[]`: `List<T>`. TS `object`: `Object`.
+- A union of a primitive and an object type (`string | WindowsBinShell`,
+  `string | Buffer | Array<string | Buffer>`): `Object?` with the union in
+  a comment; the body narrows it at runtime as upstream does.
+- `Partial<T>`: a class `PartialT` with every field of `T`, all nullable,
+  declared in the first file that needs it (`PartialSandboxRuntimeConfig`
+  in sandbox_manager.dart).
 - `export function*` returning `Steps<T>`: as Generators above.
 
 Test spies. Upstream tests replace a module function with
