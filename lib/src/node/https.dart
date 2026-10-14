@@ -1,4 +1,5 @@
 // Node-compatible HTTPS subset built on the HTTP and TLS shims.
+// ignore_for_file: use_super_parameters
 import 'http.dart' as http;
 import 'net.dart' as net;
 import 'tls.dart' as tls;
@@ -6,7 +7,9 @@ import 'tls.dart' as tls;
 /// Node HTTPS server. The secure context is provided by `key` and `cert`, or
 /// by `secureContext`.
 class Server extends http.NodeHttpServer {
-  Server(this.options, [Function? requestListener]);
+  Server(this.options, [Function? requestListener]) {
+    if (requestListener != null) on('request', requestListener);
+  }
   final Map<Object?, Object?> options;
 
   @override
@@ -31,22 +34,49 @@ Server createServer([Object? options, Function? requestListener]) {
 
 class Agent extends http.Agent {
   Agent({
-    super.keepAlive,
-    super.maxSockets,
-    super.socketPath,
-    super.secure,
-    super.securityContext,
-    super.ca,
-    super.checkServerIdentity,
-  });
+    bool keepAlive = true,
+    int maxSockets = 1,
+    String? socketPath,
+    tls.SecureContext? securityContext,
+    Object? ca,
+    Function? checkServerIdentity,
+  }) : super(
+         keepAlive: keepAlive,
+         maxSockets: maxSockets,
+         socketPath: socketPath,
+         secure: true,
+         securityContext: securityContext,
+         ca: ca,
+         checkServerIdentity: checkServerIdentity,
+       );
 }
 
-final Agent globalAgent = Agent(keepAlive: true, maxSockets: 1, secure: true);
+final Agent globalAgent = Agent(keepAlive: true, maxSockets: 1);
 
 http.ClientRequest request(Object options, [Function? responseListener]) {
-  final opts = options is Map
-      ? Map<Object?, Object?>.of(options)
-      : <Object?, Object?>{};
+  final Map<Object?, Object?> opts;
+  if (options is Map) {
+    opts = Map<Object?, Object?>.of(options);
+  } else if (options is Uri) {
+    opts = {
+      'protocol': 'https:',
+      'hostname': options.host,
+      'port': options.hasPort ? options.port : null,
+      'path': '${options.path}${options.hasQuery ? '?${options.query}' : ''}',
+    };
+  } else if (options is String) {
+    final uri = Uri.parse(options);
+    opts = {
+      'protocol': 'https:',
+      'hostname': uri.host,
+      'port': uri.hasPort ? uri.port : null,
+      'path': '${uri.path}${uri.hasQuery ? '?${uri.query}' : ''}',
+    };
+  } else {
+    throw ArgumentError(
+      'https.request options must be a Map, Uri, or URL string',
+    );
+  }
   opts['protocol'] = 'https:';
   opts.putIfAbsent('agent', () => globalAgent);
   return http.request(opts, responseListener);
