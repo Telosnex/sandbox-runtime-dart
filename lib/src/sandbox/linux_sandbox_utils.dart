@@ -4,6 +4,10 @@
 
 import '../node/abort.dart';
 import '../node/child_process.dart' as child_process;
+import '../node/fs.dart' as fs;
+import '../node/process.dart' as process;
+import 'package:path/path.dart' as path;
+import '../utils/real_path.dart' show realPathOf;
 import 'sandbox_config.dart' show SeccompConfig;
 import 'sandbox_schemas.dart'
     show FsReadRestrictionConfig, FsWriteRestrictionConfig;
@@ -158,10 +162,46 @@ List<String> linuxGetCwdMandatoryDenyPaths([bool allowGitConfig = false]) =>
  * user's to change. What is in one is not known, so the caller denies it whole.
  * Exported for testing.
  */
-List<String> unreadableDirectories(String stderr, String cwd, int maxDepth) =>
-    throw UnimplementedError(
-      'pending port of src/sandbox/linux-sandbox-utils.ts',
-    );
+List<String> unreadableDirectories(String stderr, String cwd, int maxDepth) {
+  final found = <String>[];
+  final tried = <String>{};
+  for (final line in stderr.split('\n')) {
+    final said = line.startsWith('rg: ') ? line.substring(4) : line;
+    var cut = said.indexOf(': ');
+    while (cut != -1) {
+      var dir = path.normalize(
+        path.absolute(path.join(cwd, said.substring(0, cut))),
+      );
+      while (dir.startsWith('$cwd${path.separator}') && tried.add(dir)) {
+        try {
+          final stat = fs.lstatSync(dir);
+          if (!stat.isDirectory() ||
+              stat.uid != process.getuid() ||
+              realPathOf(dir) != dir) {
+            break;
+          }
+        } catch (error) {
+          if ((error as dynamic).code == 'EACCES') {
+            dir = path.dirname(dir);
+            continue;
+          }
+          break;
+        }
+        try {
+          fs.accessSync(dir, fs.constants.R_OK | fs.constants.X_OK);
+        } catch (_) {
+          if (path.relative(cwd, dir).split(path.separator).length <=
+              maxDepth) {
+            found.add(dir);
+          }
+        }
+        break;
+      }
+      cut = said.indexOf(': ', cut + 1);
+    }
+  }
+  return found;
+}
 
 const int CAP_SETFCAP = 31;
 
