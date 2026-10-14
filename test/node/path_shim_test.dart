@@ -32,3 +32,6 @@ void readdirMain() {
     expect(fs.readdirSync('/', withFileTypes: true).first, isA<fs.Dirent>());
   });
 }
+
+// ignore: unused_element
+void procErrMain() {}

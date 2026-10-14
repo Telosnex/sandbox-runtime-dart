@@ -147,10 +147,39 @@ void _add(String event, Function fn, bool once) {
         _call(l.fn, event);
       }
     });
-  } else if (signal == null && event != 'exit') {
+  } else if (signal == null &&
+      !_errorEvents.contains(event) &&
+      event != 'exit') {
     throw UnsupportedError('process.on($event)');
   }
 }
+
+const _errorEvents = {'unhandledRejection', 'uncaughtException'};
+
+/// Dispatches an uncaught async error to 'unhandledRejection' /
+/// 'uncaughtException' listeners (listener gets `(error, stack)`).
+/// Returns true if any listener handled it.
+bool dispatchUncaught(Object error, StackTrace stack) {
+  var handled = false;
+  for (final event in _errorEvents) {
+    for (final l in List.of(_listeners[event] ?? const <_Listener>[])) {
+      handled = true;
+      if (l.once) off(event, l.fn);
+      (l.fn as dynamic)(error, stack);
+    }
+  }
+  return handled;
+}
+
+/// Runs [body] in an error zone that feeds [dispatchUncaught]. Limits: Dart
+/// cannot hook the root zone, so only code started through this call (an
+/// entry point) is covered; Node's rejection-vs-exception distinction is
+/// not made (both events fire); with no listener the error is rethrown to
+/// the parent zone.
+R? runWithProcessErrorHandlers<R>(R Function() body) =>
+    runZonedGuarded(body, (e, st) {
+      if (!dispatchUncaught(e, st)) Zone.root.handleUncaughtError(e, st);
+    });
 
 /// Node's `process.on(event, fn)` for 'exit' and the signal events.
 void on(String event, Function listener) => _add(event, listener, false);
