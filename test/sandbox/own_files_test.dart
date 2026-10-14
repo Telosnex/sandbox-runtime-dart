@@ -246,8 +246,10 @@ void main() {
               expect(stderr.split('\n').where(about), hasLength(1));
             },
             timeout: const Timeout(Duration(milliseconds: 120000)),
-            // Dart: needs upstream's TypeScript package (package.json, src/index.ts) run by bun; no Dart equivalent.
-            tags: ['pending'],
+            // Dart: installs upstream's npm package (package.json, src/) and
+            // loads it with bun; a Dart package has neither, so there is no
+            // such install to load. ownInstallWarning is covered above.
+            skip: 'needs an npm install of the TypeScript package',
           );
         }
 
@@ -279,8 +281,10 @@ void main() {
             );
           },
           timeout: const Timeout(Duration(milliseconds: 120000)),
-          // Dart: needs upstream's TypeScript package (package.json, src/index.ts) run by bun; no Dart equivalent.
-          tags: ['pending'],
+          // Dart: installs upstream's npm package (package.json, src/) and
+          // loads it with bun; a Dart package has neither, so there is no
+          // such install to load. ownInstallWarning is covered above.
+          skip: 'needs an npm install of the TypeScript package',
         );
 
         test(
@@ -305,8 +309,10 @@ void main() {
             );
           },
           timeout: const Timeout(Duration(milliseconds: 120000)),
-          // Dart: needs upstream's TypeScript package (package.json, src/index.ts) run by bun; no Dart equivalent.
-          tags: ['pending'],
+          // Dart: installs upstream's npm package (package.json, src/) and
+          // loads it with bun; a Dart package has neither, so there is no
+          // such install to load. ownInstallWarning is covered above.
+          skip: 'needs an npm install of the TypeScript package',
         );
 
         test(
@@ -326,8 +332,10 @@ void main() {
             expect(printed, ['string', 'object']);
           },
           timeout: const Timeout(Duration(milliseconds: 120000)),
-          // Dart: needs upstream's TypeScript package (package.json, src/index.ts) run by bun; no Dart equivalent.
-          tags: ['pending'],
+          // Dart: installs upstream's npm package (package.json, src/) and
+          // loads it with bun; a Dart package has neither, so there is no
+          // such install to load. ownInstallWarning is covered above.
+          skip: 'needs an npm install of the TypeScript package',
         );
       });
     },

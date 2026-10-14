@@ -1,7 +1,7 @@
 // Ported from sandbox-runtime src/sandbox/own-files.ts @ 24eb39e.
 // ignore_for_file: slash_for_doc_comments
 
-import 'dart:io';
+import 'dart:isolate';
 
 import 'package:path/path.dart' as path;
 
@@ -23,7 +23,13 @@ String? ownInstallWarning(
   List<String> allowedWritePaths, [
   String? moduleFile,
 ]) {
-  var root = path.dirname(moduleFile ?? Platform.script.toFilePath());
+  // Dart: this library's own file, as import.meta.url is upstream (not the
+  // program's entry point); none when compiled into an application.
+  moduleFile ??= Isolate.resolvePackageUriSync(
+    Uri.parse('package:sandbox_runtime/src/sandbox/own_files.dart'),
+  )?.toFilePath();
+  if (moduleFile == null) return null;
+  var root = path.dirname(moduleFile);
   while (!fs.existsSync(path.join(root, 'package.json'))) {
     if (root == path.dirname(root)) return null;
     root = path.dirname(root);
