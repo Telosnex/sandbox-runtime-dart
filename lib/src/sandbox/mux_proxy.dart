@@ -1,9 +1,12 @@
-// PARTIAL: ported SOCKS_FIRST_BYTES, MuxProxyOptions, MuxProxyServer, DEFAULT_FIRST_BYTE_TIMEOUT_MS, backendSeq, unixSocketPath; createMuxProxyServer throws pending the net/http shim; pending port of the rest of src/sandbox/mux-proxy.ts @ 24eb39e.
+// PARTIAL: ported SOCKS_FIRST_BYTES, MuxProxyOptions, MuxProxyServer, DEFAULT_FIRST_BYTE_TIMEOUT_MS, backendSeq, unixSocketPath; createMuxProxyServer is an API stub; pending implementation of src/sandbox/mux-proxy.ts @ 24eb39e.
 // ignore_for_file: slash_for_doc_comments, dangling_library_doc_comments, unused_element, constant_identifier_names, non_constant_identifier_names
 
-import 'dart:io' show Directory, HttpServer, ServerSocket, Socket, pid;
+import 'dart:io' show Directory, pid;
 
 import 'package:path/path.dart' show join;
+
+import '../node/http.dart' as http;
+import '../node/net.dart' as net;
 
 /**
  * First-byte values that select the SOCKS handler. SOCKS5's greeting is
@@ -17,7 +20,7 @@ import 'package:path/path.dart' show join;
 final Set<int> _SOCKS_FIRST_BYTES = {0x04, 0x05};
 
 class MuxProxyOptions {
-  MuxProxyOptions({
+  const MuxProxyOptions({
     required this.httpServer,
     required this.handleSocksConnection,
     this.firstByteTimeoutMs,
@@ -29,14 +32,14 @@ class MuxProxyOptions {
    * the mux owns its listen lifecycle (on a private unix socket on
    * macOS/Linux, or a localhost TCP port on Windows).
    */
-  final HttpServer httpServer;
+  final http.NodeHttpServer httpServer;
 
   /**
    * Per-connection SOCKS entry point. The mux calls this with a socket
-   * whose peeked first byte has been restored to the readable stream, so
-   * the handler sees the full SOCKS greeting starting at byte 0.
+   * whose peeked first byte has been `unshift()`ed back, so the handler
+   * sees the full SOCKS greeting starting at byte 0.
    */
-  final void Function(Socket socket) handleSocksConnection;
+  final void Function(net.NodeSocket socket) handleSocksConnection;
 
   /**
    * How long to wait for the client's first byte before destroying the
@@ -49,12 +52,12 @@ class MuxProxyOptions {
    * the WFP loopback permit covers the mux→backend hop. Ignored on other
    * platforms (unix socket needs no port).
    */
-  final List<int>? httpBackendPortRange;
+  final (int, int)? httpBackendPortRange;
 }
 
 abstract interface class MuxProxyServer {
   /** The front-end TCP listener. Call `.listen()` on this. */
-  ServerSocket get server;
+  net.NodeServer get server;
 
   /** Bound front-end port, once listening. */
   int? getPort();
@@ -105,11 +108,5 @@ String _unixSocketPath() {
  * library's per-connection entry, no extra hop.
  */
 MuxProxyServer createMuxProxyServer(MuxProxyOptions opts) {
-  // The Node net server/socket readable stream (including read(1), unshift,
-  // pipe, close/error events, and unref), plus Node HTTP Server's Unix-socket
-  // listen lifecycle, have no faithful Dart equivalent yet. Returning a
-  // partially working mux could send HTTP or SOCKS traffic to the wrong leg.
-  throw UnimplementedError(
-    'mux-proxy requires the HTTP/socket shim: Node net first-byte peek/unshift, duplex socket piping and lifecycle, and HTTP backend Unix-socket listen/connect are not implemented',
-  );
+  throw UnimplementedError('pending port of src/sandbox/mux-proxy.ts');
 }

@@ -3,8 +3,10 @@
 
 import 'dart:io';
 
+import '../node/http.dart' as http;
 import '../node/errno.dart';
 import '../node/emitted_http.dart' as node_http;
+import '../node/net.dart' as net;
 
 /**
  * Workarounds for a runtime whose http.Server, serving a connection handed
@@ -67,7 +69,7 @@ void assertTlsTerminationSupported() {
  * the request that follows it on the connection. Where the parser has no
  * onMessageComplete to tell the two apart, nothing is installed.
  */
-void keepFlushedHeaderBatches(Object sock) {
+void keepFlushedHeaderBatches(net.NodeSocket sock) {
   node_http.keepFlushedHeaderBatches(sock);
 }
 
@@ -80,7 +82,7 @@ void keepFlushedHeaderBatches(Object sock) {
  * to be emitted. Anything else written to it with no encoding named has to
  * be bytes or ASCII (see respondDenied).
  */
-void writeHeadsAsLatin1(Object sock) {
+void writeHeadsAsLatin1(net.NodeSocket sock) {
   node_http.writeHeadsAsLatin1(sock);
 }
 
@@ -125,7 +127,11 @@ void adjustByteBudget(ByteBudget budget, int delta) {
  * the socket is listened to: a 'data' listener on req would start the body
  * flowing before anyone reads it.
  */
-void gateSocketOnBufferedBody(Object req, int cap, [ByteBudget? budget]) {
+void gateSocketOnBufferedBody(
+  http.IncomingMessage req,
+  int cap, [
+  ByteBudget? budget,
+]) {
   node_http.gateSocketOnBufferedBody(req, cap, budget);
 }
 
@@ -146,7 +152,7 @@ void markEndsGracefully(Object socket) {
  * (then destroy it after a second, for a client that keeps sending), else
  * destroy the request.
  */
-void endRequestAfterResponse(Object req) {
+void endRequestAfterResponse(http.IncomingMessage req) {
   node_http.endRequestAfterResponse(
     req,
     isMarkedEndsGracefully: (socket) => _endsGracefully[socket] == true,
