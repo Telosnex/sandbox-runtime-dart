@@ -8,6 +8,7 @@ import '../node/fs.dart' as fs;
 import '../node/process.dart' as process;
 import 'package:path/path.dart' as path;
 import '../utils/real_path.dart' show realPathOf;
+import 'sandbox_utils.dart' show DANGEROUS_FILES, getDangerousDirectories;
 import 'sandbox_config.dart' show SeccompConfig;
 import 'sandbox_schemas.dart'
     show FsReadRestrictionConfig, FsWriteRestrictionConfig;
@@ -152,9 +153,25 @@ class LinuxSandboxParams {
  * refuses — reads the same definition rather than a copy of it.
  */
 List<String> linuxGetCwdMandatoryDenyPaths([bool allowGitConfig = false]) =>
-    throw UnimplementedError(
-      'pending port of src/sandbox/linux-sandbox-utils.ts',
-    );
+    () {
+      final cwd = process.cwd();
+      final denyPaths = <String>[
+        ...DANGEROUS_FILES.map((file) => path.resolve(cwd, file)),
+        ...getDangerousDirectories().map((directory) => path.resolve(cwd, directory)),
+      ];
+      final dotGitPath = path.resolve(cwd, '.git');
+      var dotGitIsDirectory = false;
+      try {
+        dotGitIsDirectory = fs.statSync(dotGitPath).isDirectory();
+      } catch (_) {
+        // .git doesn't exist
+      }
+      if (dotGitIsDirectory) {
+        denyPaths.add(path.resolve(cwd, '.git/hooks'));
+        if (!allowGitConfig) denyPaths.add(path.resolve(cwd, '.git/config'));
+      }
+      return denyPaths;
+    }();
 
 /**
  * The directories below `cwd`, down to `maxDepth`, that ripgrep said it could
