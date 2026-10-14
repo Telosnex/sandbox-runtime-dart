@@ -61,6 +61,7 @@ import 'dart:typed_data';
 import '../node/buffer.dart';
 import '../node/errno.dart';
 import '../node/fetch.dart' as fetch;
+import '../node/globals_number.dart';
 import '../node/net.dart' as net;
 import '../node/stream.dart' as stream;
 import '../node/url.dart';
@@ -160,6 +161,7 @@ Map<String, List<String>>? _nonEmptyHeaderObject(Object? o) {
   if (o is! Map<String, Object?>) return null;
   final out = <String, List<String>>{};
   for (final MapEntry(:key, :value) in o.entries) {
+    if (key == '__proto__') continue;
     if (!_lowerName(key) || value is! List<Object?>) return null;
     if (!value.every(_headerValue)) return null;
     out[key] = value.cast<String>();
@@ -457,7 +459,9 @@ Decider createDecider(DeciderOptions opts) {
   void die(String why) {
     if (dead != null) return;
     dead = why;
-    helloCompleter.completeError(NodeException('decider unavailable: $why'));
+    if (!helloCompleter.isCompleted) {
+      helloCompleter.completeError(NodeException('decider unavailable: $why'));
+    }
     for (final w in waiters.values.toList()) {
       w(_Dead(why));
     }
@@ -554,11 +558,8 @@ Decider createDecider(DeciderOptions opts) {
 
   send({'t': 'hello', 'proto': DECIDER_PROTO});
 
-  void pruneLate() {
-    for (final k in late.keys.toList()) {
-      if (lastId - k >= _ID_WINDOW) late.remove(k);
-    }
-  }
+  // Dart-only: declared before use; assigned below, at upstream's position.
+  late final void Function() pruneLate;
 
   /**
    * Wait for id's next verdict. With a timeout, running out records the id
@@ -602,6 +603,12 @@ Decider createDecider(DeciderOptions opts) {
     promise.ignore();
     return (promise: promise, cancel: cancel);
   }
+
+  pruneLate = () {
+    for (final k in late.keys.toList()) {
+      if (lastId - k >= _ID_WINDOW) late.remove(k);
+    }
+  };
 
   final placements = opts.credentialPlacements ?? [];
   (String, String) placeCredential(String cls, String value, String host) {
@@ -722,13 +729,8 @@ Decider createDecider(DeciderOptions opts) {
             );
           }
         }
-        // JS Number(): '' is 0, and NaN when absent; num.tryParse stands in.
         final lengthText = request.headers.get('content-length');
-        final length = lengthText == null
-            ? double.nan
-            : lengthText.trim().isEmpty
-            ? 0
-            : (num.tryParse(lengthText.trim()) ?? double.nan);
+        final length = lengthText == null ? double.nan : jsNumber(lengthText);
         final want = request.body == null
             ? 0
             : _zInt(length) && length >= 0
@@ -1007,12 +1009,18 @@ Object? _parseStrictJson(Uint8List frame) {
   }
   Object? value;
   try {
-    // JSON.parse's objects list array-index keys first.
-    value = _jsKeyOrder(jsonDecode(text));
+    value = jsonDecode(text);
   } on FormatException {
     throw NodeException('frame is not valid JSON');
   }
   if (value == null || value is! Map) {
+    throw NodeException('frame is not one JSON object');
+  }
+  try {
+    // JSON.parse's objects list array-index keys first.
+    value = _jsKeyOrder(value);
+  } on StackOverflowError {
+    // Dart-only: nesting too deep for the recursion.
     throw NodeException('frame is not one JSON object');
   }
   void check(Object? v) {
@@ -1031,7 +1039,12 @@ Object? _parseStrictJson(Uint8List frame) {
     }
   }
 
-  check(value);
+  try {
+    check(value);
+  } on StackOverflowError {
+    // Dart-only: nesting too deep for the recursion.
+    throw NodeException('frame is not one JSON object');
+  }
   if (_hasDuplicateKey(text)) throw NodeException('duplicate key in frame');
   return value;
 }
