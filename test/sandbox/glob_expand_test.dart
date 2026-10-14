@@ -227,7 +227,7 @@ void main() {
       expect(results, contains(join(realBsDir, 'key.pem')));
       // The directory `app\creds` must not be confused with `app/creds`.
       expect(results.any((r) => r.contains('/app/creds/')), false);
-    }, skip: !isWindows ? false : 'Windows not supported by this port');
+    }, skip: !isWindows ? null : 'Windows not supported by this port');
   });
 
   group('globPatternBaseDir', () {
@@ -312,7 +312,7 @@ void main() {
             ['x.pem'],
           );
         }
-      }, skip: isWindows ? false : 'Windows not supported by this port');
+      }, skip: isWindows ? null : 'Windows not supported by this port');
     }
   });
 
@@ -355,7 +355,7 @@ void main() {
         expect(existsSync(found[0]), true);
       });
     }
-  }, skip: isWindows ? false : 'Windows not supported by this port');
+  }, skip: isWindows ? null : 'Windows not supported by this port');
 
   group('walkGlobPattern', () {
     final RAW_BASE = join(
@@ -475,7 +475,7 @@ void main() {
           rmSync(root, {'recursive': true, 'force': true});
         }
       },
-      skip: process.getuid?.call() != 0 ? false : 'running as root',
+      skip: process.getuid?.call() != 0 ? null : 'running as root',
     );
 
     test('reports where a match beneath a symlinked base really is', () {
@@ -545,7 +545,7 @@ void main() {
         chmodSync(locked, 0x1ED);
         rmSync(root, {'recursive': true, 'force': true});
       }
-    }, skip: process.getuid?.call() != 0 ? false : 'running as root');
+    }, skip: process.getuid?.call() != 0 ? null : 'running as root');
 
     test(
       'finds nothing, and nothing unlisted, under a base that is not there',
@@ -580,7 +580,7 @@ void main() {
           rmSync(root, {'recursive': true, 'force': true});
         }
       },
-      skip: process.getuid?.call() != 0 ? false : 'running as root',
+      skip: process.getuid?.call() != 0 ? null : 'running as root',
     );
 
     // Dart: walkGlobPattern reports unlisted dirs (pgdata, locked) the pattern cannot match beneath (lib sandbox_utils.dart walk pruning)
@@ -619,7 +619,7 @@ void main() {
           rmSync(root, {'recursive': true, 'force': true});
         }
       },
-      skip: process.getuid?.call() != 0 ? false : 'running as root',
+      skip: process.getuid?.call() != 0 ? null : 'running as root',
       tags: ['pending'],
     );
 
@@ -829,7 +829,7 @@ void main() {
           rmSync(root, {'recursive': true, 'force': true});
         }
       },
-      skip: isLinux ? false : 'requires Linux',
+      skip: isLinux ? null : 'requires Linux',
     );
 
     test(
@@ -1001,7 +1001,7 @@ void main() {
           rmSync(root, {'recursive': true, 'force': true});
         }
       },
-      skip: process.getuid?.call() != 0 ? false : 'running as root',
+      skip: process.getuid?.call() != 0 ? null : 'running as root',
     );
 
     // Dart: walkGlobPattern(followSymlinkedDirectories) finds nothing through a symlinked directory (lib sandbox_utils.dart walk)
@@ -1541,7 +1541,7 @@ void main() {
       },
       tags: ['pending'],
     );
-  }, skip: isWindows ? 'Windows not supported by this port' : false);
+  }, skip: isWindows ? 'Windows not supported by this port' : null);
 
   // ============================================================================
   // Listings that give no types
@@ -1861,8 +1861,8 @@ void main() {
         mount.restore();
         await SandboxManager.reset();
       }
-    }, skip: isLinux ? false : 'requires Linux');
-  }, skip: isWindows ? 'Windows not supported by this port' : false);
+    }, skip: isLinux ? null : 'requires Linux');
+  }, skip: isWindows ? 'Windows not supported by this port' : null);
 
   // ============================================================================
   // A pattern walked beneath an anchor
@@ -2020,7 +2020,7 @@ void main() {
         expect(walk.directoryMatches, [join(anchor, 'deep', 'er')]);
       },
     );
-  }, skip: isWindows ? 'Windows not supported by this port' : false);
+  }, skip: isWindows ? 'Windows not supported by this port' : null);
 
   // ============================================================================
   // expandTilde — `~\` form is Windows-only
@@ -2152,11 +2152,11 @@ void main() {
       // `~/` and bare `~` still expand on every platform.
       expect(expandTilde('~/x').startsWith('~'), false);
       expect(expandTilde('~').startsWith('~'), false);
-    }, skip: !isWindows ? false : 'Windows not supported by this port');
+    }, skip: !isWindows ? null : 'Windows not supported by this port');
 
     test('should expand `~\\` on Windows', () {
       expect(expandTilde('~\\x').startsWith('~'), false);
-    }, skip: isWindows ? false : 'Windows not supported by this port');
+    }, skip: isWindows ? null : 'Windows not supported by this port');
   });
 
   // ============================================================================
@@ -2505,7 +2505,7 @@ void main() {
           [join(work, '[ab]', 'pub', 'key')],
         );
       },
-      skip: !isWindows ? false : 'Windows not supported by this port',
+      skip: !isWindows ? null : 'Windows not supported by this port',
       tags: ['pending'],
     );
 
@@ -2530,7 +2530,7 @@ void main() {
           [join(work, '[ab]', 'mid', 'deep', 'pub')],
         );
       },
-      skip: !isWindows ? false : 'Windows not supported by this port',
+      skip: !isWindows ? null : 'Windows not supported by this port',
       tags: ['pending'],
     );
   });
@@ -2631,7 +2631,7 @@ void main() {
         }
       });
     },
-    skip: isWindows ? false : 'Windows not supported by this port',
+    skip: isWindows ? null : 'Windows not supported by this port',
   );
 
   // ============================================================================
@@ -2718,7 +2718,7 @@ void main() {
         );
       },
     );
-  }, skip: isWindows ? false : 'Windows not supported by this port');
+  }, skip: isWindows ? null : 'Windows not supported by this port');
 
   // ============================================================================
   // parseWindowsSandboxError — typed error from srt-win exec stderr
@@ -3174,7 +3174,7 @@ void main() {
         chmodSync(locked, 0x1ED);
         rmSync(root, {'recursive': true, 'force': true});
       }
-    }, skip: process.getuid?.call() != 0 ? false : 'running as root');
+    }, skip: process.getuid?.call() != 0 ? null : 'running as root');
 
     for (final list in ['denyRead', 'allowRead']) {
       test(
@@ -3622,7 +3622,7 @@ void main() {
         await SandboxManager.reset();
       },
     );
-  }, skip: isLinux ? false : 'requires Linux');
+  }, skip: isLinux ? null : 'requires Linux');
 
   // ============================================================================
   // Tests for wraps asked for while another one walks, on Linux
@@ -3849,7 +3849,7 @@ void main() {
       },
       skip: 'Dart has no WeakRef or forced collection (Bun.gc)',
     );
-  }, skip: isLinux ? false : 'requires Linux');
+  }, skip: isLinux ? null : 'requires Linux');
 
   // ============================================================================
   // Tests for getLinuxGlobPatternWarnings
@@ -3998,7 +3998,7 @@ void main() {
         await SandboxManager.reset();
       });
     }
-  }, skip: isLinux ? false : 'requires Linux');
+  }, skip: isLinux ? null : 'requires Linux');
 
   // ============================================================================
   // Integration test: denyRead with glob patterns on Linux via sandbox
@@ -4120,7 +4120,7 @@ void main() {
 
       await SandboxManager.reset();
     });
-  }, skip: isLinux ? false : 'requires Linux');
+  }, skip: isLinux ? null : 'requires Linux');
 
   // ============================================================================
   // Tests for wrapWithSandbox with glob denyRead via customConfig
@@ -4172,7 +4172,7 @@ void main() {
 
       await SandboxManager.reset();
     });
-  }, skip: isLinux ? false : 'requires Linux');
+  }, skip: isLinux ? null : 'requires Linux');
 }
 
 // Dart: GlobWalk has no ==, so toEqual on one compares these fields.
