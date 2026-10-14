@@ -231,7 +231,7 @@ void main() {
       expect(after.bytes, 5);
       expect(budget.used, 0);
     },
-    // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
+    // Dart: times out at 30 s; each client reads ~20 of 48 MB (slow, bursty relay with 8 KiB chunks and a 30000-byte budget).
     tags: ['pending'],
     skip: _tlsSkip,
     timeout: const Timeout(Duration(milliseconds: 30000)),

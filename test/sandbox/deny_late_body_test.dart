@@ -50,72 +50,65 @@ void main() {
   group('a body that keeps arriving after a deny', skip: _tlsSkip, () {
     // The deny cancels the stream filterRequest's Request reads the body
     // from; the rest of the upload must not be fed into it.
-    // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-    test(
-      'the client gets the whole 403, and the proxy no error',
-      tags: ['pending'],
-      () async {
-        final ca = generateCa();
-        final proxy = createHttpProxyServer(
-          _HttpOptions(
-            filterRequest: (_, [_]) async => const RequestDecision(
-              action: 'deny',
-              reason: 'denied for the test',
-            ),
-            mitmCA: createMitmCA(caCertPem: ca.certPem, caKeyPem: ca.keyPem),
+    test('the client gets the whole 403, and the proxy no error', () async {
+      final ca = generateCa();
+      final proxy = createHttpProxyServer(
+        _HttpOptions(
+          filterRequest: (_, [_]) async => const RequestDecision(
+            action: 'deny',
+            reason: 'denied for the test',
           ),
-        );
-        final listening = Completer<void>();
-        proxy.listen(0, '127.0.0.1', () => listening.complete());
-        await listening.future;
-        cleanup.add(() => proxy.close());
-        final port = (proxy.address() as net.NodeAddress).port;
-        final raw = await () {
-          final resolve = Completer<String>();
-          late final net.NodeSocket c;
-          c = net.connect({'port': port, 'host': '127.0.0.1'}, () {
-            c.write(
-              'CONNECT 127.0.0.1:9 HTTP/1.1\r\nHost: 127.0.0.1:9\r\n\r\n',
-            );
+          mitmCA: createMitmCA(caCertPem: ca.certPem, caKeyPem: ca.keyPem),
+        ),
+      );
+      final listening = Completer<void>();
+      proxy.listen(0, '127.0.0.1', () => listening.complete());
+      await listening.future;
+      cleanup.add(() => proxy.close());
+      final port = (proxy.address() as net.NodeAddress).port;
+      final raw = await () {
+        final resolve = Completer<String>();
+        late final net.NodeSocket c;
+        c = net.connect({'port': port, 'host': '127.0.0.1'}, () {
+          c.write('CONNECT 127.0.0.1:9 HTTP/1.1\r\nHost: 127.0.0.1:9\r\n\r\n');
+        });
+        c.on('error', (_) {
+          if (!resolve.isCompleted) resolve.complete('');
+        });
+        c.once('data', (_) {
+          final t = tls.connect({
+            'socket': c,
+            'ca': ca.certPem,
+            'checkServerIdentity': (Object? a, Object? b) => null,
           });
-          c.on('error', (_) {
-            if (!resolve.isCompleted) resolve.complete('');
-          });
-          c.once('data', (_) {
-            final t = tls.connect({
-              'socket': c,
-              'ca': ca.certPem,
-              'checkServerIdentity': (Object? a, Object? b) => null,
-            });
-            var out = '';
-            void done() {
-              if (!resolve.isCompleted) resolve.complete(out);
-            }
+          var out = '';
+          void done() {
+            if (!resolve.isCompleted) resolve.complete(out);
+          }
 
-            t.on('secureConnect', () {
-              t.write(
-                'POST /x HTTP/1.1\r\nHost: 127.0.0.1:9\r\nContent-Length: 200000\r\n\r\n'
-                '${'a' * 1000}',
-              );
-              // The rest of the body, after the deny is out.
-              for (var i = 1; i <= 20; i++) {
-                Timer(Duration(milliseconds: i * 10), () {
-                  if (!t.destroyed) t.write('b' * 9950);
-                });
-              }
-            });
-            t.on(
-              'data',
-              (Object? d) => out += String.fromCharCodes(d as List<int>),
+          t.on('secureConnect', () {
+            t.write(
+              'POST /x HTTP/1.1\r\nHost: 127.0.0.1:9\r\nContent-Length: 200000\r\n\r\n'
+              '${'a' * 1000}',
             );
-            t.on('close', (_) => done());
-            t.on('error', (_) => done());
+            // The rest of the body, after the deny is out.
+            for (var i = 1; i <= 20; i++) {
+              Timer(Duration(milliseconds: i * 10), () {
+                if (!t.destroyed) t.write('b' * 9950);
+              });
+            }
           });
-          return resolve.future;
-        }();
-        expect(raw, startsWith('HTTP/1.1 403'));
-        expect(raw, contains('denied for the test'));
-      },
-    );
+          t.on(
+            'data',
+            (Object? d) => out += String.fromCharCodes(d as List<int>),
+          );
+          t.on('close', (_) => done());
+          t.on('error', (_) => done());
+        });
+        return resolve.future;
+      }();
+      expect(raw, startsWith('HTTP/1.1 403'));
+      expect(raw, contains('denied for the test'));
+    });
   });
 }
