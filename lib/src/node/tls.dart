@@ -7,6 +7,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:asn1lib/asn1lib.dart' as asn1lib;
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:pointycastle/export.dart' as pc;
 
 import 'errno.dart';
@@ -174,7 +175,12 @@ TLSSocket connect(Map<Object?, Object?> options, [Function? listener]) {
       throw UnimplementedError('tls.connect option "$key"');
     }
   }
-  final host = opts['host'] as String? ?? 'localhost';
+  final existingSocket = opts['socket'];
+  // Node: options.host, else options.socket._host, else 'localhost'.
+  final host =
+      opts['host'] as String? ??
+      (existingSocket is net.NodeSocket ? existingSocket.connectHost : null) ??
+      'localhost';
   // An empty servername asks for no SNI. Gap: dart:io always sends the name
   // it validates against, so '' only stops the name overriding [host].
   final requestedName = opts['servername'] as String?;
@@ -214,22 +220,33 @@ TLSSocket connect(Map<Object?, Object?> options, [Function? listener]) {
           context: context,
           supportedProtocols: protocols,
           onBadCertificate: (certificate) {
-            // dart:io does not say which check failed. If the identity check
-            // passes, the name is fine and dart:io's complaint was the name
-            // (a custom checkServerIdentity accepted it) or the chain: check
-            // the chain against `ca` ourselves.
-            final identityError = applyIdentity(identity, name, certificate);
-            if (identityError == null &&
-                _chainTrusted(certificate, opts['ca'])) {
-              failure = null;
-              return true;
+            // dart:io does not say which check failed. Only a custom
+            // checkServerIdentity can have made the name check fail while the
+            // chain is fine; then verify the chain against `ca` ourselves and
+            // still run the identity check. With the default identity
+            // function, dart:io's rejection stands.
+            if (opts['checkServerIdentity'] != null) {
+              final identityError = applyIdentity(identity, name, certificate);
+              if (identityError == null &&
+                  _chainTrusted(certificate, opts['ca'])) {
+                failure = null;
+                return true;
+              }
+              failure =
+                  identityError ??
+                  NodeError(
+                    'unable to verify the first certificate',
+                    code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+                  );
+            } else {
+              // Never accepted here; the identity result only picks the error.
+              failure =
+                  applyIdentity(identity, name, certificate) ??
+                  NodeError(
+                    'unable to verify the first certificate',
+                    code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+                  );
             }
-            failure =
-                identityError ??
-                NodeError(
-                  'unable to verify the first certificate',
-                  code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
-                );
             return !rejectUnauthorized;
           },
         );
@@ -298,7 +315,112 @@ class PeerCertificate {
   String get pem => certificate.pem;
   DateTime get validFrom => certificate.startValidity;
   DateTime get validTo => certificate.endValidity;
+
+  /// Node's `subjectaltname`: "DNS:a, IP Address:1.2.3.4", or null.
+  String? get subjectaltname => _subjectAltName(certificate.der);
+
+  /// Node's `fingerprint` (SHA-1) and `fingerprint256`: upper-case hex bytes
+  /// joined by ':'.
+  String get fingerprint => _colonHex(crypto.sha1.convert(raw).bytes);
+  String get fingerprint256 => _colonHex(crypto.sha256.convert(raw).bytes);
 }
+
+String _colonHex(List<int> bytes) => bytes
+    .map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase())
+    .join(':');
+
+String? _subjectAltName(Uint8List der) {
+  try {
+    final seq = asn1lib.ASN1Parser(der).nextObject() as asn1lib.ASN1Sequence;
+    for (final ext in _extensions(seq.elements[0] as asn1lib.ASN1Sequence)) {
+      if (_extOid(ext) != '2.5.29.17') continue;
+      final names =
+          asn1lib.ASN1Parser(_extValue(ext)).nextObject()
+              as asn1lib.ASN1Sequence;
+      final out = <String>[];
+      for (final n in names.elements) {
+        final v = n.valueBytes();
+        switch (n.tag & 0x1f) {
+          case 1:
+            out.add('email:${utf8.decode(v)}');
+          case 2:
+            out.add('DNS:${utf8.decode(v)}');
+          case 6:
+            out.add('URI:${utf8.decode(v)}');
+          case 7:
+            out.add('IP Address:${InternetAddress.fromRawAddress(v).address}');
+        }
+      }
+      return out.join(', ');
+    }
+  } catch (_) {}
+  return null;
+}
+
+List<asn1lib.ASN1Sequence> _extensions(asn1lib.ASN1Sequence tbs) {
+  for (final e in tbs.elements) {
+    if (e.tag == 0xa3) {
+      final list =
+          asn1lib.ASN1Parser(e.valueBytes()).nextObject()
+              as asn1lib.ASN1Sequence;
+      return list.elements.cast<asn1lib.ASN1Sequence>();
+    }
+  }
+  return const [];
+}
+
+String _extOid(asn1lib.ASN1Sequence ext) =>
+    (ext.elements[0] as asn1lib.ASN1ObjectIdentifier).identifier!;
+
+bool _extCritical(asn1lib.ASN1Sequence ext) =>
+    ext.elements.length > 2 &&
+    (ext.elements[1] as asn1lib.ASN1Boolean).booleanValue;
+
+Uint8List _extValue(asn1lib.ASN1Sequence ext) =>
+    (ext.elements.last as asn1lib.ASN1OctetString).valueBytes();
+
+const _knownExtensions = {
+  '2.5.29.14', // subjectKeyIdentifier
+  '2.5.29.15', // keyUsage
+  '2.5.29.17', // subjectAltName
+  '2.5.29.19', // basicConstraints
+  '2.5.29.31', // cRLDistributionPoints
+  '2.5.29.32', // certificatePolicies
+  '2.5.29.35', // authorityKeyIdentifier
+  '2.5.29.37', // extKeyUsage
+  '1.3.6.1.5.5.7.1.1', // authorityInfoAccess
+};
+
+/// Whether [der] may act as an issuer: basicConstraints CA:TRUE when present,
+/// keyUsage keyCertSign when present, and within its validity dates.
+bool _anchorUsable(asn1lib.ASN1Sequence tbs, DateTime now) {
+  final f = _tbsFields(tbs);
+  if (now.isBefore(f.notBefore) || now.isAfter(f.notAfter)) return false;
+  for (final ext in _extensions(tbs)) {
+    final oid = _extOid(ext);
+    if (oid == '2.5.29.19') {
+      final bc =
+          asn1lib.ASN1Parser(_extValue(ext)).nextObject()
+              as asn1lib.ASN1Sequence;
+      final ca =
+          bc.elements.isNotEmpty && bc.elements.first is asn1lib.ASN1Boolean
+          ? (bc.elements.first as asn1lib.ASN1Boolean).booleanValue
+          : false;
+      if (!ca) return false;
+    } else if (oid == '2.5.29.15') {
+      final bits =
+          (asn1lib.ASN1Parser(_extValue(ext)).nextObject()
+                  as asn1lib.ASN1BitString)
+              .contentBytes();
+      if (bits.isEmpty || bits[0] & 0x04 == 0) return false;
+    }
+  }
+  return true;
+}
+
+/// For tests: [_chainTrusted].
+bool chainTrustedForTest(X509Certificate leaf, Object? ca) =>
+    _chainTrusted(leaf, ca);
 
 /// The context for a client connection: [context] as given, or one that
 /// trusts [ca] (PEM text or bytes, or a list of them), or else
@@ -649,12 +771,25 @@ bool _chainTrusted(X509Certificate leaf, Object? ca) {
                 as asn1lib.ASN1ObjectIdentifier)
             .identifier;
     final leafFields = _tbsFields(leafTbs);
+    // The outer and inner signature algorithms must agree.
+    final innerAlg =
+        leafTbs.elements[leafTbs.elements.first.tag == 0xa0 ? 2 : 1];
+    if (!_sameBytes(innerAlg.encodedBytes, leafSeq.elements[1].encodedBytes)) {
+      return false;
+    }
+    for (final ext in _extensions(leafTbs)) {
+      if (_extCritical(ext) && !_knownExtensions.contains(_extOid(ext))) {
+        return false;
+      }
+    }
     for (final der in _caDers(ca)) {
       if (_sameBytes(der, leaf.der)) return true;
       final caSeq =
           asn1lib.ASN1Parser(der).nextObject() as asn1lib.ASN1Sequence;
-      final caFields = _tbsFields(caSeq.elements[0] as asn1lib.ASN1Sequence);
+      final caTbs = caSeq.elements[0] as asn1lib.ASN1Sequence;
+      final caFields = _tbsFields(caTbs);
       if (!_sameBytes(leafFields.issuer, caFields.subject)) continue;
+      if (!_anchorUsable(caTbs, now)) continue;
       final spki =
           asn1lib.ASN1Parser(Uint8List.fromList(caFields.spki)).nextObject()
               as asn1lib.ASN1Sequence;
@@ -699,9 +834,14 @@ bool _chainTrusted(X509Certificate leaf, Object? ca) {
   return false;
 }
 
-({List<int> issuer, List<int> subject, List<int> spki}) _tbsFields(
-  asn1lib.ASN1Sequence tbs,
-) {
+({
+  List<int> issuer,
+  List<int> subject,
+  List<int> spki,
+  DateTime notBefore,
+  DateTime notAfter,
+})
+_tbsFields(asn1lib.ASN1Sequence tbs) {
   var i = tbs.elements.first.tag == 0xa0 ? 1 : 0;
   // serial, signature, issuer, validity, subject, subjectPublicKeyInfo
   final e = tbs.elements;
@@ -709,5 +849,11 @@ bool _chainTrusted(X509Certificate leaf, Object? ca) {
     issuer: e[i + 2].encodedBytes,
     subject: e[i + 4].encodedBytes,
     spki: e[i + 5].encodedBytes,
+    notBefore:
+        ((e[i + 3] as asn1lib.ASN1Sequence).elements[0] as asn1lib.ASN1UtcTime)
+            .dateTimeValue,
+    notAfter:
+        ((e[i + 3] as asn1lib.ASN1Sequence).elements[1] as asn1lib.ASN1UtcTime)
+            .dateTimeValue,
   );
 }
