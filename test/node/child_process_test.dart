@@ -9,10 +9,13 @@ import 'package:sandbox_runtime/src/node/errno.dart';
 import 'package:test/test.dart';
 import 'dart:io' show Platform;
 
-void reaperTest(String name, dynamic Function() body) => test(name, body,
-    skip: Platform.isLinux
-        ? 'Linux: VM reaper steals child status; pending spawn helper (PORT_WORKLOG)'
-        : null);
+void reaperTest(String name, dynamic Function() body) => test(
+  name,
+  body,
+  skip: Platform.isLinux
+      ? 'Linux: VM reaper steals child status; pending spawn helper (PORT_WORKLOG)'
+      : null,
+);
 
 void main() {
   reaperTest('spawnSync pipes input and returns Buffers without encoding', () {
@@ -108,13 +111,16 @@ void main() {
     expect(child.kill(), isFalse);
   });
 
-  reaperTest('spawn: launch failure has null pid and an async error event', () async {
-    final child = spawn('definitely-not-a-command-xyz');
-    expect(child.pid, isNull);
-    final err = Completer<Object>();
-    child.on('error', (Object e) => err.complete(e));
-    expect((await err.future as NodeError).code, 'ENOENT');
-  });
+  reaperTest(
+    'spawn: launch failure has null pid and an async error event',
+    () async {
+      final child = spawn('definitely-not-a-command-xyz');
+      expect(child.pid, isNull);
+      final err = Completer<Object>();
+      child.on('error', (Object e) => err.complete(e));
+      expect((await err.future as NodeError).code, 'ENOENT');
+    },
+  );
 
   reaperTest('killPid with an unknown pid throws ESRCH', () {
     expect(
