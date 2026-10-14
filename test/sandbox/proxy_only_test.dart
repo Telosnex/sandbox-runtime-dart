@@ -698,7 +698,7 @@ Future<({String raw, String? cn})> sendWithSni(
       'ca': s.ca,
       'servername': servername,
       'checkServerIdentity': (Object? _host, Object? cert) {
-        cn = '${((cert as dynamic).subject as Map)['CN']}';
+        cn = (cert as tls.PeerCertificate).subject.CN;
         return null;
       },
     });
@@ -2369,9 +2369,6 @@ Future<void> main() async {
         expect(s.up.seen, hasLength(0));
       },
       skip: emitSkip,
-      tags: [
-        'pending',
-      ], // Dart: tls.connect({socket}) (shim-stream) / hangs on 64-192 MiB streaming
     );
 
     test(
@@ -2388,9 +2385,6 @@ Future<void> main() async {
         expect(s.up.seen, hasLength(0));
       },
       skip: emitSkip,
-      tags: [
-        'pending',
-      ], // Dart: tls.connect({socket}) (shim-stream) / hangs on 64-192 MiB streaming
     );
   });
 
