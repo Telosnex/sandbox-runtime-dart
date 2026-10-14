@@ -320,7 +320,21 @@ class ServerResponse extends events.EventEmitter {
     } else if (callback != null) {
       scheduleMicrotask(() => Function.apply(callback, const []));
     }
-    return socket.writableLength < socket.writableHighWaterMark;
+    final ok = socket.writableLength < socket.writableHighWaterMark;
+    if (!ok) _armDrain();
+    return ok;
+  }
+
+  bool _drainArmed = false;
+
+  /// Node `'drain'`: once a write returned false and the queue has emptied.
+  void _armDrain() {
+    if (_drainArmed || destroyed) return;
+    _drainArmed = true;
+    socket.once('drain', ([Object? _]) {
+      _drainArmed = false;
+      if (!destroyed) scheduleMicrotask(() => _emit('drain'));
+    });
   }
 
   ServerResponse addTrailers(Map<String, Object?> trailers) {
@@ -334,7 +348,20 @@ class ServerResponse extends events.EventEmitter {
 
   ServerResponse end([Object? data, Function? callback]) {
     if (_ended) return this;
-    if (data != null) write(data);
+    if (data != null) {
+      // Node end(): an implicit header on a one-shot body carries its length.
+      if (!headersSent &&
+          !hasHeader('content-length') &&
+          !hasHeader('transfer-encoding')) {
+        final status = statusCode;
+        if (!(status >= 100 && status < 200 ||
+            status == 204 ||
+            status == 304)) {
+          setHeader('Content-Length', _bytes(data).length);
+        }
+      }
+      write(data);
+    }
     final expectedLength = int.tryParse(
       getHeader('content-length')?.toString() ?? '',
     );
@@ -802,6 +829,7 @@ class Agent {
   final Map<String, int> _inUse = {};
   final Map<String, List<Completer<void>>> _waiting = {};
   bool _destroyed = false;
+  final Expando<void Function([Object?])> _idleDrops = Expando();
 
   Future<_AgentLease> _acquire(
     String key,
@@ -833,6 +861,11 @@ class Agent {
       net.NodeSocket? idle;
       while (pool != null && pool.isNotEmpty) {
         final candidate = pool.removeLast();
+        final drop = _idleDrops[candidate];
+        _idleDrops[candidate] = null;
+        if (drop != null) {
+          candidate.off('end', drop).off('close', drop);
+        }
         if (!candidate.destroyed && !candidate.closed) {
           idle = candidate;
           break;
@@ -844,7 +877,17 @@ class Agent {
       return _AgentLease(socket, reused, () {
         _active.remove(socket);
         if (!_destroyed && keepAlive && !socket.destroyed && !socket.closed) {
-          (_idle[key] ??= []).add(socket);
+          final pool = (_idle[key] ??= []);
+          pool.add(socket);
+          // Node's agent drops an idle socket the server closed.
+          void drop([Object? _]) {
+            pool.remove(socket);
+            socket.destroy();
+          }
+
+          socket.once('end', drop);
+          socket.once('close', drop);
+          _idleDrops[socket] = drop;
         } else {
           socket.destroy();
         }
@@ -983,9 +1026,40 @@ class ClientRequest extends events.EventEmitter {
     if (callback != null)
       scheduleMicrotask(() => Function.apply(callback, const []));
     _start();
-    return (socket?.writableLength ??
-            _body.fold<int>(0, (n, b) => n + b.length)) <
+    final ok =
+        (socket?.writableLength ?? _body.fold<int>(0, (n, b) => n + b.length)) <
         (socket?.writableHighWaterMark ?? 16384);
+    if (!ok) _needDrain = true;
+    _armDrain();
+    return ok;
+  }
+
+  bool _needDrain = false;
+  bool _drainArmed = false;
+
+  /// Node `'drain'`: once a write returned false and the queue has emptied.
+  void _armDrain() {
+    if (!_needDrain || _drainArmed || destroyed) return;
+    final s = socket;
+    if (s == null || !_headersSent) {
+      // Not yet on the wire: look again shortly.
+      _drainArmed = true;
+      Timer(const Duration(milliseconds: 1), () {
+        _drainArmed = false;
+        _armDrain();
+      });
+      return;
+    }
+    if (s.writableLength == 0) {
+      _needDrain = false;
+      scheduleMicrotask(() => _emit('drain'));
+      return;
+    }
+    _drainArmed = true;
+    s.once('drain', ([Object? _]) {
+      _drainArmed = false;
+      if (!destroyed) _armDrain();
+    });
   }
 
   ClientRequest end([Object? data, Function? callback]) {
@@ -1035,16 +1109,21 @@ class ClientRequest extends events.EventEmitter {
         final String ready;
         final createConnection = _options['createConnection'];
         if (createConnection is Function) {
-          final made = Function.apply(createConnection, [
-            {
-              'host': host,
-              'hostname': host,
-              'port': port,
-              'path': socketPath,
-              'servername': servername,
-              'lookup': lookup,
-            },
-          ]);
+          final connOpts = {
+            'host': host,
+            'hostname': host,
+            'port': port,
+            'path': socketPath,
+            'servername': servername,
+            'lookup': lookup,
+          };
+          // Dart: JS ignores extra arguments; retry with fewer on arity mismatch.
+          Object? made;
+          try {
+            made = Function.apply(createConnection, [connOpts]);
+          } on NoSuchMethodError {
+            made = Function.apply(createConnection, []);
+          }
           if (made is! net.NodeSocket) {
             throw ArgumentError('createConnection must return a socket');
           }

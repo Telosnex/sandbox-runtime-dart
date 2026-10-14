@@ -708,9 +708,24 @@ Future<Socket> _bridgeDuplex(stream.Duplex duplex) async {
   });
   duplex.on('end', () => unawaited(far.close()));
   duplex.on('error', (Object? _) => far.destroy());
-  duplex.on('close', () => far.destroy());
-  far.listen(
-    (data) => duplex.write(Uint8List.fromList(data)),
+  // A graceful close: destroying `far` would reset the loopback connection
+  // and cost the TLS layer the bytes (the last reply) it has not read yet.
+  duplex.on('close', () {
+    final t = Timer(const Duration(seconds: 1), far.destroy);
+    far.close().then<void>(
+      (_) => t.cancel(),
+      onError: (Object _) => far.destroy(),
+    );
+  });
+  late final StreamSubscription<Uint8List> farSub;
+  farSub = far.listen(
+    (data) {
+      // Backpressure: stop reading the loopback until the duplex drains.
+      if (!duplex.write(Uint8List.fromList(data))) {
+        farSub.pause();
+        duplex.once('drain', () => farSub.resume());
+      }
+    },
     onDone: () {
       if (!duplex.destroyed) duplex.end();
     },
