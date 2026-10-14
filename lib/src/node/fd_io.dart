@@ -400,8 +400,9 @@ class _FdSocket extends Stream<Uint8List> implements Socket {
     if (_closed) _queue.clear();
     final waiters = List<Completer<void>>.of(_flushWaiters);
     _flushWaiters.clear();
-    final err = _writeError;
-    _writeError = null;
+    // Kept for the next flush() when nobody waits yet.
+    final err = waiters.isEmpty ? null : _writeError;
+    if (waiters.isNotEmpty) _writeError = null;
     for (final w in waiters) {
       err == null ? w.complete() : w.completeError(err);
     }
@@ -567,3 +568,7 @@ class _FdServerSocket extends Stream<Socket> implements ServerSocket {
     'Descriptor server sockets do not support ${invocation.memberName}',
   );
 }
+
+/// True for a [Socket] made by [fdSocket] or accepted from [fdServerSocket]:
+/// dart:io's TLS cannot take it over, as it is not one of dart:io's own.
+bool isFdSocket(Socket s) => s is _FdSocket;
