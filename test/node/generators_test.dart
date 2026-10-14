@@ -29,6 +29,7 @@ void main() {
     Iterable<Step<int>> bad() sync* {
       yield Pause();
     }
+
     expect(() => yieldStar(bad(), Box<int>()).toList(), throwsStateError);
   });
 
@@ -37,6 +38,7 @@ void main() {
       yield Done(1);
       yield Pause();
     }
+
     expect(() => yieldStar(bad(), Box<int>()).toList(), throwsStateError);
   });
 }

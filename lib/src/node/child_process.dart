@@ -4,6 +4,40 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io' as io;
 
+class SpawnSyncResult {
+  SpawnSyncResult({
+    required this.status,
+    required this.stdout,
+    required this.stderr,
+    this.signal,
+    this.error,
+  });
+  final int? status;
+  final Object? stdout;
+  final Object? stderr;
+  final String? signal;
+  final Object? error;
+}
+
+SpawnSyncResult spawnSync(
+  String command,
+  List<String> args, [
+  Map<String, Object?> options = const {},
+]) {
+  final result = io.Process.runSync(
+    command,
+    args,
+    stdoutEncoding: options['encoding'] == 'utf8' ? utf8 : null,
+    stderrEncoding: options['encoding'] == 'utf8' ? utf8 : null,
+    runInShell: false,
+  );
+  return SpawnSyncResult(
+    status: result.exitCode,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  );
+}
+
 class NodeChildProcess {
   final Stream<List<int>> stdout;
   final Stream<List<int>> stderr;
