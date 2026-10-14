@@ -6,6 +6,7 @@
 
 import 'package:path/path.dart' as node_path;
 
+import '../node/fetch.dart' as fetch;
 import '../utils/platform.dart';
 import 'address.dart';
 import 'domain_pattern.dart';
@@ -871,8 +872,8 @@ final ConfigSchema<NetworkConfig> NetworkConfigSchema = _notNull((
       : null;
   final rawFilter = _has(obj, 'filterRequest') ? obj['filterRequest'] : null;
   final filter = rawFilter is Function
-      ? (request, [info]) async =>
-            await Function.apply(rawFilter, [request, info]) as Object?
+      ? (fetch.Request request, [RequestInfo? info]) async =>
+            await Function.apply(rawFilter, [request, info]) as RequestDecision
       : null;
   if (_has(obj, 'filterRequest') && filter == null)
     _addIssue(issues, [
