@@ -83,10 +83,10 @@ class TLSSocket extends net.NodeSocket {
     if (opts['isServer'] != true) {
       throw UnimplementedError('tls.TLSSocket on the client side');
     }
-    final context = opts['secureContext'];
-    if (context is! SecurityContext) {
+    final context0 = opts['secureContext'];
+    if (context0 is! SecurityContext) {
       throw ArgumentError.value(
-        context,
+        context0,
         'secureContext',
         'A server TLSSocket needs a SecureContext with its certificate',
       );
@@ -95,8 +95,22 @@ class TLSSocket extends net.NodeSocket {
     final requestCert = opts['requestCert'] == true;
     final rejectUnauthorized = opts['rejectUnauthorized'] != false;
     // dart:io's server selects a protocol only from the context's list.
-    if (protocols != null) context.setAlpnProtocols(protocols, true);
+    if (protocols != null) context0.setAlpnProtocols(protocols, true);
+    final sniCallback = opts['SNICallback'];
     startServerTlsOver(socket, (raw, buffered) async {
+      var context = context0;
+      if (sniCallback is Function) {
+        // dart:io does not report the client's server name: read it from
+        // the ClientHello.
+        buffered = await collectRawUntil(buffered, _hasFirstRecord);
+        final name = _serverNameIn(buffered);
+        if (name != '') servername = name;
+        sniCallback(name, (Object? err, Object? ctx) {
+          if (err != null) throw err;
+          if (ctx is SecurityContext) context = ctx;
+        });
+        if (protocols != null) context.setAlpnProtocols(protocols, true);
+      }
       final SecureSocket secured;
       try {
         secured = await SecureSocket.secureServer(
@@ -166,6 +180,7 @@ const _tlsSocketOptions = {
   'isServer',
   'secureContext',
   'ALPNProtocols',
+  'SNICallback',
   'requestCert',
   'rejectUnauthorized',
 };
@@ -911,11 +926,37 @@ _tbsFields(asn1lib.ASN1Sequence tbs) {
     issuer: e[i + 2].encodedBytes,
     subject: e[i + 4].encodedBytes,
     spki: e[i + 5].encodedBytes,
-    notBefore:
-        ((e[i + 3] as asn1lib.ASN1Sequence).elements[0] as asn1lib.ASN1UtcTime)
-            .dateTimeValue,
-    notAfter:
-        ((e[i + 3] as asn1lib.ASN1Sequence).elements[1] as asn1lib.ASN1UtcTime)
-            .dateTimeValue,
+    notBefore: _asn1Time((e[i + 3] as asn1lib.ASN1Sequence).elements[0]),
+    notAfter: _asn1Time((e[i + 3] as asn1lib.ASN1Sequence).elements[1]),
   );
 }
+
+bool _hasFirstRecord(Uint8List b) =>
+    b.length >= 5 && b.length >= 5 + (((b[3] << 8) | b[4]).clamp(0, 16384));
+
+String _serverNameIn(Uint8List r) {
+  try {
+    if (r.length < 44 || r[0] != 0x16 || r[5] != 0x01) return '';
+    var i = 43;
+    i += 1 + r[i];
+    i += 2 + ((r[i] << 8) | r[i + 1]);
+    i += 1 + r[i];
+    final end = i + 2 + ((r[i] << 8) | r[i + 1]);
+    i += 2;
+    while (i + 4 <= end && i + 4 <= r.length) {
+      final type = (r[i] << 8) | r[i + 1];
+      final len = (r[i + 2] << 8) | r[i + 3];
+      i += 4;
+      if (type == 0 && len >= 5 && i + len <= r.length) {
+        final n = (r[i + 3] << 8) | r[i + 4];
+        return latin1.decode(r.sublist(i + 5, i + 5 + n)).toLowerCase();
+      }
+      i += len;
+    }
+  } catch (_) {}
+  return '';
+}
+
+DateTime _asn1Time(asn1lib.ASN1Object o) => o is asn1lib.ASN1GeneralizedTime
+    ? o.dateTimeValue
+    : (o as asn1lib.ASN1UtcTime).dateTimeValue;

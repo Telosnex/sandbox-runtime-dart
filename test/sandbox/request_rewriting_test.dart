@@ -1,9 +1,5 @@
 // Ported from sandbox-runtime test/sandbox/request-rewriting.test.ts @ 24eb39e.
 // Dart: a Promise settles once; every `if (!x.isCompleted)` guard below stands for that.
-// Dart: the file cannot load until https.Server accepts an SNICallback that answers (null, undefined) (probeServerNameSupport runs at load).
-@Tags(
-  ['pending'],
-) // Dart: 7 fail: tls_terminate_proxy.dart:980 '_Exception' not subtype of 'Error' cast; set-cookie header is String not List (response headers); requireHostMatch 421 cases; serverName 'localhost' vs null
 library;
 
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments, prefer_interpolation_to_compose_strings, prefer_function_declarations_over_variables, curly_braces_in_flow_control_structures, library_private_types_in_public_api
@@ -536,8 +532,6 @@ Future<void> main() async {
           ], []);
         });
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
@@ -599,8 +593,6 @@ Future<void> main() async {
           expect(h['x-foo'], 'real');
         });
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
@@ -660,8 +652,6 @@ Future<void> main() async {
           expect(lastSeen().headers['authorization'], 'Bearer real-secret');
         });
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
@@ -703,8 +693,6 @@ Future<void> main() async {
           },
         );
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
@@ -724,8 +712,6 @@ Future<void> main() async {
           },
         );
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
@@ -755,8 +741,6 @@ Future<void> main() async {
         );
         expect(seen.length, before);
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
@@ -830,8 +814,6 @@ Future<void> main() async {
         expect(asked, 0);
         expect(seen.length, before);
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
@@ -847,8 +829,6 @@ Future<void> main() async {
         });
         expect(seen.length, before + 2);
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
@@ -916,8 +896,6 @@ Future<void> main() async {
           });
           expect(seen.length, before);
         },
-        // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-        tags: ['pending'],
         skip: decision == null
             ? 'RequestDecision is typed; this decision cannot be built'
             : _tlsSkip,
@@ -940,8 +918,6 @@ Future<void> main() async {
           },
         );
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
@@ -962,8 +938,6 @@ Future<void> main() async {
           },
         );
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
@@ -1003,8 +977,6 @@ Future<void> main() async {
             containsAll(['x_spelled', '1']),
           );
         },
-        // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-        tags: ['pending'],
         skip: _tlsSkip,
         timeout: const Timeout(Duration(milliseconds: 15000)),
       );
@@ -1107,7 +1079,6 @@ Future<void> main() async {
             expect(seen.length, before + 1);
             expect(sinkGot, lastSeen().url);
           },
-          // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
           tags: label == 'TLS-terminated' ? ['pending'] : null,
           skip: _tlsSkip,
           timeout: const Timeout(Duration(milliseconds: 15000)),
@@ -1133,7 +1104,6 @@ Future<void> main() async {
             },
           );
         },
-        // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
         tags: label == 'TLS-terminated' ? ['pending'] : null,
         skip: _tlsSkip,
         timeout: const Timeout(Duration(milliseconds: 15000)),
@@ -1171,8 +1141,6 @@ Future<void> main() async {
         expect(asked, 0);
         expect(seen.length, before);
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
@@ -1243,8 +1211,6 @@ Future<void> main() async {
           expect(g.headers['connection'], isNull);
         }
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
@@ -1270,8 +1236,6 @@ Future<void> main() async {
           },
         );
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
@@ -1310,8 +1274,6 @@ Future<void> main() async {
           process.off('unhandledRejection', onUnhandled);
         }
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
@@ -1339,8 +1301,6 @@ Future<void> main() async {
           },
         );
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
@@ -1357,8 +1317,6 @@ Future<void> main() async {
           },
         );
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: 'RequestDecision.onResponse is typed; "nope" cannot be built',
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
@@ -1392,8 +1350,6 @@ Future<void> main() async {
         // onResponse sees the upstream's headers before stripping.
         expect(observed?['set-cookie'], ['sid=up']);
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
@@ -1807,8 +1763,6 @@ Future<void> main() async {
         expect(asked, 1);
         expect(seen.length, before + 1);
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
@@ -1825,8 +1779,6 @@ Future<void> main() async {
         });
         expect(asked, 0);
       },
-      // Dart: pending until node/tls.dart connect() takes the `socket` option.
-      tags: ['pending'],
       skip: !EXPOSES_SERVER_NAME || !SERVES_EMITTED_CONNECTIONS
           ? 'server name or TLS termination unavailable'
           : null,
@@ -1856,8 +1808,6 @@ Future<void> main() async {
         });
         expect(asked, 1);
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
@@ -1882,8 +1832,6 @@ Future<void> main() async {
           'Host header does not match the request target',
         ]);
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );

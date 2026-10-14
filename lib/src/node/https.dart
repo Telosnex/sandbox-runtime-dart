@@ -20,6 +20,7 @@ class Server extends http.NodeHttpServer {
     final secured = tls.TLSSocket(accepted, {
       'isServer': true,
       'secureContext': context,
+      'SNICallback': options['SNICallback'],
       'requestCert': options['requestCert'],
       'rejectUnauthorized': options['rejectUnauthorized'],
     });
