@@ -7,6 +7,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:asn1lib/asn1lib.dart' as asn1lib;
+import 'package:pointycastle/export.dart' as pc;
 
 import 'errno.dart';
 import 'mozilla_roots.dart';
@@ -214,11 +215,17 @@ TLSSocket connect(Map<Object?, Object?> options, [Function? listener]) {
           supportedProtocols: protocols,
           onBadCertificate: (certificate) {
             // dart:io does not say which check failed. If the identity check
-            // passes, the chain is not trusted; else report the identity
-            // error. Gap: a custom checkServerIdentity that accepts a name
-            // dart:io rejected is reported as an untrusted chain.
+            // passes, the name is fine and dart:io's complaint was the name
+            // (a custom checkServerIdentity accepted it) or the chain: check
+            // the chain against `ca` ourselves.
+            final identityError = applyIdentity(identity, name, certificate);
+            if (identityError == null &&
+                _chainTrusted(certificate, opts['ca'])) {
+              failure = null;
+              return true;
+            }
             failure =
-                applyIdentity(identity, name, certificate) ??
+                identityError ??
                 NodeError(
                   'unable to verify the first certificate',
                   code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
@@ -566,4 +573,104 @@ Server createServer([Object? options, Function? secureConnectionListener]) {
       ? Map<Object?, Object?>.of(options)
       : <Object?, Object?>{};
   return Server(opts, secureConnectionListener);
+}
+
+List<Uint8List> _caDers(Object? ca) {
+  final out = <Uint8List>[];
+  void add(Object c) {
+    final text = c is String ? c : utf8.decode(c as List<int>);
+    final blocks = RegExp(
+      r'-----BEGIN CERTIFICATE-----([^-]+)-----END CERTIFICATE-----',
+    );
+    for (final m in blocks.allMatches(text)) {
+      out.add(base64.decode(m.group(1)!.replaceAll(RegExp(r'\s'), '')));
+    }
+  }
+
+  if (ca is Iterable && ca is! String) {
+    ca.forEach((c) => add(c as Object));
+  } else if (ca != null) {
+    add(ca);
+  }
+  return out;
+}
+
+/// True when [leaf] is one of the PEM certificates in [ca], or is signed
+/// (RSA) by one, and is within its validity period. Used only after dart:io
+/// rejected the certificate, when the name check is the caller's.
+bool _chainTrusted(X509Certificate leaf, Object? ca) {
+  try {
+    final now = DateTime.now();
+    if (now.isBefore(leaf.startValidity) || now.isAfter(leaf.endValidity)) {
+      return false;
+    }
+    final leafSeq =
+        asn1lib.ASN1Parser(leaf.der).nextObject() as asn1lib.ASN1Sequence;
+    final leafTbs = leafSeq.elements[0] as asn1lib.ASN1Sequence;
+    final leafSigOid =
+        ((leafSeq.elements[1] as asn1lib.ASN1Sequence).elements.first
+                as asn1lib.ASN1ObjectIdentifier)
+            .identifier;
+    final leafFields = _tbsFields(leafTbs);
+    for (final der in _caDers(ca)) {
+      if (_sameBytes(der, leaf.der)) return true;
+      final caSeq =
+          asn1lib.ASN1Parser(der).nextObject() as asn1lib.ASN1Sequence;
+      final caFields = _tbsFields(caSeq.elements[0] as asn1lib.ASN1Sequence);
+      if (!_sameBytes(leafFields.issuer, caFields.subject)) continue;
+      final spki =
+          asn1lib.ASN1Parser(Uint8List.fromList(caFields.spki)).nextObject()
+              as asn1lib.ASN1Sequence;
+      final keyBits = (spki.elements[1] as asn1lib.ASN1BitString)
+          .contentBytes();
+      final key =
+          asn1lib.ASN1Parser(Uint8List.fromList(keyBits)).nextObject()
+              as asn1lib.ASN1Sequence;
+      final publicKey = pc.RSAPublicKey(
+        (key.elements[0] as asn1lib.ASN1Integer).valueAsBigInteger,
+        (key.elements[1] as asn1lib.ASN1Integer).valueAsBigInteger,
+      );
+      final (digest, digestId) = switch (leafSigOid) {
+        '1.2.840.113549.1.1.11' => (
+          pc.SHA256Digest(),
+          '0609608648016503040201',
+        ),
+        '1.2.840.113549.1.1.12' => (
+          pc.SHA384Digest(),
+          '0609608648016503040202',
+        ),
+        '1.2.840.113549.1.1.13' => (
+          pc.SHA512Digest(),
+          '0609608648016503040203',
+        ),
+        _ => throw const FormatException('unsupported signature algorithm'),
+      };
+      final signer = pc.RSASigner(digest, digestId)
+        ..init(false, pc.PublicKeyParameter<pc.RSAPublicKey>(publicKey));
+      final sigBytes =
+          (leafSeq.elements[2] as asn1lib.ASN1BitString).stringValue;
+      if (signer.verifySignature(
+        leafTbs.encodedBytes,
+        pc.RSASignature(Uint8List.fromList(sigBytes)),
+      )) {
+        return true;
+      }
+    }
+  } catch (_) {
+    return false;
+  }
+  return false;
+}
+
+({List<int> issuer, List<int> subject, List<int> spki}) _tbsFields(
+  asn1lib.ASN1Sequence tbs,
+) {
+  var i = tbs.elements.first.tag == 0xa0 ? 1 : 0;
+  // serial, signature, issuer, validity, subject, subjectPublicKeyInfo
+  final e = tbs.elements;
+  return (
+    issuer: e[i + 2].encodedBytes,
+    subject: e[i + 4].encodedBytes,
+    spki: e[i + 5].encodedBytes,
+  );
 }

@@ -331,6 +331,38 @@ void main() {
         socket.destroy();
       });
 
+      test('connect({socket}) sees the server end the stream', () async {
+        final (:certPem, :keyPem) = _certificate('srv.example.test');
+        final tlsServer = node_tls.createServer({
+          'cert': certPem,
+          'key': keyPem,
+        });
+        tlsServer.on('secureConnection', (node_tls.TLSSocket s) {
+          s.on('error', (Object _) {});
+          s.write('x');
+          s.end();
+        });
+        tlsServer.listen(0, '127.0.0.1');
+        await events.once(tlsServer, 'listening');
+        final port = (tlsServer.address() as net.NodeAddress).port;
+        final under = net.connect({'host': '127.0.0.1', 'port': port});
+        await events.once(under, 'connect');
+        final socket = node_tls.connect({
+          'socket': under,
+          'servername': 'srv.example.test',
+          'ca': certPem,
+        });
+        final closed = events.once(socket, 'close');
+        socket.resume();
+        for (var i = 1; i <= 20; i++) {
+          Timer(Duration(milliseconds: i * 10), () {
+            if (!socket.destroyed) socket.write('b' * 9950);
+          });
+        }
+        await closed.timeout(_wait);
+        tlsServer.close();
+      });
+
       test('returns at once, queues writes, emits secureConnect', () async {
         final order = <String>[];
         final socket = node_tls.connect({
