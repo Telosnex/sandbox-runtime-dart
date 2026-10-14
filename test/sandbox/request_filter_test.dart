@@ -1,6 +1,4 @@
 // Ported from sandbox-runtime test/sandbox/request-filter.test.ts @ 24eb39e.
-@Tags(['pending'])
-library;
 
 // ignore_for_file: slash_for_doc_comments, constant_identifier_names, non_constant_identifier_names
 import 'dart:async';
