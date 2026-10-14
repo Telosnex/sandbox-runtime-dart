@@ -290,7 +290,7 @@ class IncomingMessage {
 }
 
 /// Node ServerResponse subset with byte-preserving Latin-1 head serialization.
-class ServerResponse extends events.EventEmitter implements stream.Writable {
+class ServerResponse extends events.EventEmitter {
   ServerResponse._(this.socket, this._request);
 
   final net.NodeSocket socket;
@@ -414,7 +414,7 @@ class ServerResponse extends events.EventEmitter implements stream.Writable {
     } else if (callback != null) {
       scheduleMicrotask(() => Function.apply(callback, const []));
     }
-    return socket.writableLength < net.NodeSocket.highWaterMark;
+    return socket.writableLength < socket.writableHighWaterMark;
   }
 
   ServerResponse addTrailers(Map<String, Object?> trailers) {
@@ -821,7 +821,7 @@ class _AgentLease {
 final Agent globalAgent = Agent(keepAlive: true, maxSockets: 1);
 
 /// Node ClientRequest subset. Writes are queued until a socket is assigned.
-class ClientRequest extends events.EventEmitter implements stream.Writable {
+class ClientRequest extends events.EventEmitter {
   ClientRequest(Object options, [Function? responseListener])
     : _options = _requestOptions(options) {
     if (responseListener != null) on('response', responseListener);
@@ -916,7 +916,7 @@ class ClientRequest extends events.EventEmitter implements stream.Writable {
     _start();
     return (socket?.writableLength ??
             _body.fold<int>(0, (n, b) => n + b.length)) <
-        net.NodeSocket.highWaterMark;
+        (socket?.writableHighWaterMark ?? 16384);
   }
 
   @override
@@ -1452,7 +1452,7 @@ class _ByteReader {
 
   Future<int?> _byte() async {
     while (true) {
-      final data = socket.read(1);
+      final data = socket.read(1) as Uint8List?;
       if (data != null && data.isNotEmpty) return data[0];
       if (socket.readableEnded || socket.destroyed) return null;
       final wake = Completer<void>();
@@ -1520,7 +1520,7 @@ class _ByteReader {
     if (first == null) return null;
     final bytes = BytesBuilder(copy: false)..addByte(first);
     while (bytes.length < max) {
-      final next = socket.read(max - bytes.length);
+      final next = socket.read(max - bytes.length) as Uint8List?;
       if (next == null || next.isEmpty) break;
       bytes.add(next);
     }
