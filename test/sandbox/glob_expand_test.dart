@@ -2191,7 +2191,6 @@ void main() {
   });
 
   group('expandWindowsFsPaths literal branch', () {
-    // Dart: expandWindowsFsPaths/parseWindowsSandboxError are stubs that throw (lib windows_sandbox_utils.dart: Windows not supported)
     test(
       'drops non-existent grant paths without throwing (single statSync)',
       () {
@@ -2217,10 +2216,8 @@ void main() {
           <String>[],
         );
       },
-      tags: ['pending'],
     );
 
-    // Dart: expandWindowsFsPaths/parseWindowsSandboxError are stubs that throw (lib windows_sandbox_utils.dart: Windows not supported)
     test('passes non-existent deny paths through for placeholder-create', () {
       // srt-win acl stamp materializes a placeholder chain and stamps
       // it, so the deny lands on the exact target path.
@@ -2234,9 +2231,8 @@ void main() {
       ], mode: 'deny');
       expect(out, hasLength(1));
       expect(out[0], contains('secret.txt'));
-    }, tags: ['pending']);
+    });
 
-    // Dart: expandWindowsFsPaths/parseWindowsSandboxError are stubs that throw (lib windows_sandbox_utils.dart: Windows not supported)
     test(
       'still drops non-matching glob deny patterns (glob = match existing)',
       () {
@@ -2250,10 +2246,8 @@ void main() {
           <String>[],
         );
       },
-      tags: ['pending'],
     );
 
-    // Dart: expandWindowsFsPaths/parseWindowsSandboxError are stubs that throw (lib windows_sandbox_utils.dart: Windows not supported)
     test(
       'preserves trailing separator on passed-through deny (leaf-is-dir signal)',
       () {
@@ -2281,7 +2275,6 @@ void main() {
         ], mode: 'deny');
         expect(RegExp(r'[\\/]$').hasMatch(out[0]), false);
       },
-      tags: ['pending'],
     );
   });
 
@@ -2320,7 +2313,6 @@ void main() {
       rmSync(root, {'recursive': true, 'force': true});
     });
 
-    // Dart: expandWindowsFsPaths/parseWindowsSandboxError are stubs that throw (lib windows_sandbox_utils.dart: Windows not supported)
     test('takes a path inside it for the path it is', () {
       final kept = join(project, 'keep');
       expect(expandWindowsFsPaths([FilesystemPathSpelling(kept)]), [kept]);
@@ -2328,9 +2320,8 @@ void main() {
         expandWindowsFsPaths([FilesystemPathSpelling(kept)], mode: 'deny'),
         [kept],
       );
-    }, tags: ['pending']);
+    });
 
-    // Dart: expandWindowsFsPaths/parseWindowsSandboxError are stubs that throw (lib windows_sandbox_utils.dart: Windows not supported)
     test(
       'passes a deny for a path inside it that is not there yet, and drops the grant',
       () {
@@ -2344,11 +2335,9 @@ void main() {
           <String>[],
         );
       },
-      tags: ['pending'],
     );
 
     for (final mode in ['deny', 'grant']) {
-      // Dart: expandWindowsFsPaths/parseWindowsSandboxError are stubs that throw (lib windows_sandbox_utils.dart: Windows not supported)
       test('expands a pattern beneath it ($mode)', () {
         expect(
           expandWindowsFsPaths([
@@ -2366,11 +2355,10 @@ void main() {
             join(project, 'sub', 'readme'),
           ]..sort(),
         );
-      }, tags: ['pending']);
+      });
     }
 
     for (final mode in ['deny', 'grant']) {
-      // Dart: expandWindowsFsPaths/parseWindowsSandboxError are stubs that throw (lib windows_sandbox_utils.dart: Windows not supported)
       test(
         'expands a /** beneath it, the one wildcard the entry has ($mode)',
         () {
@@ -2394,12 +2382,10 @@ void main() {
             hasLength(7),
           );
         },
-        tags: ['pending'],
       );
     }
 
     for (final mode in ['deny', 'grant']) {
-      // Dart: expandWindowsFsPaths/parseWindowsSandboxError are stubs that throw (lib windows_sandbox_utils.dart: Windows not supported)
       test(
         'expands a pattern with brackets that spell no set of characters ($mode)',
         () {
@@ -2416,11 +2402,9 @@ void main() {
             );
           }
         },
-        tags: ['pending'],
       );
     }
 
-    // Dart: expandWindowsFsPaths/parseWindowsSandboxError are stubs that throw (lib windows_sandbox_utils.dart: Windows not supported)
     test('lists a path once that more than one reading finds', () {
       final out = expandWindowsFsPaths([
         FilesystemPathSpelling('$project/**/.env'),
@@ -2428,9 +2412,8 @@ void main() {
         FilesystemPathSpelling(join(project, 'sub', '.env')),
       ], mode: 'deny');
       expect(out..sort(), [...envFiles]..sort());
-    }, tags: ['pending']);
+    });
 
-    // Dart: expandWindowsFsPaths/parseWindowsSandboxError are stubs that throw (lib windows_sandbox_utils.dart: Windows not supported)
     test('takes a marked entry for a literal, whatever it holds', () {
       final kept = join(project, 'keep');
       final FilesystemPathEntry marked = FilesystemPathLiteral(kept);
@@ -2442,9 +2425,8 @@ void main() {
         join(project, '[later]'),
       ]);
       expect(expandWindowsFsPaths([notYet], mode: 'grant'), <String>[]);
-    }, tags: ['pending']);
+    });
 
-    // Dart: expandWindowsFsPaths/parseWindowsSandboxError are stubs that throw (lib windows_sandbox_utils.dart: Windows not supported)
     test('skips a marked entry with a character no Windows name can hold', () {
       // srt-win refuses `*` and `?` outright, and nothing can have the name.
       for (final path in ['$project/*.env', join(project, 'what?')]) {
@@ -2452,7 +2434,7 @@ void main() {
         expect(expandWindowsFsPaths([marked], mode: 'deny'), <String>[]);
         expect(expandWindowsFsPaths([marked], mode: 'grant'), <String>[]);
       }
-    }, tags: ['pending']);
+    });
 
     test('refuses an entry that is neither a path nor a marked path', () {
       // for (const entry of [
@@ -2465,7 +2447,6 @@ void main() {
       // }
     }, skip: 'FilesystemPathEntry is sealed: an invalid entry cannot be built');
 
-    // Dart: expandWindowsFsPaths/parseWindowsSandboxError are stubs that throw (lib windows_sandbox_utils.dart: Windows not supported)
     test(
       'does not expand a grant beneath a link that has the name the pattern spells',
       () {
@@ -2487,10 +2468,8 @@ void main() {
         );
       },
       skip: !isWindows ? null : 'Windows not supported by this port',
-      tags: ['pending'],
     );
 
-    // Dart: expandWindowsFsPaths/parseWindowsSandboxError are stubs that throw (lib windows_sandbox_utils.dart: Windows not supported)
     test(
       'does not expand a grant beneath a link that lies between such a directory and the first wildcard',
       () {
@@ -2512,7 +2491,6 @@ void main() {
         );
       },
       skip: !isWindows ? null : 'Windows not supported by this port',
-      tags: ['pending'],
     );
   });
 
@@ -2703,7 +2681,6 @@ void main() {
   // ============================================================================
 
   group('parseWindowsSandboxError', () {
-    // Dart: expandWindowsFsPaths/parseWindowsSandboxError are stubs that throw (lib windows_sandbox_utils.dart: Windows not supported)
     test('parses mapped_drive_cwd JSON line among noise', () {
       final stderr = [
         'srt-win: launching runner as srt-sandbox (overlay=12 var(s))',
@@ -2716,13 +2693,12 @@ void main() {
       expect(err?.subcommand, 'exec');
       expect(err?.drive, 'Z:\\');
       expect(err?.message, contains('DRIVE_REMOTE'));
-    }, tags: ['pending']);
+    });
 
-    // Dart: expandWindowsFsPaths/parseWindowsSandboxError are stubs that throw (lib windows_sandbox_utils.dart: Windows not supported)
     test('returns undefined when no typed-error line present', () {
       expect(parseWindowsSandboxError('srt-win: error: something\n'), null);
       expect(parseWindowsSandboxError(''), null);
-    }, tags: ['pending']);
+    });
   });
 
   // ============================================================================
