@@ -787,7 +787,7 @@ List<String> generateProxyEnvVars([
       envVars.addAll([
         'SRT_SSH_PROXY_COMMAND=${sshConnectScript(socksProxyPort, basic)}',
         "GIT_SSH_COMMAND=ssh $sshMuxOverride -o ProxyCommand=\"/bin/sh -c '"
-            r'''eval \"\${SRT_SSH_PROXY_COMMAND:?unset, but GIT_SSH_COMMAND needs it}\"' sh '%h' %p''',
+            r'''eval \"\${SRT_SSH_PROXY_COMMAND:?unset, but GIT_SSH_COMMAND needs it}\"' sh '%h' %p"''',
       ]);
     } else if (platform == 'macos') {
       // A SOCKS listener that wants no token of ours, an external one
