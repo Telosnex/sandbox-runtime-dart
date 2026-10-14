@@ -134,6 +134,10 @@ class TLSSocket extends net.NodeSocket {
     });
   }
 
+  /// Node `tlsSocket.getProtocol()`. Gap: dart:io does not expose the
+  /// negotiated version; BoringSSL negotiates the highest, TLSv1.3.
+  String? getProtocol() => secureEstablished ? 'TLSv1.3' : null;
+
   /// Node `tlsSocket.encrypted`.
   bool get encrypted => true;
 
@@ -167,6 +171,8 @@ const _tlsSocketOptions = {
 };
 
 const _tlsConnectOptions = {
+  'minVersion',
+  'maxVersion',
   'host',
   'port',
   'path',
@@ -216,10 +222,16 @@ TLSSocket connect(Map<Object?, Object?> options, [Function? listener]) {
   final rejectUnauthorized = opts['rejectUnauthorized'] != false;
   final identity =
       opts['checkServerIdentity'] as Function? ?? checkServerIdentity;
-  final context = secureContextFor(
-    opts['ca'],
-    opts['secureContext'] as SecurityContext?,
-  );
+  final minVersion = opts['minVersion'] as String?;
+  final maxVersion = opts['maxVersion'] as String?;
+  // Gap: dart:io (BoringSSL) cannot cap the version, so it always speaks
+  // TLSv1.3 where the peer does; a cap below that cannot be honoured.
+  if (maxVersion != null && maxVersion != 'TLSv1.3') {
+    throw UnimplementedError('tls.connect maxVersion "$maxVersion"');
+  }
+  final context = minVersion == null
+      ? secureContextFor(opts['ca'], opts['secureContext'] as SecurityContext?)
+      : _contextWithMinVersion(opts, minVersion);
   final protocols = (opts['ALPNProtocols'] as List?)?.cast<String>();
   final socket = TLSSocket.pending(allowHalfOpen: opts['allowHalfOpen'] == true)
     ..servername = servername;
@@ -297,6 +309,28 @@ TLSSocket connect(Map<Object?, Object?> options, [Function? listener]) {
     },
   );
   return socket;
+}
+
+SecurityContext _contextWithMinVersion(
+  Map<Object?, Object?> opts,
+  String minVersion,
+) {
+  final supplied = opts['secureContext'] as SecurityContext?;
+  if (supplied != null && opts['ca'] != null) {
+    throw ArgumentError('Cannot combine a SecurityContext with a CA bundle');
+  }
+  // Never mutate a shared context: use a fresh one.
+  final context =
+      supplied ??
+      (opts['ca'] == null
+          ? SecurityContext(withTrustedRoots: true)
+          : secureContextFor(opts['ca'], null));
+  context.minimumTlsProtocolVersion = switch (minVersion) {
+    'TLSv1.2' => TlsProtocolVersion.tls1_2,
+    'TLSv1.3' => TlsProtocolVersion.tls1_3,
+    _ => throw UnimplementedError('tls.connect minVersion "$minVersion"'),
+  };
+  return context;
 }
 
 extension on TLSSocket {

@@ -141,9 +141,7 @@ void main() {
         await decider.hello;
         final pending = decider.filterRequest(fetch.Request(URL_), CTX);
         await until(() => seen.length == 1);
-        final length = Uint8List(4);
-        // Dart: Buffer has no writeUInt32BE shim.
-        ByteData.sublistView(length).setUint32(0, (1 << 20) + 1);
+        final length = Buffer.alloc(4)..writeUInt32BE((1 << 20) + 1);
         (s['input']! as stream.Writable).write(length);
         expect(await pending, _toMatchObject(REFUSED));
         expect(dead, ['oversized frame']);
