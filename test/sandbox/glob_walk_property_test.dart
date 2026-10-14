@@ -12,7 +12,24 @@ import 'package:sandbox_runtime/src/sandbox/sandbox_utils.dart'
     show globToRegex, walkGlobPattern;
 import 'package:test/test.dart';
 
-/** Names that put the interesting readings next to each other. */
+/**
+ * The walk reads a pattern one path component at a time; globToRegex reads
+ * the same pattern as one regular expression over a whole path, and nothing
+ * else in the tree holds the two together.
+ *
+ * Over trees with no symlinks, where every path below the base is reached by
+ * exactly one name, the two must agree exactly: what the walk returns is what
+ * the regular expression matches beneath the pattern's base. A pattern the
+ * walk cannot split is in the sample too.
+ *
+ * Seeded, so a failure is reproducible, and bounded, so the suite stays fast.
+ * Not run on Windows, where a path is spelled with the other separator.
+ */
+
+/** Names that put the interesting readings next to each other: a bracket set
+ *  that can match a separator (`[+-9]` spans `/`), a `**` written against
+ *  text, a name that is a prefix of another, and brackets that spell no set
+ *  (`b-a` runs backwards). */
 const List<String> _NAME = [
   'a',
   'b',
@@ -53,6 +70,8 @@ const List<String> _LAST_SEGMENT = [
   '[xy].pem',
   '[+-9].pem',
 ];
+
+/** A tree as the relative paths of its files. */
 
 void _materialize(String root, List<List<String>> entries) {
   for (final entry in entries) {
@@ -133,6 +152,8 @@ void main() {
       test(
         'returns exactly the paths beneath the base that the regex matches',
         () {
+          /** Runs where the pattern had something to find, so that agreeing on
+           *  nothing at all cannot carry the property. */
           /** Runs where the pattern had something to find, so nothing alone cannot carry the property. */
           var withMatches = 0;
           final random = Random(20260918);
