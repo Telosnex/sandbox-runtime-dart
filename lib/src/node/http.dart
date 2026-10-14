@@ -7,6 +7,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'errno.dart';
 import 'events.dart' as events;
 import 'net.dart' as net;
 import 'stream.dart' as stream;
@@ -1207,7 +1208,8 @@ class ClientRequest extends events.EventEmitter {
         lease.release();
         return;
       }
-    } catch (error) {
+    } catch (rawError) {
+      final error = _asNodeError(rawError);
       messageError(error);
       socket.destroy(error);
       lease.release();
@@ -1224,12 +1226,28 @@ class ClientRequest extends events.EventEmitter {
   void abort() => destroy(const SocketException('aborted'));
   ClientRequest destroy([Object? error]) {
     if (destroyed) return this;
+    if (error != null) error = _asNodeError(error);
     destroyed = true;
     socket?.destroy(error);
     _lease?.release();
     if (error != null) _emit('error', error);
     return this;
   }
+}
+
+/// Shim errors surface as [NodeError] with a code, as in Node: a dart:io
+/// failure on the connection is ECONNRESET.
+Object _asNodeError(Object error) {
+  if (error is SocketException || error is IOException) {
+    final hangUp = error is SocketException && error.message == 'aborted';
+    return NodeError(
+      hangUp
+          ? 'socket hang up'
+          : (error is SocketException ? error.message : error.toString()),
+      code: 'ECONNRESET',
+    );
+  }
+  return error;
 }
 
 ClientRequest request(Object options, [Function? responseListener]) =>
