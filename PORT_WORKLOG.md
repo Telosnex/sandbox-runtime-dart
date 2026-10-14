@@ -81,7 +81,7 @@ now runs tests as `parallels`, caps runs, passes args intact). All 20 test
 batches are ported; no `pending` tags remain. Skips that stay, with reasons
 in place: TLS 1.2-capped clients (dart:io has no max version), npm-install
 own-files cases, root-only and macOS-nc cases, Windows sandboxing.
-Open: comment/doc audit (audit-a, audit-b); then Telosnex integration.
+Audits clean at abd9549: comments (all lib files but Windows bodies), stubcheck (all src/), titles (two intended differences, allow-listed in test/port), format, analyze. Linux and macOS green. Next: Telosnex integration.
 Upstream/deployment notes: ~/dev/srt-wt/FINDINGS.md.
 
 ### Wave 1 phase A: nearly DONE (2026-10-14)
