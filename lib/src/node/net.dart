@@ -949,10 +949,14 @@ class NodeServer extends EventEmitter {
   NodeServer removeListener(String event, Function listener) =>
       off(event, listener);
 
+  /// Dart-only test seam for spyOn(Server.prototype, 'listen'); call-through.
+  static void Function(Object? firstArg)? listenSpy;
+
   /// Node's forms: `listen(port[, host][, backlog][, cb])`,
   /// `listen(path[, cb])`, `listen({port, host, path}[, cb])` and
   /// `listen([cb])` (port 0). The result is a 'listening' or 'error' event.
   NodeServer listen([Object? a, Object? b, Object? c, Object? d]) {
+    listenSpy?.call(a);
     if (_listening || _binding) {
       throw NodeError(
         'Listen method has been called more than once without closing.',
