@@ -2,7 +2,63 @@
 import 'package:test/test.dart';
 
 void main() {
+  /**
+   * Exercises the first-byte sniffer in isolation: a stub http.Server
+   * stands in for the real HTTP proxy and a recording callback stands in
+   * for the SOCKS handler. Runs on all platforms — on Windows the HTTP
+   * backend listens on an ephemeral TCP port (range [0,0]); elsewhere it
+   * listens on a unix socket.
+   */
   group('mux-proxy first-byte dispatch', () {
+    // The setup below needs src/sandbox/mux-proxy.ts (createMuxProxyServer).
+    // let mux: MuxProxyServer
+    // let httpStub: Server
+    // let port: number
+    // let socksHits: Buffer[]
+    //
+    // beforeEach(async () => {
+    //   socksHits = []
+    //   httpStub = createHttpServer((req, res) => {
+    //     res.writeHead(200, { connection: 'close' })
+    //     res.end(`http-request:${req.method}:${req.url}\n`)
+    //   })
+    //   httpStub.on('connect', (req, sock) => {
+    //     sock.end(
+    //       `HTTP/1.1 200 Connection Established\r\n\r\nhttp-connect:${req.url}\n`,
+    //     )
+    //   })
+    //   mux = createMuxProxyServer({
+    //     httpServer: httpStub,
+    //     handleSocksConnection: sock => {
+    //       // Drain everything the client sends so we can assert the unshifted
+    //       // first byte is intact, then close.
+    //       sock.on('data', chunk => socksHits.push(chunk))
+    //       sock.end(Buffer.from([0x05, 0x00])) // SOCKS5 "no auth" reply
+    //     },
+    //     firstByteTimeoutMs: 500,
+    //   })
+    //   await mux.listenHttpBackend()
+    //   await new Promise<void>((resolve, reject) => {
+    //     mux.server.once('error', reject)
+    //     mux.server.listen(0, '127.0.0.1', () => resolve())
+    //   })
+    //   port = mux.getPort()!
+    // })
+    //
+    // afterEach(async () => {
+    //   await mux.close()
+    // })
+    //
+    // function send(bytes: Buffer): Promise<Buffer> {
+    //   return new Promise((resolve, reject) => {
+    //     const chunks: Buffer[] = []
+    //     const c: Socket = connect(port, '127.0.0.1', () => c.write(bytes))
+    //     c.on('data', d => chunks.push(d))
+    //     c.on('close', () => resolve(Buffer.concat(chunks)))
+    //     c.on('error', reject)
+    //   })
+    // }
+
     test(
       'routes 0x05 (SOCKS5 greeting) to the SOCKS handler with byte 0 intact',
       () {

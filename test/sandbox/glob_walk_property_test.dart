@@ -161,6 +161,7 @@ void main() {
             final index = random.nextInt(trees.length);
             final tree = trees[index];
             final pattern = path.join(tree.root, _patternTail(random));
+            // 's': the flag the walk compiles its own regular expressions with.
             final regex = RegExp(globToRegex(pattern), dotAll: true);
             final expected = tree.paths.where(regex.hasMatch).toList()..sort();
             if (expected.isNotEmpty) withMatches++;
