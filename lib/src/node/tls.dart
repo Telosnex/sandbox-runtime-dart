@@ -481,3 +481,89 @@ Future<Socket> _bridgeDuplex(stream.Duplex duplex) async {
   );
   return client;
 }
+
+String _pem(Object? v) {
+  if (v is List) v = v.isEmpty ? null : v.first;
+  if (v is String) return v;
+  if (v is List<int>) return utf8.decode(v);
+  throw ArgumentError('tls.createServer needs "key" and "cert"');
+}
+
+/// The server-side context for `createServer` options: `secureContext`, the
+/// `SNICallback`'s answer, or `key` and `cert` (with optional `ca`).
+SecurityContext serverContextFor(Map<Object?, Object?> options) {
+  Object? context = options['secureContext'];
+  if (context == null) {
+    final sni = options['SNICallback'];
+    if (sni is Function) {
+      // dart:io does not report the client's server name: ask with ''.
+      Object? chosen;
+      sni('', (Object? err, Object? ctx) {
+        if (err != null) throw err;
+        chosen = ctx;
+      });
+      if (chosen == null) {
+        throw UnimplementedError('SNICallback that answers later');
+      }
+      context = chosen;
+    }
+  }
+  if (context == null) {
+    final made = createSecureContext(
+      cert: _pem(options['cert']),
+      key: _pem(options['key']),
+    );
+    final ca = options['ca'];
+    if (ca != null) {
+      for (final c in ca is List ? ca : [ca]) {
+        made.setTrustedCertificatesBytes(
+          Uint8List.fromList(utf8.encode(_pem(c))),
+        );
+      }
+    }
+    context = made;
+  }
+  return context as SecurityContext;
+}
+
+/// Node `tls.Server`: a [net.NodeServer] whose connections are TLS. Emits
+/// 'secureConnection' with the [TLSSocket] once the handshake is done and
+/// 'tlsClientError' (error, socket) when it fails.
+class Server extends net.NodeServer {
+  Server(this.options, [Function? secureConnectionListener]) {
+    if (secureConnectionListener != null) {
+      on('secureConnection', secureConnectionListener);
+    }
+    on('connection', (net.NodeSocket accepted) {
+      final TLSSocket secured;
+      try {
+        secured = TLSSocket(accepted, {
+          'isServer': true,
+          'secureContext': serverContextFor(options),
+        });
+      } catch (error) {
+        accepted.destroy();
+        emit('tlsClientError', error, accepted);
+        return;
+      }
+      secured.once('secure', () => emit('secureConnection', secured));
+      secured.on('error', (Object error) {
+        if (!secured.secureEstablished) emit('tlsClientError', error, secured);
+      });
+    });
+  }
+
+  final Map<Object?, Object?> options;
+}
+
+/// Node `tls.createServer([options][, secureConnectionListener])`.
+Server createServer([Object? options, Function? secureConnectionListener]) {
+  if (options is Function) {
+    secureConnectionListener = options;
+    options = null;
+  }
+  final opts = options is Map
+      ? Map<Object?, Object?>.of(options)
+      : <Object?, Object?>{};
+  return Server(opts, secureConnectionListener);
+}

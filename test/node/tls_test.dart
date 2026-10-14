@@ -269,6 +269,46 @@ void main() {
       expect(node_tls.trustedRootContext(), isA<SecurityContext>());
     });
 
+    group('createServer', () {
+      test('serves a secureConnection to tls.connect', () async {
+        final (:certPem, :keyPem) = _certificate('srv.example.test');
+        final server = node_tls.createServer({'cert': certPem, 'key': keyPem});
+        server.on('secureConnection', (node_tls.TLSSocket socket) {
+          socket.on('data', (Object? d) => socket.write(d as List<int>));
+        });
+        server.listen(0, '127.0.0.1');
+        await events.once(server, 'listening');
+        final port = (server.address() as net.NodeAddress).port;
+        final socket = node_tls.connect({
+          'host': '127.0.0.1',
+          'port': port,
+          'servername': 'srv.example.test',
+          'ca': certPem,
+        });
+        socket.write('hi');
+        final echoed = await events.once(socket, 'data').timeout(_wait);
+        expect(echoed.single, 'hi'.codeUnits);
+        socket.destroy();
+        server.close();
+        await events.once(server, 'close').timeout(_wait);
+      });
+
+      test('a non-TLS client is a tlsClientError', () async {
+        final (:certPem, :keyPem) = _certificate('srv.example.test');
+        final server = node_tls.createServer({'cert': certPem, 'key': keyPem});
+        server.listen(0, '127.0.0.1');
+        await events.once(server, 'listening');
+        final port = (server.address() as net.NodeAddress).port;
+        final failed = events.once(server, 'tlsClientError');
+        final raw = net.connect({'host': '127.0.0.1', 'port': port});
+        raw.on('error', (Object _) {});
+        raw.write('GET / HTTP/1.1\r\n\r\n');
+        await failed.timeout(_wait);
+        raw.destroy();
+        server.close();
+      });
+    });
+
     group('connect', () {
       late ({String certPem, int port, Future<void> Function() close}) server;
       setUpAll(() async => server = await _server('tls.example.test'));
