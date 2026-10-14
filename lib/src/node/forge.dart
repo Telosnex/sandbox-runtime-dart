@@ -831,6 +831,7 @@ Map<String, dynamic> _parseExtension(String oid, bool critical, List<int> raw) {
     'id': oid,
     'name': name,
     'critical': critical,
+    'value': _binary(raw),
   };
   try {
     final der = asn1lib.ASN1Parser(Uint8List.fromList(raw)).nextObject();

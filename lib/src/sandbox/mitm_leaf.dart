@@ -142,16 +142,7 @@ Map<String, Object> _sanFor(String hostname) {
  */
 DateTime _clampValidity(forge.Certificate caCert, DateTime notBefore) {
   final caEnd = caCert.validity.notAfter;
-  final max = DateTime(
-    notBefore.year,
-    notBefore.month,
-    notBefore.day + 99,
-    notBefore.hour,
-    notBefore.minute,
-    notBefore.second,
-    notBefore.millisecond,
-    notBefore.microsecond,
-  );
+  final max = notBefore.add(const Duration(days: 99));
   return caEnd.isBefore(max) ? DateTime.parse(caEnd.toIso8601String()) : max;
 }
 
