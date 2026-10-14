@@ -9,7 +9,7 @@ class Buffer {
   factory Buffer.from(Object value, [String encoding = 'utf8']) {
     if (value is List<int>) return Buffer._(Uint8List.fromList(value));
     final text = value.toString();
-    if (encoding == 'base64') {
+    if (encoding == 'base64' || encoding == 'base64url') {
       // Node ignores whitespace, accepts base64url, and stops at padding.
       var clean = text.replaceAll(RegExp(r'[^A-Za-z0-9_+\-/=]'), '');
       clean = clean.replaceAll('-', '+').replaceAll('_', '/');
@@ -32,6 +32,10 @@ class Buffer {
   @override
   String toString([String encoding = 'utf8']) {
     if (encoding == 'base64') return base64.encode(_bytes);
+    if (encoding == 'base64url')
+      return base64Url.encode(_bytes).replaceAll('=', '');
+    if (encoding == 'hex')
+      return _bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
     return utf8.decode(_bytes, allowMalformed: true);
   }
 

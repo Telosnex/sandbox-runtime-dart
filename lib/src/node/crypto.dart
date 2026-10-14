@@ -3,6 +3,7 @@
 // encoding is a Node Buffer, which is a Uint8List here.
 
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -74,6 +75,59 @@ String randomUUID() {
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   final hex = _encode(bytes, 'hex') as String;
   return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
+}
+
+Uint8List sign(String algorithm, List<int> data, String privateKey) {
+  if (algorithm != 'sha256') throw ArgumentError.value(algorithm, 'algorithm');
+  final dir = Directory.systemTemp.createTempSync('dart-node-crypto-');
+  try {
+    final key = File('${dir.path}/key.pem')..writeAsStringSync(privateKey);
+    final input = File('${dir.path}/input')..writeAsBytesSync(data);
+    final output = '${dir.path}/signature';
+    final result = Process.runSync('openssl', [
+      'dgst',
+      '-sha256',
+      '-sign',
+      key.path,
+      '-out',
+      output,
+      input.path,
+    ]);
+    if (result.exitCode != 0)
+      throw ProcessException(
+        'openssl',
+        ['dgst'],
+        result.stderr.toString(),
+        result.exitCode,
+      );
+    return Uint8List.fromList(File(output).readAsBytesSync());
+  } finally {
+    dir.deleteSync(recursive: true);
+  }
+}
+
+class X509Certificate {
+  X509Certificate(String pem) : _pem = pem;
+  final String _pem;
+  String get fingerprint {
+    final dir = Directory.systemTemp.createTempSync('dart-node-x509-');
+    try {
+      final file = File('${dir.path}/cert.pem')..writeAsStringSync(_pem);
+      final output = Process.runSync('openssl', [
+        'x509',
+        '-in',
+        file.path,
+        '-noout',
+        '-fingerprint',
+        '-sha1',
+      ]);
+      if (output.exitCode != 0)
+        throw FormatException('Invalid X509 certificate');
+      return output.stdout.toString().trim().split('=').last;
+    } finally {
+      dir.deleteSync(recursive: true);
+    }
+  }
 }
 
 crypto.Hash _hash(String algorithm) {
