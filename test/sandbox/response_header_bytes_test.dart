@@ -1,8 +1,4 @@
 // Ported from sandbox-runtime test/sandbox/response-header-bytes.test.ts @ 24eb39e.
-// Dart: every case hangs in impl runs (fetchRaw never sees the 2-byte 'ok' tail or close); cause not isolated, may be the harness or the proxy.
-@Tags(
-  ['pending'],
-) // Dart: every test times out at 30s (+0 -6 in 3min): fixture/proxy startup hang
 library;
 
 // ignore_for_file: slash_for_doc_comments, constant_identifier_names, non_constant_identifier_names, curly_braces_in_flow_control_structures
@@ -204,23 +200,24 @@ Future<Buffer> fetchRaw(String path, List<String> paths) async {
   sock.once('close', () => closed.complete());
   for (final (i, p) in paths.indexed) {
     final last = i == paths.length - 1;
-    sock.write(
-      'GET ${tlsPath ? p : 'http://$target$p'} HTTP/1.1\r\nHost: $target\r\n'
-      '${last ? 'Connection: close\r\n' : ''}\r\n',
-    );
     // The next request goes once this one's answer is in.
-    await (last
+    final waiting = last
         ? closed.future
         : () {
             final completer = Completer<void>();
             onData = () {
-              if (got.sublist(got.length - 2).toString() == 'ok' &&
+              if (got.toString("latin1").endsWith("ok") &&
                   !completer.isCompleted) {
                 completer.complete();
               }
             };
             return completer.future;
-          }());
+          }();
+    sock.write(
+      'GET ${tlsPath ? p : 'http://$target$p'} HTTP/1.1\r\nHost: $target\r\n'
+      '${last ? 'Connection: close\r\n' : ''}\r\n',
+    );
+    await waiting;
   }
   return got;
 }
