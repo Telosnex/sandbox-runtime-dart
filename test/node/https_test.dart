@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:sandbox_runtime/src/node/forge.dart';
 import 'package:sandbox_runtime/src/node/http.dart' as http;
+import 'package:sandbox_runtime/src/node/net.dart' as net;
 import 'package:sandbox_runtime/src/node/https.dart' as https;
 import 'package:sandbox_runtime/src/node/tls.dart' as node_tls;
 import 'package:sandbox_runtime/src/node/url.dart' as url;
@@ -121,4 +122,45 @@ void main() {
     expect((await _collect(req)).body, 'GET /');
     expect(() => https.request('http://a/'), throwsArgumentError);
   });
+
+  test(
+    'https.createServer round trip and plain client gets TLS error',
+    () async {
+      final pair = _certificate('127.0.0.1');
+      final srv = https.createServer(
+        {'key': pair.keyPem, 'cert': pair.certPem},
+        (http.IncomingMessage req, http.ServerResponse res) {
+          res.end('hi ${req.url}');
+        },
+      );
+      var secure = 0;
+      final tlsErrors = Completer<Object>();
+      srv.on('secureConnection', (Object _) => secure++);
+      srv.on('tlsClientError', (Object e, Object _) {
+        if (!tlsErrors.isCompleted) tlsErrors.complete(e);
+      });
+      final up = Completer<void>();
+      srv.listen(0, '127.0.0.1', () => up.complete());
+      await up.future;
+      final port = (srv.address() as net.NodeAddress).port;
+      final req = https.get('https://127.0.0.1:$port/z', {
+        'ca': pair.certPem,
+        'agent': https.Agent(),
+      });
+      expect(await _collect(req), (body: 'hi /z', status: 200));
+      expect(secure, 1);
+
+      final raw = await Socket.connect('127.0.0.1', port);
+      raw.add(utf8.encode('GET / HTTP/1.1\r\nHost: x\r\n\r\n'));
+      final got = <int>[];
+      raw.listen(got.addAll, onError: (_) {});
+      await tlsErrors.future.timeout(const Duration(seconds: 10));
+      await raw.close().catchError((_) {});
+      expect(
+        utf8.decode(got, allowMalformed: true),
+        isNot(contains('HTTP/1.1 200')),
+      );
+      srv.close();
+    },
+  );
 }
