@@ -22,7 +22,10 @@ String _parentOf(String p) => p.substring(0, p.lastIndexOf('/'));
  * ancestor or between the two.
  */
 Set<String> _collapseReadDenyLocations({
+  /** Absolute, symlink-free, trailing-slash-free paths. */
   required Iterable<String> locations,
+  /** allowRead/allowWrite paths the denyRead loop binds back over a tmpfs, as
+   *  spelled and as resolved. */
   required Set<String> reExposedPaths,
 }) {
   // A proper ancestor is a proper string prefix, so lexicographic order
@@ -46,23 +49,23 @@ Set<String> _collapseReadDenyLocations({
   return kept;
 }
 
-/**
- * Expand a read-deny glob into the paths bwrap should mount over, collapsed
- * against `reExposedPaths` (the caller's allowRead and allowWrite entries).
- * A pattern ending in a trailing recursive glob also takes its directory form, so
- * a recursive build glob yields one mount per `build/` directory. A match reached
- * through a symlink is listed where it really lives, and a directory the walk
- * could not list is denied whole. Sorted, so an ancestor precedes its
- * descendants.
- *
- * @param unlistableDirs - receives the returned locations that hide something
- * the walk could not enumerate, whether by being that directory or by
- * covering it. The Linux wrapper binds nothing back beneath one: what the
- * pattern matches under an allowed path in there was never found, and would
- * come back unmasked.
- * @param opts.anchor - as in `ExpandGlobOptions.anchor`.
- * @param opts.listings - one map for all the patterns of a configuration.
- */
+// Dart block comments nest, so `/**` inside one opens another: this block
+// uses `///` to keep upstream's text verbatim.
+/// Expand a read-deny glob into the paths bwrap should mount over, collapsed
+/// against `reExposedPaths` (the caller's allowRead and allowWrite entries).
+/// A pattern ending in `/**` also takes its directory form, so
+/// `**\/build/**` yields one mount per `build/` directory. A match reached
+/// through a symlink is listed where it really lives, and a directory the walk
+/// could not list is denied whole. Sorted, so an ancestor precedes its
+/// descendants.
+///
+/// @param unlistableDirs - receives the returned locations that hide something
+/// the walk could not enumerate, whether by being that directory or by
+/// covering it. The Linux wrapper binds nothing back beneath one: what the
+/// pattern matches under an allowed path in there was never found, and would
+/// come back unmasked.
+/// @param opts.anchor - as in `ExpandGlobOptions.anchor`.
+/// @param opts.listings - one map for all the patterns of a configuration.
 List<String> expandReadDenyGlobLinux(
   String globPattern,
   List<String> reExposedPaths, {
@@ -106,7 +109,7 @@ Steps<List<String>> expandReadDenyGlobLinuxSteps(
   final candidates = <String>{...walk.matches, ...walk.unlisted};
   if (walk.directoryMatches.isNotEmpty) {
     // Everything beneath a directory-form match is itself a match (the
-    // pattern ends in a glob-star-slash), so a directory with something to deny holds one.
+    // pattern ends in /**), so a directory with something to deny holds one.
     // An empty one gets no mount: it has nothing to deny, and as a tmpfs it
     // would swallow later writes. Compared where they live, since one
     // spelling of a directory is walked and the matches found through it are

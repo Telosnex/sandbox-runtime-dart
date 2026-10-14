@@ -1,4 +1,3 @@
-import 'dart:typed_data';
 // Ported from sandbox-runtime src/sandbox/linux-violation-monitor.ts @ 24eb39e.
 // ignore_for_file: slash_for_doc_comments
 
@@ -10,6 +9,8 @@ import 'dart:math' as math;
 import 'package:path/path.dart' as path;
 
 import '../node/buffer.dart' show Buffer;
+import '../node/errno.dart' show NodeException;
+import '../node/net.dart';
 import '../utils/debug.dart';
 import 'macos_sandbox_utils.dart';
 import 'sandbox_config.dart';
@@ -44,16 +45,18 @@ class LinuxViolationMonitorOptions {
 }
 
 class LinuxViolationMonitor {
-  const LinuxViolationMonitor({
-    required this.observeSocketPath,
+  LinuxViolationMonitor({
+    required String? Function() observeSocketPath,
     required this.ready,
     required this.stop,
-  });
+  }) : _observeSocketPath = observeSocketPath;
   /** Filesystem unix-socket path the listener is bound to. Bind-mount this
    *  into each bwrap sandbox and pass it to apply-seccomp via
    *  SRT_OBSERVE_SOCK. `undefined` if listen() failed (the caller should
    *  proceed without observation). */
-  final String? observeSocketPath;
+  // Upstream exposes this as a getter: listen() failure clears it later.
+  String? get observeSocketPath => _observeSocketPath();
+  final String? Function() _observeSocketPath;
   /** Resolves once the listener is bound, or on listen failure. */
   final Future<void> ready;
   final void Function() stop;
@@ -83,7 +86,7 @@ class _ObserveEvent {
  * already waitpid()s the workload), so there is no separate supervisor binary.
  *
  * Unlike Seatbelt's `log stream`, the kernel reports *attempts* here, not
- * *denials*, so this function intersects each path against the configured
+ * denials, so this function intersects each path against the configured
  * allow/deny set before forwarding it as a violation.
  *
  * The reported path is read out of the (untrusted) sandboxed process's memory
@@ -158,92 +161,107 @@ LinuxViolationMonitor startLinuxSandboxViolationMonitor(
     callback(violation);
   }
 
-  final ready = Completer<void>();
+  final readyCompleter = Completer<void>();
+  void resolveReady() {
+    if (!readyCompleter.isCompleted) readyCompleter.complete();
+  }
+
   String? observeSocketPath = sockPath;
-  final server = ServerSocket.bind(
-    InternetAddress(sockPath, type: InternetAddressType.unix),
-    0,
-  );
-  final sockets = <Socket>{};
-  server.then(
-    (bound) {
-      if (!ready.isCompleted) ready.complete();
-      bound.listen((conn) {
-        sockets.add(conn);
-        String? encodedCommand;
-        final input = StringBuffer();
-        conn
-            .transform(
-              StreamTransformer<Uint8List, String>.fromHandlers(
-                handleData: (data, sink) => sink.add(utf8.decode(data)),
-              ),
-            )
-            .listen(
-              (chunk) {
-                input.write(chunk);
-                while (input.toString().contains('\n')) {
-                  final all = input.toString();
-                  final i = all.indexOf('\n');
-                  final raw = all.substring(0, i);
-                  input.clear();
-                  input.write(all.substring(i + 1));
-                  if (raw.isEmpty) continue;
-                  late _ObserveEvent ev;
-                  try {
-                    ev = _ObserveEvent(jsonDecode(raw) as Map<String, dynamic>);
-                  } catch (_) {
-                    continue;
-                  }
-                  // The socket is writable from inside the sandbox, so the attribution
-                  // field is attacker-chosen bytes of attacker-chosen length. One longer
-                  // than a carrier this process mints can hold attributes nothing: drop
-                  // it and keep the violation itself, unattributed.
-                  final attribution =
-                      ev.encodedCommand != null &&
-                          Buffer.byteLength(ev.encodedCommand!) <=
-                              MAX_ENCODED_COMMAND_BYTES
-                      ? ev.encodedCommand
-                      : null;
-                  // First line from each apply-seccomp instance is the encodedCommand
-                  // header; subsequent lines may also carry it but the header is
-                  // authoritative for this connection.
-                  if (attribution != null && encodedCommand == null)
-                    encodedCommand = attribution;
-                  handleEvent(ev, encodedCommand ?? attribution);
-                }
-              },
-              onError: (_) {},
-              onDone: () {
-                sockets.remove(conn);
-                conn.destroy();
-              },
-            );
-      });
-    },
-    onError: (Object err) {
-      logForDebugging(
-        '[Sandbox Linux Monitor] listen failed: $err - violation monitoring disabled',
-        level: 'warn',
-      );
-      observeSocketPath = null;
-      if (!ready.isCompleted) ready.complete();
-    },
-  );
-  final stop = () {
+
+  final NodeServer server = createServer((NodeSocket conn) {
+    String? encodedCommand;
+    // Upstream reads lines with node:readline createInterface({input: conn});
+    // no readline shim exists, so the same line splitting is done here and
+    // rl.close() becomes `closed = true`.
+    var closed = false;
+    final decoder = Utf8Decoder(allowMalformed: true);
+    var pending = '';
+    void onLine(String raw) {
+      if (raw.isEmpty) return;
+      _ObserveEvent ev;
+      try {
+        ev = _ObserveEvent(jsonDecode(raw) as Map<String, dynamic>);
+      } catch (_) {
+        return;
+      }
+      // The socket is writable from inside the sandbox, so the attribution
+      // field is attacker-chosen bytes of attacker-chosen length. One longer
+      // than a carrier this process mints can hold attributes nothing: drop
+      // it and keep the violation itself, unattributed.
+      final attribution =
+          ev.encodedCommand != null &&
+              Buffer.byteLength(ev.encodedCommand!) <= MAX_ENCODED_COMMAND_BYTES
+          ? ev.encodedCommand
+          : null;
+      // First line from each apply-seccomp instance is the encodedCommand
+      // header; subsequent lines may also carry it but the header is
+      // authoritative for this connection.
+      if (attribution != null &&
+          attribution.isNotEmpty &&
+          encodedCommand == null) {
+        encodedCommand = attribution;
+      }
+      handleEvent(ev, encodedCommand ?? attribution);
+    }
+
+    conn.on('data', (Object? data) {
+      if (closed) return;
+      pending += decoder.convert(data! as List<int>);
+      var i = pending.indexOf('\n');
+      while (i >= 0 && !closed) {
+        var raw = pending.substring(0, i);
+        if (raw.endsWith('\r')) raw = raw.substring(0, raw.length - 1);
+        pending = pending.substring(i + 1);
+        onLine(raw);
+        i = pending.indexOf('\n');
+      }
+    });
+    conn.on('end', () {
+      // readline emits a final unterminated line on input end.
+      if (!closed && pending.isNotEmpty) {
+        final raw = pending;
+        pending = '';
+        onLine(raw);
+      }
+    });
+    conn.on('error', (Object? _) => closed = true);
+    conn.on('close', ([Object? _]) => closed = true);
+  });
+
+  server.on('error', (Object? err) {
+    final message = err is NodeException ? err.message : '$err';
+    logForDebugging(
+      '[Sandbox Linux Monitor] listen failed: $message - violation monitoring disabled',
+      level: 'warn',
+    );
+    observeSocketPath = null;
+    resolveReady();
+  });
+  server.listen(sockPath, () => resolveReady());
+
+  final sockets = <NodeSocket>{};
+  server.on('connection', (NodeSocket s) {
+    sockets.add(s);
+    s.on('close', ([Object? _]) => sockets.remove(s));
+  });
+
+  void stop() {
     logForDebugging('[Sandbox Linux Monitor] stopping');
-    for (final s in sockets) {
+    for (final s in sockets.toList()) {
       s.destroy();
     }
-    server.then((s) => s.close());
+    server.close();
     try {
+      // No node:fs rmSync shim yet: rmSync(sockDir, {recursive, force}).
       Directory(sockDir).deleteSync(recursive: true);
     } catch (_) {
       /* best effort */
     }
-  };
+  }
+
   return LinuxViolationMonitor(
-    observeSocketPath: observeSocketPath,
-    ready: ready.future,
+    observeSocketPath: () => observeSocketPath,
+    ready: readyCompleter.future,
     stop: stop,
   );
 }
