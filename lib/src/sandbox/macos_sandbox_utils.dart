@@ -9,6 +9,7 @@ import 'dart:math' as math;
 import 'package:path/path.dart' as path;
 
 import '../node/child_process.dart';
+import '../node/errno.dart' show errorMessage;
 import '../node/process.dart' as process;
 import '../utils/debug.dart';
 import '../utils/shell_quote.dart';
@@ -1576,7 +1577,7 @@ void Function() startMacOSSandboxLogMonitor(
     '--style',
     'compact',
   ]);
-  logProcess.stdout.listen((data) {
+  logProcess.stdout?.listen((data) {
     final lines = utf8.decode(data).split('\n');
     // Get violation and command lines
     String? firstOrNull(Iterable<String> values) =>
@@ -1624,19 +1625,21 @@ void Function() startMacOSSandboxLogMonitor(
       ),
     );
   });
-  logProcess.stderr.listen(
-    (data) => logForDebugging(
+  logProcess.stderr?.listen((data) {
+    logForDebugging(
       '[Sandbox Monitor] Log stream stderr: ${utf8.decode(data)}',
-    ),
-  );
-  logProcess.errors.listen(
-    (error) =>
-        logForDebugging('[Sandbox Monitor] Failed to start log stream: $error'),
-  );
-  logProcess.exitCode.then(
-    (code) =>
-        logForDebugging('[Sandbox Monitor] Log stream exited with code: $code'),
-  );
+    );
+  });
+
+  logProcess.on('error', (Object error) {
+    logForDebugging(
+      '[Sandbox Monitor] Failed to start log stream: ${errorMessage(error)}',
+    );
+  });
+
+  logProcess.on('exit', (int? code) {
+    logForDebugging('[Sandbox Monitor] Log stream exited with code: $code');
+  });
   return () {
     logForDebugging('[Sandbox Monitor] Stopping log monitor');
     logProcess.kill('SIGTERM');
