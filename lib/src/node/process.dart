@@ -201,5 +201,13 @@ void setPlatformForTesting(String? value) => _platformOverride = value;
 /// Override `process.env` in tests; pass null to use the host environment.
 void setEnvForTesting(Map<String, String>? value) => _envOverride = value;
 
+/// Node's `process.chdir`. A variable so a test can replace it.
+void Function(String directory) chdir = _chdir;
+
+void _chdir(String directory) {
+  Directory.current = directory;
+  _cwdOverride = null;
+}
+
 /// Override `process.cwd()` in tests; pass null to use `Directory.current`.
 void setCwdForTesting(String? value) => _cwdOverride = value;
