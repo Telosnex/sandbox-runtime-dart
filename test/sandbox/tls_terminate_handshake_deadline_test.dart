@@ -274,8 +274,11 @@ void main() {
             expect(await answer, startsWith('HTTP/1.1 200 '));
             client.destroy();
           },
-          // Dart: node/tls.dart connect() throws UnimplementedError for minVersion/maxVersion (and TLSSocket has no getProtocol()).
-          tags: ['pending'],
+          // Dart: dart:io has a minimum TLS version but no maximum, so a
+          // client held to TLS 1.2 cannot be made.
+          skip: version == 'TLSv1.2'
+              ? 'dart:io cannot cap a client at TLS 1.2'
+              : null,
           timeout: const Timeout(Duration(milliseconds: TEST_MS)),
         );
 
@@ -294,8 +297,11 @@ void main() {
             expect(client.serverSpoke(), true);
             expect(client.dropped(), greaterThan(0));
           },
-          // Dart: node/tls.dart connect() throws UnimplementedError for minVersion/maxVersion (and TLSSocket has no getProtocol()).
-          tags: ['pending'],
+          // Dart: dart:io has a minimum TLS version but no maximum, so a
+          // client held to TLS 1.2 cannot be made.
+          skip: version == 'TLSv1.2'
+              ? 'dart:io cannot cap a client at TLS 1.2'
+              : null,
           timeout: const Timeout(Duration(milliseconds: TEST_MS)),
         );
       }
@@ -313,8 +319,6 @@ void main() {
           await expectDestroyedAtDeadline(proxy, tunnel);
           expect(client.serverSpoke(), false);
         },
-        // Dart: node/tls.dart connect() throws UnimplementedError for minVersion/maxVersion (and TLSSocket has no getProtocol()).
-        tags: ['pending'],
         timeout: const Timeout(Duration(milliseconds: TEST_MS)),
       );
     },

@@ -201,6 +201,39 @@ int? listeningFd(String address, int port) {
   return null;
 }
 
+/// Shuts down both directions of this process's connected TCP socket whose
+/// local end is [local]:[localPort] and remote end [remote]:[remotePort]
+/// (the pair names one connection). Returns whether one was found.
+///
+/// Dart: dart:io cannot abort a server TLS handshake, nor close the
+/// connection while one runs; Node's destroy() closes the handle at once.
+/// The peer then sees the connection end, and the pending handshake fails.
+bool shutdownConnection(
+  InternetAddress local,
+  int localPort,
+  InternetAddress remote,
+  int remotePort,
+) {
+  final c = _Libc();
+  final limit = c.getdtablesize();
+  for (var fd = 3; fd < limit; fd++) {
+    if (_sockOpt(c, fd, Platform.isMacOS ? 0x1008 : 3) != 1) continue;
+    try {
+      final me = _name(c, fd, false);
+      if (me.$2 != localPort || me.$1.address != local.address) continue;
+      final peer = _name(c, fd, true);
+      if (peer.$2 != remotePort || peer.$1.address != remote.address) {
+        continue;
+      }
+    } catch (_) {
+      continue;
+    }
+    c.shutdown(fd, 2);
+    return true;
+  }
+  return false;
+}
+
 /// getsockopt(SOL_SOCKET, [option]) as an int, or -1 on failure.
 int _sockOpt(_Libc c, int fd, int option) {
   final buf = calloc<Uint8>(8);

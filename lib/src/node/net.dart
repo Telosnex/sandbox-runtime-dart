@@ -315,6 +315,10 @@ class NodeSocket extends stream.Duplex {
   NodeSocket? _wrapper;
   NodeSocket? _under;
   bool _securing = false;
+
+  /// While a server handshake runs: shuts the connection under it down
+  /// (dart:io holds it and offers no way to abort the handshake).
+  void Function()? _abortHandshake;
   Completer<void>? _writesSettled;
   bool? _noDelay;
   Timer? _timeoutTimer;
@@ -479,6 +483,8 @@ class NodeSocket extends stream.Duplex {
       _subscription?.cancel();
       _subscription = null;
       final under = _under;
+      _abortHandshake?.call();
+      _abortHandshake = null;
       if (under != null && _socket == null && !_securing) {
         // A TLS socket whose handshake has not begun: the connection is
         // still the socket under it.
@@ -952,13 +958,19 @@ class NodeSocket extends stream.Duplex {
       final raw = under._socket!;
       final Socket secured;
       _securing = true;
+      if (!isFdSocket(raw)) {
+        final (local, localPort) = (raw.address, raw.port);
+        final (remote, remotePort) = (raw.remoteAddress, raw.remotePort);
+        _abortHandshake = () =>
+            shutdownConnection(local, localPort, remote, remotePort);
+      }
       try {
-        // Gap: dart:io offers no way to abort a server handshake. destroy()
-        // during it closes both sockets at once, but the connection itself
-        // stays open until the handshake ends, which a silent client can
-        // put off until it closes its side.
+        // Dart: dart:io offers no way to abort a server handshake, and
+        // destroying [raw] during one leaves the connection open; destroy()
+        // shuts it down by descriptor instead ([_abortHandshake]).
         secured = await secure(raw, buffered);
       } finally {
+        _abortHandshake = null;
         // dart:io has detached the connection from [raw]; the subscription
         // on [raw] gets nothing more.
         unawaited(under._subscription?.cancel());
