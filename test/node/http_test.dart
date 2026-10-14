@@ -109,6 +109,24 @@ void main() {
       },
     );
 
+    test('a request starting with 0x16 gets 400 at once', () async {
+      final server = http.createServer();
+      final (port, close) = await _listen(server);
+      final client = net.connect({'host': '127.0.0.1', 'port': port});
+      final got = StringBuffer();
+      client.on(
+        'data',
+        (Object? d) => got.write(latin1.decode(d as List<int>)),
+      );
+      client.on('error', (Object _) {});
+      final closed = Completer<void>();
+      client.on('close', (Object? _) => closed.complete());
+      client.write(Uint8List.fromList([0x16, 0x03, 0x01, 0x00, 0x05]));
+      await closed.future.timeout(const Duration(seconds: 5));
+      expect(got.toString(), startsWith('HTTP/1.1 400'));
+      await close();
+    });
+
     test(
       'ClientRequest auth sends Basic, maxSockets allows parallel sockets',
       () async {

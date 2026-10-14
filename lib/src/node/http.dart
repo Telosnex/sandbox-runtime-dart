@@ -535,7 +535,7 @@ class NodeHttpServer extends net.NodeServer {
     final pendingResponses = <Future<void>>[];
     while (!_closed && !socket.destroyed) {
       try {
-        final head = await _readHead(reader, maxHeaderSize);
+        final head = await _readHead(reader, maxHeaderSize, request: true);
         if (head == null) {
           await Future.wait(pendingResponses);
           if (!socket.destroyed) socket.end();
@@ -1254,11 +1254,18 @@ class _ParsedHead {
   final int? statusCode;
 }
 
-Future<List<Uint8List>?> _readHead(_ByteReader reader, int limit) async {
+Future<List<Uint8List>?> _readHead(
+  _ByteReader reader,
+  int limit, {
+  bool request = false,
+}) async {
   final lines = <Uint8List>[];
   var size = 0;
   while (true) {
-    final line = await reader.line(limit - size);
+    final line = await reader.line(
+      limit - size,
+      requestStart: request && lines.isEmpty,
+    );
     if (line == null) {
       if (lines.isEmpty) return null;
       throw NodeHttpError(
@@ -1573,7 +1580,7 @@ class _ByteReader {
     }
   }
 
-  Future<Uint8List?> line(int limit) async {
+  Future<Uint8List?> line(int limit, {bool requestStart = false}) async {
     final output = BytesBuilder(copy: false);
     var sawCr = false;
     while (true) {
@@ -1599,6 +1606,13 @@ class _ByteReader {
           'HPE_STRICT',
           'Parse Error: Bare LF in HTTP message',
         );
+      // llhttp refuses a request whose first byte cannot start a method.
+      if (requestStart && output.isEmpty && (value < 0x41 || value > 0x5a)) {
+        throw NodeHttpError(
+          'HPE_INVALID_METHOD',
+          'Parse Error: Invalid method encountered',
+        );
+      }
       output.addByte(value);
       if (output.length > limit)
         throw NodeHttpError(
