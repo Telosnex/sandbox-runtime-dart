@@ -1,9 +1,15 @@
-// STUB: pending port of src/sandbox/mitm-leaf.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/mitm-leaf.ts @ 24eb39e.
 // ignore_for_file: slash_for_doc_comments, dangling_library_doc_comments
 // ignore_for_file: unintended_html_in_doc_comment
+// ignore_for_file: constant_identifier_names
 
+import '../node/forge.dart' as forge;
+import '../node/net.dart' as net;
 import '../node/tls.dart' as tls;
 import 'mitm_ca.dart';
+import '../utils/debug.dart' show logForDebugging;
+
+final pki = forge.forge.pki;
 
 /**
  * Per-host leaf certificate minter for the in-process TLS-terminating proxy.
@@ -27,13 +33,149 @@ class LeafCert {
  * Mint (or return cached) an RSA-2048 leaf cert for `hostname`, signed by `ca`.
  * The cache lives on `ca.leafCerts`.
  */
-LeafCert mintLeafCert(MitmCA ca, String hostname) =>
-    throw UnimplementedError('pending port of src/sandbox/mitm-leaf.ts');
+LeafCert mintLeafCert(MitmCA ca, String hostname) {
+  final cached = _cacheGet(ca.leafCerts, hostname);
+  if (cached != null) return cached;
+
+  // One key for every leaf of this CA, as mitmproxy does: a new host name
+  // then costs a signature, not an RSA key generation that would hold up
+  // every other tunnel. The key never leaves this process.
+  final keys = ca.leafKeyPair ??= pki.rsa.generateKeyPair(2048);
+  final cert = pki.createCertificate();
+  cert.publicKey = keys.publicKey;
+  cert.serialNumber = randomSerial();
+  final notBefore = daysFromNow(-1);
+  cert.validity.notBefore = notBefore;
+  cert.validity.notAfter = _clampValidity(ca.cert, notBefore);
+  cert.setSubject([
+    {'name': 'commonName', 'value': hostname},
+  ]);
+  cert.setIssuer(ca.cert.subject.attributes);
+  cert.setExtensions([
+    {'name': 'basicConstraints', 'cA': false, 'critical': true},
+    {
+      'name': 'keyUsage',
+      'critical': true,
+      'digitalSignature': true,
+      'keyEncipherment': true,
+    },
+    {'name': 'extKeyUsage', 'serverAuth': true},
+    {
+      'name': 'subjectAltName',
+      'altNames': [_sanFor(hostname)],
+    },
+    {'name': 'subjectKeyIdentifier'},
+    // Python ≥3.13 enables ssl.VERIFY_X509_STRICT by default, which enforces
+    // RFC 5280's "AKI MUST be present on non-self-signed certs". curl/Go/Node
+    // don't enforce this, but requests/urllib3/httpx/google-auth all reject
+    // a leaf without AKI under 3.13. See caSubjectKeyId() in mitm-ca.ts for
+    // why we can't just pass the CA's stored SKI value through.
+    {
+      'name': 'authorityKeyIdentifier',
+      'keyIdentifier': caSubjectKeyId(ca.cert),
+    },
+    // Schannel (Windows System32 curl, git's default backend, cargo) checks
+    // revocation on the LEAF and hard-fails CRYPT_E_NO_REVOCATION_CHECK when
+    // there's no CDP to consult. Point it at the empty CRL the proxy serves
+    // on 127.0.0.1 (see MitmCA.crlDer / http-proxy.ts) so the check resolves
+    // to "not revoked" instead of "unknown". node-forge encodes CDP with the
+    // same {altNames} shape as SAN; type 6 = uniformResourceIdentifier.
+    // OpenSSL-backed clients don't check CRLs by default, so a leaf minted
+    // before the port is bound (crlUrl unset) works everywhere except
+    // Schannel-with-revocation.
+    if (ca.crlUrl != null)
+      {
+        'name': 'cRLDistributionPoints',
+        'altNames': [
+          {'type': 6, 'value': ca.crlUrl},
+        ],
+      },
+  ]);
+  signCertificateNative(cert, ca.keyPem);
+
+  final leaf = LeafCert(
+    certPem: pki.certificateToPem(cert) + ca.certPem,
+    keyPem: pki.privateKeyToPem(keys.privateKey),
+  );
+  _cacheSet(ca.leafCerts, hostname, leaf, ca.cacheLimit ?? _LEAF_CACHE_LIMIT);
+  logForDebugging('[mitm-leaf] minted RSA leaf for $hostname');
+  return leaf;
+}
 
 /**
  * Mint-or-cache a Node TLS SecureContext for `hostname`. Intended as the
  * SNICallback target in the terminating proxy. The cache lives on
  * `ca.secureContexts`.
  */
-tls.SecureContext secureContextFor(MitmCA ca, String hostname) =>
-    throw UnimplementedError('pending port of src/sandbox/mitm-leaf.ts');
+tls.SecureContext secureContextFor(MitmCA ca, String hostname) {
+  final cached = _cacheGet(ca.secureContexts, hostname);
+  if (cached != null) return cached;
+  final leaf = mintLeafCert(ca, hostname);
+  final ctx = tls.createSecureContext(cert: leaf.certPem, key: leaf.keyPem);
+  _cacheSet(
+    ca.secureContexts,
+    hostname,
+    ctx,
+    ca.cacheLimit ?? _LEAF_CACHE_LIMIT,
+  );
+  return ctx;
+}
+
+Map<String, Object> _sanFor(String hostname) {
+  // RFC 5280 GeneralName tags: 2 = dNSName, 7 = iPAddress.
+  return net.isIP(hostname) != 0
+      ? {'type': 7, 'ip': hostname}
+      : {'type': 2, 'value': hostname};
+}
+
+/**
+ * Leaf validity capped at min(CA notAfter, notBefore+99d).
+ *
+ * 99d sits below every TLS cert validity ceiling we care about: the current
+ * (2026-03) CA/B baseline of 200d, the next step-down to 100d in 2027-03, the
+ * historical 398d public cap, and the macOS ~825d ceiling that trips
+ * errSecCertificateIsNotStandardsCompliant on user-installed roots. Leaves are
+ * re-minted per session, so we don't need the headroom.
+ *
+ * Anchored at notBefore — not now — because notBefore is backdated by 1 day,
+ * so `now+Nd` would produce an (N+1)-day span and lose a day of margin.
+ */
+DateTime _clampValidity(forge.Certificate caCert, DateTime notBefore) {
+  final caEnd = caCert.validity.notAfter;
+  final max = DateTime(
+    notBefore.year,
+    notBefore.month,
+    notBefore.day + 99,
+    notBefore.hour,
+    notBefore.minute,
+    notBefore.second,
+    notBefore.millisecond,
+    notBefore.microsecond,
+  );
+  return caEnd.isBefore(max) ? DateTime.parse(caEnd.toIso8601String()) : max;
+}
+
+/**
+ * At most this many host names' leaf certs (and secure contexts) are kept
+ * per CA, the least recently used going first: each costs an RSA key, and
+ * the names come from the clients.
+ */
+const _LEAF_CACHE_LIMIT = 256;
+
+V? _cacheGet<V>(Map<String, V> cache, String key) {
+  final value = cache[key];
+  if (value != null) {
+    cache
+      ..remove(key)
+      ..[key] = value;
+  }
+  return value;
+}
+
+void _cacheSet<V>(Map<String, V> cache, String key, V value, int limit) {
+  cache[key] = value;
+  for (final oldest in cache.keys.toList()) {
+    if (cache.length <= limit) break;
+    cache.remove(oldest);
+  }
+}

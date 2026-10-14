@@ -1,8 +1,9 @@
-// STUB: pending port of src/sandbox/tls-terminate-proxy.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/tls-terminate-proxy.ts @ 24eb39e.
 // ignore_for_file: slash_for_doc_comments, dangling_library_doc_comments
 // ignore_for_file: constant_identifier_names, doc_directive_unknown
 
 import 'dart:typed_data';
+import 'dart:async';
 
 import '../node/net.dart' as net;
 import '../node/stream.dart' as stream;
@@ -37,9 +38,8 @@ const MAX_SIGV4_RESIGN_BODY_BYTES = 64 * 1024 * 1024;
  * Routing heuristic, not a security check: a non-TLS stream that happens to
  * start 16 03 0x is handed to the TLS server, which then rejects it properly.
  */
-bool looksLikeClientHello(Uint8List buf) => throw UnimplementedError(
-  'pending port of src/sandbox/tls-terminate-proxy.ts',
-);
+bool looksLikeClientHello(Uint8List buf) =>
+    buf.length >= 3 && buf[0] == 0x16 && buf[1] == 0x03 && buf[2] <= 0x03;
 
 /**
  * Wait for the client's first post-CONNECT bytes and report whether they look
@@ -54,9 +54,35 @@ bool looksLikeClientHello(Uint8List buf) => throw UnimplementedError(
 Future<({bool isTLS, Uint8List head})> peekForClientHello(
   stream.Duplex socket,
   Uint8List head,
-) => throw UnimplementedError(
-  'pending port of src/sandbox/tls-terminate-proxy.ts',
-);
+) {
+  if (head.length >= 3) {
+    return Future.value((isTLS: looksLikeClientHello(head), head: head));
+  }
+  final completer = Completer<({bool isTLS, Uint8List head})>();
+  var buf = head;
+  late void Function(Object?) onData;
+  late void Function(Object?) done;
+  done = (_) {
+    socket.removeListener('data', onData);
+    socket.removeListener('close', done);
+    if (!completer.isCompleted) {
+      completer.complete((isTLS: looksLikeClientHello(buf), head: buf));
+    }
+  };
+  onData = (value) {
+    socket.pause();
+    final chunk = value as Uint8List;
+    buf = Uint8List.fromList([...buf, ...chunk]);
+    if (buf.length >= 3) {
+      done(null);
+    } else {
+      socket.resume();
+    }
+  };
+  socket.on('data', onData);
+  socket.once('close', done);
+  return completer.future;
+}
 
 class TerminateTarget {
   /**
@@ -209,9 +235,68 @@ class ServerNameUnreadable extends ServerName {
  * is server_name.
  */
 ServerName serverNameFromClientHello(Uint8List record) =>
-    throw UnimplementedError(
-      'pending port of src/sandbox/tls-terminate-proxy.ts',
-    );
+    _serverNameFromClientHello(record);
+
+ServerName _serverNameFromClientHello(Uint8List record) {
+  const unreadable = ServerNameUnreadable();
+  if (record.length < 9 || record[0] != 0x16 || record[5] != 0x01) {
+    return unreadable;
+  }
+  final recordEnd = 5 + ((record[3] << 8) | record[4]);
+  final end = record.length < recordEnd ? record.length : recordEnd;
+  var i = 5 + 4 + 2 + 32;
+  bool skip(int lengthBytes) {
+    if (i + lengthBytes > end) return false;
+    final n = lengthBytes == 1 ? record[i] : (record[i] << 8) | record[i + 1];
+    i += lengthBytes + n;
+    return i <= end;
+  }
+
+  if (!skip(1) || !skip(2) || !skip(1)) return unreadable;
+  if (i == end && end == recordEnd) return const ServerNameAbsent();
+  if (i + 2 > end) return unreadable;
+  final declaredEnd = i + 2 + (record[i] << 8) + record[i + 1];
+  final extensionsEnd = end < declaredEnd ? end : declaredEnd;
+  i += 2;
+  ServerName? found;
+  while (i + 4 <= extensionsEnd) {
+    final type = (record[i] << 8) | record[i + 1];
+    final length = (record[i + 2] << 8) | record[i + 3];
+    i += 4;
+    if (i + length > extensionsEnd) {
+      if (extensionsEnd == declaredEnd) return unreadable;
+      break;
+    }
+    if (type == 0) {
+      if (found != null) return unreadable;
+      found = _hostNameEntry(Uint8List.sublistView(record, i, i + length));
+    }
+    i += length;
+  }
+  if (found != null) return found;
+  return i == declaredEnd ? const ServerNameAbsent() : unreadable;
+}
+
+ServerName _hostNameEntry(Uint8List body) {
+  if (body.length < 5 || ((body[0] << 8) | body[1]) != body.length - 2) {
+    return const ServerNameUnreadable();
+  }
+  final nameType = body[2];
+  final nameLength = (body[3] << 8) | body[4];
+  if (nameType != 0 || 5 + nameLength != body.length) {
+    return const ServerNameUnreadable();
+  }
+  final name = String.fromCharCodes(body.skip(5)).toLowerCase();
+  final plain =
+      name.length <= 253 &&
+      name
+          .split('.')
+          .every(
+            (label) =>
+                RegExp(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$').hasMatch(label),
+          );
+  return plain ? ServerNameName(name) : const ServerNameUnreadable();
+}
 
 /**
  * Close a socket once what is written to it has gone out and the client
@@ -222,6 +307,54 @@ ServerName serverNameFromClientHello(Uint8List record) =>
  * client has not read yet. A backstop covers a client that stops reading.
  */
 void closeAfterFlush(stream.Duplex socket, void Function(String how) done) =>
-    throw UnimplementedError(
-      'pending port of src/sandbox/tls-terminate-proxy.ts',
+    _closeAfterFlush(socket, done);
+
+void _closeAfterFlush(stream.Duplex socket, void Function(String) done) {
+  if (socket.destroyed) {
+    done('the client, earlier');
+    return;
+  }
+  var finished = socket.writableFinished;
+  var clientEnded = socket.readableEnded;
+  var settled = false;
+  late Timer backstop;
+  Timer? grace;
+  void close(String how) {
+    if (settled) return;
+    settled = true;
+    backstop.cancel();
+    grace?.cancel();
+    if (!socket.destroyed) socket.destroy();
+    done(how);
+  }
+
+  backstop = Timer(
+    const Duration(seconds: 30),
+    () => close('the 30 s backstop'),
+  );
+  void onFinish() {
+    finished = true;
+    if (clientEnded) {
+      close('the client ending after the flush');
+      return;
+    }
+    grace = Timer(
+      const Duration(seconds: 5),
+      () => close('the 5 s grace after the flush'),
     );
+  }
+
+  socket.once('end', (_) {
+    clientEnded = true;
+    if (finished) close('the client ending after the flush');
+  });
+  socket.once('close', (_) => close('the client closing'));
+  socket.on('data', (_) {});
+  socket.resume();
+  if (finished) {
+    onFinish();
+  } else {
+    socket.once('finish', (_) => onFinish());
+  }
+  socket.end();
+}
