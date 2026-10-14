@@ -2,6 +2,7 @@
 
 import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'abort.dart';
@@ -43,6 +44,30 @@ class Request {
   final String? duplex;
 
   bool get bodyUsed => body != null && body!._disturbed;
+
+  /// Body readers; as in undici, a used or locked body rejects with a
+  /// TypeError ([ArgumentError] here). A null body reads as empty.
+  Future<Uint8List> bytes() async {
+    if (body == null) return Uint8List(0);
+    if (bodyUsed || body!.locked) {
+      throw ArgumentError('Body is unusable: Body has already been read');
+    }
+    final reader = body!.getReader();
+    final out = BytesBuilder(copy: false);
+    while (true) {
+      final r = await reader.read();
+      if (r.done) break;
+      out.add(r.value!);
+    }
+    reader.releaseLock();
+    return out.takeBytes();
+  }
+
+  Future<ByteBuffer> arrayBuffer() async => (await bytes()).buffer;
+
+  Future<String> text() async => utf8.decode(await bytes());
+
+  Future<Object?> json() async => jsonDecode(await text());
 
   static String _normalizeMethod(String method) {
     if (!RegExp(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$").hasMatch(method)) {
