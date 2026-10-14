@@ -6,8 +6,7 @@ import 'dart:typed_data';
 import 'package:sandbox_runtime/src/node/buffer.dart';
 import 'package:sandbox_runtime/src/node/events.dart' show once;
 import 'package:sandbox_runtime/src/node/http.dart' show NodeHttpServer;
-import 'package:sandbox_runtime/src/node/net.dart'
-    show NodeAddress, NodeSocket, connect;
+import 'package:sandbox_runtime/src/node/net.dart' show NodeAddress, connect;
 import 'package:sandbox_runtime/src/node/stream.dart' show Duplex;
 import 'package:sandbox_runtime/src/node/url.dart' show URL;
 import 'package:sandbox_runtime/src/sandbox/http_proxy.dart';
