@@ -50,8 +50,8 @@ String? applySeccomp;
 // in apply-seccomp.c), so capability-dependent denials cannot hold as root.
 final String? rootSkip =
     isLinux && Process.runSync('id', ['-u']).stdout.toString().trim() == '0'
-        ? 'caps are regained on exec when running as root'
-        : null;
+    ? 'caps are regained on exec when running as root'
+    : null;
 
 void main() {
   group('apply-seccomp PID namespace isolation', skip: isLinux ? null : 'not Linux', () {
@@ -228,7 +228,7 @@ void main() {
     // PID 1 is not controllable from the sandboxed command
     // ------------------------------------------------------------------
 
-    test('denies ptrace(PTRACE_ATTACH) against PID 1', () {
+    test('denies ptrace(PTRACE_ATTACH) against PID 1', skip: rootSkip, () {
       final r = runApplySeccomp([
         'python3',
         '-c',
@@ -266,15 +266,19 @@ void main() {
       expect(r.stdout, contains('DENIED'));
     });
 
-    test('runs the user command with zero effective capabilities', skip: rootSkip, () {
-      // bwrap passes CAP_SYS_ADMIN (ambient) so apply-seccomp can nest a
-      // PID+mount namespace. apply-seccomp must clear the ambient set before
-      // exec so the workload cannot, e.g., umount /proc to reveal the outer
-      // namespace underneath.
-      final r = runApplySeccomp(['grep', 'CapEff', '/proc/self/status']);
-      expect(r.status, 0);
-      expect(r.stdout, matches(RegExp(r'CapEff:\s*0+$', multiLine: true)));
-    });
+    test(
+      'runs the user command with zero effective capabilities',
+      skip: rootSkip,
+      () {
+        // bwrap passes CAP_SYS_ADMIN (ambient) so apply-seccomp can nest a
+        // PID+mount namespace. apply-seccomp must clear the ambient set before
+        // exec so the workload cannot, e.g., umount /proc to reveal the outer
+        // namespace underneath.
+        final r = runApplySeccomp(['grep', 'CapEff', '/proc/self/status']);
+        expect(r.status, 0);
+        expect(r.stdout, matches(RegExp(r'CapEff:\s*0+$', multiLine: true)));
+      },
+    );
 
     test('denies umount(/proc) from the user command', skip: rootSkip, () {
       final r = runApplySeccomp([
