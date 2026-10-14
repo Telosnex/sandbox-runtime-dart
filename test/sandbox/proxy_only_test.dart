@@ -2159,9 +2159,6 @@ Future<void> main() async {
             expect(sentDuringStall, lessThan(64 << 20));
           },
           skip: emitSkip,
-          tags: [
-            'pending',
-          ], // Dart: TLS-terminated tunnel socket reads the whole body ahead (no backpressure to the client); stalled-client response read 65 KB only
           timeout: Timeout(Duration(seconds: 30)),
         );
       }
@@ -2265,9 +2262,6 @@ Future<void> main() async {
         expect(r.upstreamWroteDuringStall, lessThan(48 << 20));
       },
       skip: emitSkip,
-      tags: [
-        'pending',
-      ], // Dart: TLS-terminated tunnel socket reads the whole body ahead (no backpressure to the client); stalled-client response read 65 KB only
       timeout: Timeout(Duration(seconds: 60)),
     );
   });
