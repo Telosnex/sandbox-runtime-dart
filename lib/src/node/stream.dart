@@ -1159,6 +1159,20 @@ class Readable extends NodeStream {
     return this;
   }
 
+  /// Shim-internal (no Node counterpart): remove and return every byte
+  /// waiting in the readable buffer, emitting nothing. A TLS socket taking a
+  /// connection over uses it to start its handshake with them.
+  Uint8List takeBufferedBytes() {
+    final state = _rs;
+    final b = BytesBuilder(copy: false);
+    for (final c in state.buffer) {
+      b.add(c is String ? bufferFromString(c, state.encoding) : c as List<int>);
+    }
+    state.buffer.clear();
+    state.length = 0;
+    return b.takeBytes();
+  }
+
   // -- getters -------------------------------------------------------------
 
   /// Node `readable.readable`.
