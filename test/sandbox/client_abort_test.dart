@@ -971,116 +971,112 @@ void main() {
   // TLS-terminated path: the same abort classes must hold through the inner
   // HTTPS server (the request handler listeners, inner clientError, and the
   // teed-body wiring are otherwise unreachable by the plain-HTTP tests).
-  group(
-    'client aborts through the TLS-terminating path',
-    () {
-      // Every case runs a TLS-terminating proxy: skipped where none can run.
-      final test = testWithTls;
-      final FIXTURE_DIR = join(
-        Directory.current.path, // import.meta.dir, '..'
-        'test',
-        'fixtures',
-        'tls-terminate',
-      );
-      final CA_PEM =
-          readFileSync(join(FIXTURE_DIR, 'ca.crt'), 'utf8') as String;
-      final ca = createMitmCA(
-        caCertPath: join(FIXTURE_DIR, 'ca.crt'),
-        caKeyPath: join(FIXTURE_DIR, 'ca.key'),
-      );
+  group('client aborts through the TLS-terminating path', () {
+    // Every case runs a TLS-terminating proxy: skipped where none can run.
+    final test = testWithTls;
+    final FIXTURE_DIR = join(
+      Directory.current.path, // import.meta.dir, '..'
+      'test',
+      'fixtures',
+      'tls-terminate',
+    );
+    final CA_PEM = readFileSync(join(FIXTURE_DIR, 'ca.crt'), 'utf8') as String;
+    final ca = createMitmCA(
+      caCertPath: join(FIXTURE_DIR, 'ca.crt'),
+      caKeyPath: join(FIXTURE_DIR, 'ca.key'),
+    );
 
-      final uncaught = <Object>[];
-      void onUncaught(Object err, [Object? stack]) {
-        uncaught.add(err);
+    final uncaught = <Object>[];
+    void onUncaught(Object err, [Object? stack]) {
+      uncaught.add(err);
+    }
+
+    late http.NodeHttpServer proxy;
+    late int proxyPort;
+
+    setUpAll(() async {
+      process.on('uncaughtException', onUncaught);
+      proxy = createHttpProxyServer(
+        _HttpOptions(
+          mitmCA: SERVES_EMITTED_CONNECTIONS ? ca : null,
+          filterRequest: (request, [info]) async =>
+              const RequestDecision(action: 'allow'),
+        ),
+      );
+      await (() {
+        final r = Completer<void>();
+        proxy.listen(0, '127.0.0.1', () => r.complete());
+        return r.future;
+      })();
+      proxyPort = (proxy.address() as NodeAddress).port;
+    });
+
+    tearDownAll(() async {
+      await (() {
+        final r = Completer<void>();
+        proxy.close(() => r.complete());
+        return r.future;
+      })();
+      await disposeMitmCA(ca);
+      process.off('uncaughtException', onUncaught);
+    });
+
+    /** CONNECT through the proxy, complete the TLS handshake, run fn. */
+    Future<void> throughTunnel(
+      void Function(NodeSocket tls, void Function() done) fn,
+    ) {
+      final c = Completer<void>();
+      void resolve() {
+        if (!c.isCompleted) c.complete();
       }
 
-      late http.NodeHttpServer proxy;
-      late int proxyPort;
-
-      setUpAll(() async {
-        process.on('uncaughtException', onUncaught);
-        proxy = createHttpProxyServer(
-          _HttpOptions(
-            mitmCA: SERVES_EMITTED_CONNECTIONS ? ca : null,
-            filterRequest: (request, [info]) async =>
-                const RequestDecision(action: 'allow'),
-          ),
+      late final NodeSocket raw;
+      raw = connect(proxyPort, '127.0.0.1', () {
+        raw.write(
+          'CONNECT 127.0.0.1:443 HTTP/1.1\r\nHost: 127.0.0.1:443\r\n\r\n',
         );
-        await (() {
-          final r = Completer<void>();
-          proxy.listen(0, '127.0.0.1', () => r.complete());
-          return r.future;
-        })();
-        proxyPort = (proxy.address() as NodeAddress).port;
       });
-
-      tearDownAll(() async {
-        await (() {
-          final r = Completer<void>();
-          proxy.close(() => r.complete());
-          return r.future;
-        })();
-        await disposeMitmCA(ca);
-        process.off('uncaughtException', onUncaught);
+      raw.on('error', () {});
+      raw.once('data', () {
+        late final NodeSocket tlsSocket;
+        tlsSocket = tls.connect({
+          'socket': raw,
+          'ca': CA_PEM,
+          'servername': 'localhost',
+        }, () => fn(tlsSocket, () => resolve()));
+        tlsSocket.on('error', () => resolve());
       });
+      setTimeout(resolve, 4000);
+      return c.future;
+    }
 
-      /** CONNECT through the proxy, complete the TLS handshake, run fn. */
-      Future<void> throughTunnel(
-        void Function(NodeSocket tls, void Function() done) fn,
-      ) {
-        final c = Completer<void>();
-        void resolve() {
-          if (!c.isCompleted) c.complete();
-        }
-
-        late final NodeSocket raw;
-        raw = connect(proxyPort, '127.0.0.1', () {
-          raw.write(
-            'CONNECT 127.0.0.1:443 HTTP/1.1\r\nHost: 127.0.0.1:443\r\n\r\n',
-          );
-        });
-        raw.on('error', () {});
-        raw.once('data', () {
-          late final NodeSocket tlsSocket;
-          tlsSocket = tls.connect({
-            'socket': raw,
-            'ca': CA_PEM,
-            'servername': 'localhost',
-          }, () => fn(tlsSocket, () => resolve()));
-          tlsSocket.on('error', () => resolve());
-        });
-        setTimeout(resolve, 4000);
-        return c.future;
-      }
-
-      test('TLS client destroyed mid request body', () async {
-        uncaught.length = 0;
-        await throughTunnel((tls, done) {
-          tls.write(
-            'POST /upload HTTP/1.1\r\nHost: localhost\r\n'
-            'Content-Length: 100000\r\n\r\npartial',
-          );
-          setTimeout(() {
-            tls.destroy();
-            done();
-          }, 150);
-        });
-        await Future<void>.delayed(Duration(milliseconds: 800));
-        expect(uncaught, equals([]));
+    test('TLS client destroyed mid request body', () async {
+      uncaught.length = 0;
+      await throughTunnel((tls, done) {
+        tls.write(
+          'POST /upload HTTP/1.1\r\nHost: localhost\r\n'
+          'Content-Length: 100000\r\n\r\npartial',
+        );
+        setTimeout(() {
+          tls.destroy();
+          done();
+        }, 150);
       });
+      await Future<void>.delayed(Duration(milliseconds: 800));
+      expect(uncaught, equals([]));
+    });
 
-      test('garbage bytes after the TLS handshake do not crash', () async {
-        uncaught.length = 0;
-        await throughTunnel((tls, done) {
-          tls.write('\x00\x01 not http\r\n\r\n');
-          setTimeout(() {
-            tls.destroy();
-            done();
-          }, 150);
-        });
-        await Future<void>.delayed(Duration(milliseconds: 600));
-        expect(uncaught, equals([]));
+    test('garbage bytes after the TLS handshake do not crash', () async {
+      uncaught.length = 0;
+      await throughTunnel((tls, done) {
+        tls.write('\x00\x01 not http\r\n\r\n');
+        setTimeout(() {
+          tls.destroy();
+          done();
+        }, 150);
       });
-    },
-  );
+      await Future<void>.delayed(Duration(milliseconds: 600));
+      expect(uncaught, equals([]));
+    });
+  });
 }

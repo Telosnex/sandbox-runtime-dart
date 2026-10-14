@@ -115,9 +115,19 @@ class TLSSocket extends net.NodeSocket {
       _setPeer(secured);
       // dart:io verifies a presented client certificate against the
       // context's trusted roots during the handshake.
-      authorized = !requestCert || secured.peerCertificate != null;
+      // Verified, not merely presented: the chain must lead to `ca`.
+      final peer = secured.peerCertificate;
+      authorized =
+          !requestCert || (peer != null && _chainTrusted(peer, opts['ca']));
       if (requestCert && !authorized) {
-        authorizationError = 'UNABLE_TO_GET_ISSUER_CERT';
+        authorizationError = NodeError(
+          peer == null
+              ? 'no client certificate'
+              : 'unable to verify the first certificate',
+          code: peer == null
+              ? 'UNABLE_TO_GET_ISSUER_CERT'
+              : 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+        );
       }
       secureEstablished = true;
       return secured;
