@@ -71,12 +71,14 @@ int main(int argc, char **argv) {
         }
         closedir(d);
       } else {
-        long max = sysconf(_SC_OPEN_MAX);
-        if (max < 0 || max > 1048576) max = 1048576;
-        for (long fd = keep; fd < max; fd++)
-          if (fd != sfd) close((int)fd);
+        failed = errno ? errno : EMFILE;
       }
-      (void)failed;
+      if (failed) {
+        // Cannot enumerate descriptors: fail closed, do not exec.
+        int msg[2] = {0, failed};
+        write_all(sfd, msg, sizeof msg);
+        return 125;
+      }
     }
   }
   int ep[2];
