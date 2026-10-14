@@ -1241,7 +1241,7 @@ Future<void> main() async {
           expect(s.up.got, hasLength(0));
           expect((await viaProxy(s.port, '${s.base}/ok')).status, 200);
         },
-        skip: !TAKES_MAX_HEADER_SIZE ? 'maxHeaderSize not taken' : false,
+        skip: !TAKES_MAX_HEADER_SIZE ? 'maxHeaderSize not taken' : null,
         timeout: Timeout(Duration(milliseconds: 20000)),
       );
 
@@ -1266,7 +1266,7 @@ Future<void> main() async {
           expect(s.up.got, hasLength(0));
           expect(s.closed, []);
         },
-        skip: !TAKES_MAX_HEADER_SIZE ? 'maxHeaderSize not taken' : false,
+        skip: !TAKES_MAX_HEADER_SIZE ? 'maxHeaderSize not taken' : null,
         timeout: Timeout(Duration(milliseconds: 20000)),
         tags: [
           'pending',
@@ -1470,7 +1470,7 @@ Future<void> main() async {
       }();
       expect(status, 'HTTP/1.1 200 OK');
       expectClean(up.seen.isEmpty ? null : up.seen[0]);
-    }, skip: !SERVES_UPGRADE_FIELD ? 'Upgrade field not answered' : false);
+    }, skip: !SERVES_UPGRADE_FIELD ? 'Upgrade field not answered' : null);
 
     test(
       'TLS-terminated',
@@ -1541,7 +1541,7 @@ Future<void> main() async {
         expect(status, 'HTTP/1.1 200 OK');
         expectClean(up.seen.isEmpty ? null : up.seen[0]);
       },
-      skip: !SERVES_UPGRADE_FIELD ? 'Upgrade field not answered' : false,
+      skip: !SERVES_UPGRADE_FIELD ? 'Upgrade field not answered' : null,
       timeout: Timeout(Duration(milliseconds: 15000)),
       tags: [
         'pending',
@@ -1623,8 +1623,8 @@ Future<void> main() async {
     '/v1/%2e%2e/messages',
     '/v1//./messages',
   ];
-  final emitSkip = SERVES_EMITTED_CONNECTIONS
-      ? false
+  final Object? emitSkip = SERVES_EMITTED_CONNECTIONS
+      ? null
       : 'emitted connections unavailable';
 
   Future<String> rawExchange(
@@ -1665,7 +1665,7 @@ Future<void> main() async {
             expect(s.up.seen.last.url, p);
           }
         },
-        skip: CLIENT_SENDS_PATH_AS_GIVEN ? false : 'client rewrites paths',
+        skip: CLIENT_SENDS_PATH_AS_GIVEN ? null : 'client rewrites paths',
         timeout: Timeout(Duration(seconds: 20)),
         tags: [
           'pending',
@@ -1745,7 +1745,7 @@ Future<void> main() async {
             expect(up.seen.last.url, p);
           }
         },
-        skip: CLIENT_SENDS_PATH_AS_GIVEN ? false : 'client rewrites paths',
+        skip: CLIENT_SENDS_PATH_AS_GIVEN ? null : 'client rewrites paths',
       );
     },
   );
