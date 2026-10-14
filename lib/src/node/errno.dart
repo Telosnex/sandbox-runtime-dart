@@ -22,7 +22,21 @@ class NodeError extends NodeException {
     this.path,
     this.address,
     this.port,
+    this.dest,
+    this.errno,
   });
+
+  /// Set on two-path errors (`rename`), as Node sets `err.dest`.
+  final String? dest;
+
+  /// Node's negative errno (`-2` for ENOENT), when known.
+  final int? errno;
+
+  /// Set on child_process errors, as Node sets `err.spawnargs`.
+  List<String>? spawnargs;
+
+  /// Set on execSync failures, as Node sets `err.status`.
+  int? status;
 
   final String code;
   final String? syscall;
@@ -234,4 +248,31 @@ String _reasonForCode(String code) {
     default:
       return 'operating system error';
   }
+}
+
+/// JS `(err as Error).message`: the message of a NodeException, Exception
+/// or Error, and `String(err)` otherwise.
+String errorMessage(Object? err) {
+  if (err is NodeException) return err.message;
+  if (err is OSError) return err.message;
+  if (err is IOException || err is FormatException) {
+    final dynamic e = err;
+    try {
+      return e.message as String;
+    } catch (_) {}
+  }
+  if (err is ArgumentError) return '${err.message}';
+  if (err is StateError) return err.message;
+  if (err is UnsupportedError) return err.message ?? '';
+  try {
+    return '$err';
+  } catch (_) {
+    return 'Error';
+  }
+}
+
+/// JS `(err as NodeJS.ErrnoException).code`: the Node error code, or null.
+String? errorCode(Object? err) {
+  if (err is NodeError) return err.code;
+  return null;
 }
