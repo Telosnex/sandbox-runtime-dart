@@ -2163,7 +2163,7 @@ Future<void> main() async {
           skip: emitSkip,
           tags: [
             'pending',
-          ], // Dart: tls.connect({socket}) (shim-stream) / hangs on 64-192 MiB streaming
+          ], // Dart: TLS-terminated tunnel socket reads the whole body ahead (no backpressure to the client); stalled-client response read 65 KB only
           timeout: Timeout(Duration(seconds: 30)),
         );
       }
@@ -2189,7 +2189,7 @@ Future<void> main() async {
       skip: emitSkip,
       tags: [
         'pending',
-      ], // Dart: tls.connect({socket}) (shim-stream) / hangs on 64-192 MiB streaming
+      ], // Dart: TLS-terminated tunnel socket reads the whole body ahead (no backpressure to the client); stalled-client response read 65 KB only
     );
   });
 
@@ -2271,7 +2271,7 @@ Future<void> main() async {
       skip: emitSkip,
       tags: [
         'pending',
-      ], // Dart: tls.connect({socket}) (shim-stream) / hangs on 64-192 MiB streaming
+      ], // Dart: TLS-terminated tunnel socket reads the whole body ahead (no backpressure to the client); stalled-client response read 65 KB only
       timeout: Timeout(Duration(seconds: 60)),
     );
   });
