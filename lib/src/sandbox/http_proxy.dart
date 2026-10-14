@@ -681,8 +681,11 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
         requestedHost,
         socket,
         auth.encodedCommand,
-        (given) {
-          reason = given;
+        (Object? given) {
+          // JS String(): a class prints as its source-ish form.
+          reason = given is Type
+              ? 'function $given() { [native code] }'
+              : given?.toString();
         },
       );
       if (!allowed) {

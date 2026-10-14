@@ -205,8 +205,6 @@ void main() {
 
     test(
       'answers a refused CONNECT with the reason filter() gave as the status phrase: cleaned and cut as a violation line is, and ASCII',
-      // Dart: explain takes a String, so the `Object` case ("a caller no type binds") throws a TypeError in the filter and the proxy answers 500, not the upstream phrase.
-      tags: ['pending'],
       () async {
         final cases = <(Object?, String)>[
           ('use an https:// remote', 'use an https:// remote'),
