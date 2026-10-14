@@ -2,7 +2,6 @@
 // ignore_for_file: constant_identifier_names, dangling_library_doc_comments, slash_for_doc_comments
 
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:path/path.dart' show join;
 
@@ -217,8 +216,8 @@ MaskedFileBuildResult buildMaskedFileBinds(
       // to U+FFFD, so the sentinel would round-trip to corrupted bytes at
       // the proxy. Masking (whole-file or extract) is for text credential
       // files; reject binary.
-      final raw = fs.readFileSync(realPath) as Uint8List;
-      content = Buffer.from(raw).toString('utf8');
+      final raw = fs.readFileSync(realPath) as Buffer;
+      content = raw.toString('utf8');
       if (Buffer.byteLength(content, 'utf8') != raw.length) {
         logForDebugging(
           '[credential-mask] Skipping masked file with non-UTF-8 content '
