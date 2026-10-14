@@ -51,7 +51,7 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       // dart:io reads whatever the kernel holds at once, so one read can go
       // well past the mark; then reading stops and the rest waits.
-      expect(held, greaterThanOrEqualTo(net.NodeSocket.highWaterMark));
+      expect(held, greaterThanOrEqualTo(socket.readableHighWaterMark));
       expect(socket.readableLength, held);
       expect(held, lessThan(sent ~/ 4));
       var total = 0;
@@ -76,7 +76,7 @@ void main() {
           final all = [...first! as List<int>];
           void pull() {
             Uint8List? chunk;
-            while ((chunk = socket.read()) != null) {
+            while ((chunk = socket.read() as Uint8List?) != null) {
               all.addAll(chunk!);
             }
             if (all.length >= 6 && !pulled.isCompleted) pulled.complete(all);
@@ -104,7 +104,7 @@ void main() {
         socket.once('readable', () {
           final first = socket.read(1)!;
           socket.unshift(first);
-          received.complete(socket.read()!);
+          received.complete(socket.read()! as List<int>);
         });
       });
       final port = await _listen(server);
@@ -211,6 +211,8 @@ void main() {
       'connect, write-before-close, error, and close events are ordered',
       () async {
         final server = net.createServer();
+        // Unread bytes would keep the server side from ever ending (as in Node).
+        server.on('connection', (net.NodeSocket s) => s.resume());
         final port = await _listen(server);
         final socket = net.connect(port, '127.0.0.1');
         final order = <String>[];

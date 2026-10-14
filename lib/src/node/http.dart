@@ -28,7 +28,7 @@ class NodeHttpError implements Exception {
 typedef IncomingHttpHeaders = Map<String, Object?>;
 
 /// A Node IncomingMessage-like request or response message.
-class IncomingMessage {
+class IncomingMessage extends stream.Readable {
   IncomingMessage._({
     required this.socket,
     required this.rawHeaders,
@@ -38,11 +38,7 @@ class IncomingMessage {
     this.url,
     this.statusCode,
     this.statusMessage,
-  }) : _body = StreamController<Uint8List>(
-         sync: true,
-         onPause: socket.pause,
-         onResume: socket.resume,
-       );
+  }) : super(autoDestroy: false);
 
   final net.NodeSocket socket;
   final String? method;
@@ -54,33 +50,46 @@ class IncomingMessage {
   final Map<String, Object?> headers;
   final Map<String, Object?> trailers = {};
   final List<String> rawTrailers = [];
-  final StreamController<Uint8List> _body;
-  bool _destroyed = false;
-  bool _readableEnded = false;
+  bool aborted = false;
   int _bodyBuffered = 0;
   int? _bodyGateCap;
   Object? _bodyGateBudget;
-  Completer<void>? _bodyGateWaiter;
   void Function()? _budgetWake;
 
-  bool get destroyed => _destroyed;
-  bool get readableEnded => _readableEnded;
-  bool get complete => _readableEnded;
-  Stream<Uint8List> get body => _body.stream.transform(
-    StreamTransformer<Uint8List, Uint8List>.fromHandlers(
-      handleData: (bytes, sink) {
-        _bodyBuffered = (_bodyBuffered - bytes.length).clamp(0, 1 << 62);
-        _adjustBudget(-bytes.length);
-        _updateBodyGate();
-        sink.add(bytes);
-      },
-      handleDone: (sink) {
-        _finalizeEnd();
-        sink.close();
-      },
-    ),
-  );
-  int get readableLength => _bodyBuffered;
+  bool get complete => readableEnded;
+
+  /// Node `_read`: the consumer wants more, so let the socket flow again
+  /// (unless the buffered-body gate holds it).
+  @override
+  void readImpl(int size) {
+    _full = false;
+    _updateBodyGate();
+    _wake();
+  }
+
+  /// The parser loop waits here while the consumer is behind (the socket is
+  /// read only by that loop, so waiting is what stops the socket flowing).
+  bool _full = false;
+  Completer<void>? _fullWaiter;
+
+  void _wake() {
+    if (_full || _isBodyGateBlocked()) return;
+    final waiter = _fullWaiter;
+    _fullWaiter = null;
+    if (waiter != null && !waiter.isCompleted) waiter.complete();
+  }
+
+  /// A delivered chunk leaves the buffer: release it from the gate and budget.
+  @override
+  bool emit(String event, [Object? a, Object? b, Object? c, Object? d]) {
+    final result = super.emit(event, a, b, c, d);
+    if (event == 'data' && a is List<int>) {
+      _bodyBuffered = (_bodyBuffered - a.length).clamp(0, 1 << 62);
+      _adjustBudget(-a.length);
+      _updateBodyGate();
+    }
+    return result;
+  }
 
   void gateBufferedBody({required int cap, Object? budget}) {
     if (cap < 0) throw ArgumentError.value(cap, 'cap');
@@ -90,9 +99,10 @@ class IncomingMessage {
   }
 
   Future<void> _waitForBodyGate() async {
-    if (_bodyGateCap == null || !_isBodyGateBlocked()) return;
-    _bodyGateWaiter ??= Completer<void>();
-    await _bodyGateWaiter!.future;
+    if (destroyed || readableEnded) return;
+    if (!_full && !_isBodyGateBlocked()) return;
+    _fullWaiter ??= Completer<void>();
+    await _fullWaiter!.future;
   }
 
   bool _isBodyGateBlocked() {
@@ -108,8 +118,6 @@ class IncomingMessage {
   void _updateBodyGate() {
     if (_bodyGateCap == null) return;
     if (_isBodyGateBlocked()) {
-      socket.pause();
-      _bodyGateWaiter ??= Completer<void>();
       final budget = _bodyGateBudget;
       if (budget != null && _budgetWake == null) {
         void wake() => _updateBodyGate();
@@ -123,10 +131,7 @@ class IncomingMessage {
         (budget as dynamic).waiters.remove(wake);
         _budgetWake = null;
       }
-      socket.resume();
-      final waiter = _bodyGateWaiter;
-      _bodyGateWaiter = null;
-      if (waiter != null && !waiter.isCompleted) waiter.complete();
+      _wake();
     }
   }
 
@@ -147,166 +152,59 @@ class IncomingMessage {
     }
   }
 
-  IncomingMessage on(String event, Function listener) {
-    switch (event) {
-      case 'data':
-        body.listen((bytes) => Function.apply(listener, [bytes]));
-      case 'end':
-        if (_readableEnded) {
-          scheduleMicrotask(() => Function.apply(listener, const []));
-        } else {
-          _endListeners.add(listener);
-        }
-      case 'error':
-        _errorListeners.add(listener);
-      case 'aborted':
-        _abortedListeners.add(listener);
-      case 'close':
-        _closeListeners.add(listener);
-    }
-    return this;
-  }
-
-  final Map<String, List<Function>> _eventListeners = {};
-  List<Function> get _endListeners =>
-      _eventListeners.putIfAbsent('end', () => []);
-  List<Function> get _errorListeners =>
-      _eventListeners.putIfAbsent('error', () => []);
-  List<Function> get _abortedListeners =>
-      _eventListeners.putIfAbsent('aborted', () => []);
-  List<Function> get _closeListeners =>
-      _eventListeners.putIfAbsent('close', () => []);
-
-  IncomingMessage once(String event, Function listener) {
-    late Function wrapper;
-    wrapper = ([Object? value]) {
-      off(event, wrapper);
-      Function.apply(listener, value == null ? const [] : [value]);
-    };
-    return on(event, wrapper);
-  }
-
-  IncomingMessage off(String event, Function listener) {
-    _eventListeners[event]?.remove(listener);
-    return this;
-  }
-
-  IncomingMessage removeListener(String event, Function listener) =>
-      off(event, listener);
-
-  void _emit(String event, [Object? value]) {
-    for (final listener in List<Function>.of(
-      _eventListeners[event] ?? const [],
-    )) {
-      Function.apply(listener, value == null ? const [] : [value]);
-    }
-  }
-
   void _add(List<int> bytes) {
-    if (bytes.isNotEmpty && !_body.isClosed) {
+    if (bytes.isNotEmpty && !destroyed && !readableEnded) {
       _bodyBuffered += bytes.length;
       _adjustBudget(bytes.length);
       _updateBodyGate();
-      _body.add(Uint8List.fromList(bytes));
+      if (!push(Uint8List.fromList(bytes))) _full = true;
     }
   }
 
   void _finish() {
-    if (_body.isClosed) return;
-    if (!_body.isClosed) _body.close();
-    if (_bodyBuffered == 0) _finalizeEnd();
-  }
-
-  void _finalizeEnd() {
-    if (_readableEnded) return;
-    _readableEnded = true;
-    _emit('end');
+    if (destroyed || readableEnded) return;
+    push(null);
   }
 
   void _fail(Object error) {
-    if (!_body.isClosed) _body.addError(error);
-    _emit('error', error);
-    _emit('aborted');
-    _destroyed = true;
-    _emit('close');
+    if (destroyed) return;
+    destroy(error);
   }
 
-  T pipe<T extends stream.Writable>(T destination, {bool end = true}) {
-    if (destination is ServerResponse) {
-      body.listen(
-        (bytes) {
-          if (!destination.write(bytes)) {
-            socket.pause();
-            destination.once('drain', () {
-              if (!destroyed) socket.resume();
-            });
-          }
-        },
-        onError: destination.destroy,
-        onDone: () {
-          if (end) destination.end();
-          socket.resume();
-        },
-        cancelOnError: false,
-      );
-    } else if (destination is net.NodeSocket) {
-      body.listen(
-        (bytes) {
-          if (!destination.write(bytes)) {
-            socket.pause();
-            destination.once('drain', () {
-              if (!destroyed) socket.resume();
-            });
-          }
-        },
-        onError: destination.destroy,
-        onDone: () {
-          if (end) destination.end();
-        },
-      );
-    } else {
-      throw ArgumentError('Unsupported IncomingMessage.pipe destination');
+  /// Node `IncomingMessage._destroy`: marks an unfinished message aborted,
+  /// reports the error only when somebody listens, and drops the socket.
+  @override
+  void destroyImpl(Object? error, Function callback) {
+    if (!readableEnded) {
+      aborted = true;
+      emit('aborted');
     }
-    return destination;
-  }
-
-  IncomingMessage pause() {
-    socket.pause();
-    return this;
-  }
-
-  IncomingMessage resume() {
-    socket.resume();
-    return this;
-  }
-
-  IncomingMessage destroy([Object? error]) {
-    if (_destroyed) return this;
-    _destroyed = true;
-    if (error != null) _fail(error);
+    final waiter = _fullWaiter;
+    _fullWaiter = null;
+    if (waiter != null && !waiter.isCompleted) waiter.complete();
     socket.destroy(error);
-    return this;
+    if (error != null && listenerCount('error') == 0) {
+      callback(null);
+    } else {
+      callback(error);
+    }
   }
 }
 
 /// Node ServerResponse subset with byte-preserving Latin-1 head serialization.
-class ServerResponse extends events.EventEmitter implements stream.Writable {
+class ServerResponse extends events.EventEmitter {
   ServerResponse._(this.socket, this._request);
 
   final net.NodeSocket socket;
   final IncomingMessage _request;
   final Map<String, _HeaderValue> _headers = {};
   final Map<String, Object?> _trailers = {};
-  final Map<String, List<Function>> _listeners = {};
   final Completer<void> _done = Completer<void>();
   int statusCode = 200;
   String? statusMessage;
   bool headersSent = false;
-  @override
   bool writableEnded = false;
-  @override
   bool writableFinished = false;
-  @override
   bool destroyed = false;
   bool _chunked = false;
   bool _noBody = false;
@@ -315,41 +213,36 @@ class ServerResponse extends events.EventEmitter implements stream.Writable {
 
   Future<void> get done => _done.future;
   bool get finished => writableFinished;
-  @override
   bool get writable => !writableEnded && !destroyed;
-  @override
   int get writableLength => socket.writableLength;
 
   @override
   ServerResponse on(String event, Function listener) {
-    (_listeners[event] ??= []).add(listener);
+    super.on(event, listener);
     return this;
   }
 
   @override
   ServerResponse once(String event, Function listener) {
-    late Function wrapped;
-    wrapped = ([Object? value]) {
-      off(event, wrapped);
-      Function.apply(listener, value == null ? const [] : [value]);
-    };
-    return on(event, wrapped);
+    super.once(event, listener);
+    return this;
   }
 
   @override
   ServerResponse off(String event, Function listener) {
-    _listeners[event]?.remove(listener);
+    super.off(event, listener);
     return this;
   }
 
   @override
   ServerResponse removeListener(String event, Function listener) =>
       off(event, listener);
+
   void _emit(String event, [Object? value]) {
-    for (final listener in List<Function>.of(_listeners[event] ?? const [])) {
-      Function.apply(listener, value == null ? const [] : [value]);
-    }
+    if (listenerCount(event) != 0) emit(event, value);
   }
+
+  bool get writableNeedDrain => false;
 
   void setHeader(String name, Object? value) {
     _checkHeaderName(name);
@@ -395,7 +288,6 @@ class ServerResponse extends events.EventEmitter implements stream.Writable {
     return this;
   }
 
-  @override
   bool write(Object data, [Function? callback]) {
     if (_ended || destroyed) {
       final error = StateError('write after end');
@@ -414,7 +306,7 @@ class ServerResponse extends events.EventEmitter implements stream.Writable {
     } else if (callback != null) {
       scheduleMicrotask(() => Function.apply(callback, const []));
     }
-    return socket.writableLength < net.NodeSocket.highWaterMark;
+    return socket.writableLength < socket.writableHighWaterMark;
   }
 
   ServerResponse addTrailers(Map<String, Object?> trailers) {
@@ -426,7 +318,6 @@ class ServerResponse extends events.EventEmitter implements stream.Writable {
     return this;
   }
 
-  @override
   ServerResponse end([Object? data, Function? callback]) {
     if (_ended) return this;
     if (data != null) write(data);
@@ -475,7 +366,6 @@ class ServerResponse extends events.EventEmitter implements stream.Writable {
     return this;
   }
 
-  @override
   ServerResponse destroy([Object? error]) {
     if (destroyed) return this;
     destroyed = true;
@@ -603,11 +493,24 @@ class NodeHttpServer extends net.NodeServer {
     }
   }
 
-  void serveConnection(net.NodeSocket socket) {
-    if (_closed) {
+  /// Node `server.closeAllConnections()`: destroy every open connection.
+  void closeAllConnections() {
+    for (final socket in List<net.NodeSocket>.of(_connections)) {
       socket.destroy();
+    }
+  }
+
+  /// Protected hook for a subclass (node/https.dart): return the socket the HTTP
+  /// parser should read, e.g. [accepted] wrapped in a server-side TLS socket.
+  /// Called once per accepted connection, before any byte is parsed.
+  net.NodeSocket wrapConnection(net.NodeSocket accepted) => accepted;
+
+  void serveConnection(net.NodeSocket accepted) {
+    if (_closed) {
+      accepted.destroy();
       return;
     }
+    final socket = wrapConnection(accepted);
     _connections.add(socket);
     _idleConnections.add(socket);
     socket.allowHalfOpen = true;
@@ -639,14 +542,59 @@ class NodeHttpServer extends net.NodeServer {
         }
         _idleConnections.remove(socket);
         final parsed = _parseHead(head, request: true);
-        final request = IncomingMessage._(
-          socket: socket,
-          rawHeaders: parsed.rawHeaders,
-          headers: parsed.headers,
-          httpVersion: parsed.version,
-          method: parsed.method,
-          url: parsed.target,
-        );
+        final parser = socket.parser ??= _newServerParser(socket);
+        final versionParts = parsed.version.split('.');
+        final major = int.tryParse(versionParts.first) ?? 1;
+        final minor = versionParts.length > 1
+            ? int.tryParse(versionParts[1]) ?? 1
+            : 0;
+        final headerTokens = parsed.headers['connection']
+            ?.toString()
+            .toLowerCase()
+            .split(',')
+            .map((token) => token.trim())
+            .toSet();
+        final upgradeHeader =
+            parsed.headers.containsKey('upgrade') &&
+            (headerTokens?.contains('upgrade') ?? false);
+        final shouldKeepAlive = (major == 1 && minor >= 1)
+            ? !(headerTokens?.contains('close') ?? false)
+            : (headerTokens?.contains('keep-alive') ?? false);
+        // Node's parser flushes 31 header lines at a time through kOnHeaders,
+        // then calls kOnHeadersComplete with no headers and no url.
+        List<String>? headersArg = parsed.rawHeaders;
+        String? urlArg = parsed.target;
+        if (parsed.rawHeaders.length ~/ 2 > 31 &&
+            parser[net.HTTPParser.kOnHeaders] != null) {
+          var index = 0;
+          var urlPart = parsed.target;
+          while (parsed.rawHeaders.length ~/ 2 - index > 31) {
+            Function.apply(parser[net.HTTPParser.kOnHeaders]!, [
+              parsed.rawHeaders.sublist(2 * index, 2 * (index + 31)),
+              urlPart,
+            ]);
+            urlPart = '';
+            index += 31;
+          }
+          Function.apply(parser[net.HTTPParser.kOnHeaders]!, [
+            parsed.rawHeaders.sublist(2 * index),
+            urlPart,
+          ]);
+          headersArg = null;
+          urlArg = null;
+        }
+        Function.apply(parser[net.HTTPParser.kOnHeadersComplete]!, [
+          major,
+          minor,
+          headersArg,
+          parsed.method,
+          urlArg,
+          null,
+          null,
+          upgradeHeader || parsed.method == 'CONNECT',
+          shouldKeepAlive,
+        ]);
+        final request = parser.incoming! as IncomingMessage;
         final response = ServerResponse._(socket, request);
         pendingResponses.add(response.done);
         final connectionTokens = request.headers['connection']
@@ -695,7 +643,7 @@ class NodeHttpServer extends net.NodeServer {
             if (!socket.destroyed && !_closed) _idleConnections.add(socket);
           });
         }
-        await _readMessageBody(reader, request, parsed.headers);
+        await _readMessageBody(reader, request, parsed.headers, parser: parser);
         if (request.headers['connection']?.toString().toLowerCase() ==
             'close') {
           await response.done;
@@ -730,6 +678,66 @@ class NodeHttpServer extends net.NodeServer {
   }
 }
 
+/// Node's server installs these on every parser; they build the
+/// IncomingMessage and feed it. Wrappers (keepFlushedHeaderBatches) replace
+/// slots and call these.
+net.HTTPParser _newServerParser(net.NodeSocket socket) {
+  final parser = net.HTTPParser();
+  parser[net.HTTPParser.kOnHeaders] = (List<String> headers, String url) {
+    parser.headersSoFar.addAll(headers);
+    parser.urlSoFar += url;
+  };
+  parser[net.HTTPParser.kOnHeadersComplete] =
+      (
+        int versionMajor,
+        int versionMinor,
+        List<String>? headers,
+        String? method,
+        String? url,
+        int? statusCode,
+        String? statusMessage,
+        bool upgrade,
+        bool shouldKeepAlive,
+      ) {
+        final List<String> rawHeaders;
+        if (headers == null) {
+          rawHeaders = parser.headersSoFar;
+          parser.headersSoFar = [];
+        } else {
+          rawHeaders = headers;
+        }
+        if (url == null) {
+          url = parser.urlSoFar;
+          parser.urlSoFar = '';
+        }
+        final values = <String, Object?>{};
+        for (var i = 0; i + 1 < rawHeaders.length; i += 2) {
+          _mergeParsedHeader(values, rawHeaders[i], rawHeaders[i + 1]);
+        }
+        parser.incoming = IncomingMessage._(
+          socket: socket,
+          rawHeaders: rawHeaders,
+          headers: values,
+          httpVersion: '$versionMajor.$versionMinor',
+          method: method,
+          url: url,
+          statusCode: statusCode,
+          statusMessage: statusMessage,
+        );
+        return 0;
+      };
+  parser[net.HTTPParser.kOnBody] = (Uint8List chunk) {
+    (parser.incoming! as IncomingMessage)._add(chunk);
+  };
+  parser[net.HTTPParser.kOnMessageComplete] = () {
+    // Whatever came through kOnHeaders since the head was the trailers.
+    parser.headersSoFar = [];
+    parser.urlSoFar = '';
+    (parser.incoming! as IncomingMessage)._finish();
+  };
+  return parser;
+}
+
 NodeHttpServer createServer([Object? options, Function? requestListener]) {
   var maxHeaderSize = defaultMaxHeaderSize;
   Function? listener = requestListener;
@@ -761,9 +769,10 @@ class Agent {
   final SecurityContext? securityContext;
   final Object? ca;
   final Function? checkServerIdentity;
-  final Map<String, net.NodeSocket> _idle = {};
+  final Map<String, List<net.NodeSocket>> _idle = {};
   final Set<net.NodeSocket> _active = {};
-  final Map<String, Completer<void>> _locks = {};
+  final Map<String, int> _inUse = {};
+  final Map<String, List<Completer<void>>> _waiting = {};
   bool _destroyed = false;
 
   Future<_AgentLease> _acquire(
@@ -771,29 +780,50 @@ class Agent {
     Future<net.NodeSocket> Function() create,
   ) async {
     if (_destroyed) throw StateError('Agent is destroyed');
-    while (_locks.containsKey(key)) {
-      await _locks[key]!.future;
+    while ((_inUse[key] ?? 0) >= (maxSockets < 1 ? 1 : maxSockets)) {
+      final waiter = Completer<void>();
+      (_waiting[key] ??= []).add(waiter);
+      await waiter.future;
       if (_destroyed) throw StateError('Agent is destroyed');
     }
-    final lock = Completer<void>();
-    _locks[key] = lock;
+    _inUse[key] = (_inUse[key] ?? 0) + 1;
+    void freeSlot() {
+      final n = (_inUse[key] ?? 1) - 1;
+      if (n <= 0) {
+        _inUse.remove(key);
+      } else {
+        _inUse[key] = n;
+      }
+      final waiters = _waiting[key];
+      if (waiters != null && waiters.isNotEmpty) {
+        waiters.removeAt(0).complete();
+      }
+    }
+
     try {
-      final idle = _idle.remove(key);
-      final reused = idle != null && !idle.destroyed && !idle.closed;
+      final pool = _idle[key];
+      net.NodeSocket? idle;
+      while (pool != null && pool.isNotEmpty) {
+        final candidate = pool.removeLast();
+        if (!candidate.destroyed && !candidate.closed) {
+          idle = candidate;
+          break;
+        }
+      }
+      final reused = idle != null;
       final socket = reused ? idle : await create();
       _active.add(socket);
       return _AgentLease(socket, reused, () {
         _active.remove(socket);
-        if (!_destroyed && keepAlive && !socket.destroyed && !socket.closed)
-          _idle[key] = socket;
-        else
+        if (!_destroyed && keepAlive && !socket.destroyed && !socket.closed) {
+          (_idle[key] ??= []).add(socket);
+        } else {
           socket.destroy();
-        _locks.remove(key);
-        lock.complete();
+        }
+        freeSlot();
       });
     } catch (_) {
-      _locks.remove(key);
-      lock.complete();
+      freeSlot();
       rethrow;
     }
   }
@@ -803,12 +833,39 @@ class Agent {
     for (final socket in _active) {
       socket.destroy();
     }
-    for (final socket in _idle.values) {
-      socket.destroy();
+    for (final sockets in _idle.values) {
+      for (final socket in sockets) {
+        socket.destroy();
+      }
     }
     _active.clear();
     _idle.clear();
   }
+}
+
+Object? _headerOption(Object? headers, String name) {
+  if (headers is! Map) return null;
+  for (final entry in headers.entries) {
+    if ('${entry.key}'.toLowerCase() == name) return entry.value;
+  }
+  return null;
+}
+
+/// Node's SNI choice: `servername` if given ('' disables), else the Host
+/// header's name, else the host. An IP literal gets none.
+String? _servernameFor(Object? option, Object? hostHeader, String host) {
+  if (option is String) return option.isEmpty ? null : option;
+  var name = hostHeader?.toString() ?? host;
+  if (name.startsWith('[')) {
+    final end = name.indexOf(']');
+    if (end > 0) name = name.substring(1, end);
+  } else {
+    final colon = name.indexOf(':');
+    if (colon >= 0 && name.indexOf(':', colon + 1) < 0) {
+      name = name.substring(0, colon);
+    }
+  }
+  return net.isIP(name) == 0 ? name : null;
 }
 
 class _AgentLease {
@@ -821,7 +878,7 @@ class _AgentLease {
 final Agent globalAgent = Agent(keepAlive: true, maxSockets: 1);
 
 /// Node ClientRequest subset. Writes are queued until a socket is assigned.
-class ClientRequest extends events.EventEmitter implements stream.Writable {
+class ClientRequest extends events.EventEmitter {
   ClientRequest(Object options, [Function? responseListener])
     : _options = _requestOptions(options) {
     if (responseListener != null) on('response', responseListener);
@@ -835,13 +892,11 @@ class ClientRequest extends events.EventEmitter implements stream.Writable {
   }
 
   final Map<String, Object?> _options;
-  final Map<String, List<Function>> _listeners = {};
   late final Agent _agent;
   final List<Uint8List> _body = [];
   net.NodeSocket? socket;
   _AgentLease? _lease;
   bool reusedSocket = false;
-  @override
   bool destroyed = false;
   bool _ended = false;
   bool _started = false;
@@ -854,25 +909,19 @@ class ClientRequest extends events.EventEmitter implements stream.Writable {
 
   @override
   ClientRequest on(String event, Function listener) {
-    (_listeners[event] ??= []).add(listener);
-    if (event == 'response' && response != null)
-      scheduleMicrotask(() => Function.apply(listener, [response]));
+    super.on(event, listener);
     return this;
   }
 
   @override
   ClientRequest once(String event, Function listener) {
-    late Function wrapper;
-    wrapper = ([Object? value]) {
-      off(event, wrapper);
-      Function.apply(listener, value == null ? const [] : [value]);
-    };
-    return on(event, wrapper);
+    super.once(event, listener);
+    return this;
   }
 
   @override
   ClientRequest off(String event, Function listener) {
-    _listeners[event]?.remove(listener);
+    super.off(event, listener);
     return this;
   }
 
@@ -880,23 +929,12 @@ class ClientRequest extends events.EventEmitter implements stream.Writable {
   ClientRequest removeListener(String event, Function listener) =>
       off(event, listener);
 
-  @override
-  bool get writable => !_ended && !destroyed;
-  @override
-  bool get writableEnded => _ended;
-  @override
-  bool get writableFinished => _requestFinished;
-  @override
-  int get writableLength =>
-      socket?.writableLength ?? _body.fold<int>(0, (n, b) => n + b.length);
-
   void _emit(String event, [Object? value]) {
-    for (final listener in List<Function>.of(_listeners[event] ?? const [])) {
-      Function.apply(listener, value == null ? const [] : [value]);
-    }
+    if (listenerCount(event) != 0) emit(event, value);
   }
 
-  @override
+  bool get writableNeedDrain => false;
+
   bool write(Object data, [Function? callback]) {
     if (_ended || destroyed) {
       final error = StateError('write after end');
@@ -916,10 +954,9 @@ class ClientRequest extends events.EventEmitter implements stream.Writable {
     _start();
     return (socket?.writableLength ??
             _body.fold<int>(0, (n, b) => n + b.length)) <
-        net.NodeSocket.highWaterMark;
+        (socket?.writableHighWaterMark ?? 16384);
   }
 
-  @override
   ClientRequest end([Object? data, Function? callback]) {
     if (data != null) write(data);
     _ended = true;
@@ -949,8 +986,15 @@ class ClientRequest extends events.EventEmitter implements stream.Writable {
       final secure =
           _options['secure'] == true || protocol == 'https:' || _agent.secure;
       final socketPath = _agent.socketPath ?? _options['socketPath'] as String?;
+      final hostHeader = _headerOption(_options['headers'], 'host');
+      final servername = _servernameFor(
+        _options['servername'],
+        hostHeader,
+        host,
+      );
+      final ca = _options['ca'] ?? _agent.ca;
       final key = socketPath == null
-          ? '$protocol//$host:$port'
+          ? '$protocol//$host:$port${secure ? ':sni=${servername ?? '\u0000'}:ca=${ca == null ? '' : identityHashCode(ca)}' : ''}'
           : 'unix:$socketPath';
       final lease = await _agent._acquire(key, () async {
         if (_options['socket'] is net.NodeSocket)
@@ -968,7 +1012,8 @@ class ClientRequest extends events.EventEmitter implements stream.Writable {
             'host': host,
             'port': port,
             'lookup': lookup,
-            'ca': _options['ca'] ?? _agent.ca,
+            'servername': servername ?? '',
+            'ca': ca,
             'secureContext': _agent.securityContext,
             'rejectUnauthorized': _options['rejectUnauthorized'],
             'checkServerIdentity':
@@ -998,6 +1043,11 @@ class ClientRequest extends events.EventEmitter implements stream.Writable {
         });
       if (!headers.keys.any((key) => key.toLowerCase() == 'host'))
         headers['Host'] = host;
+      final auth = _options['auth'];
+      if (auth is String &&
+          !headers.keys.any((key) => key.toLowerCase() == 'authorization')) {
+        headers['Authorization'] = 'Basic ${base64.encode(utf8.encode(auth))}';
+      }
       if (!headers.keys.any((key) => key.toLowerCase() == 'connection'))
         headers['Connection'] = _agent.keepAlive ? 'keep-alive' : 'close';
       final contentLength = headers.entries.any(
@@ -1144,7 +1194,6 @@ class ClientRequest extends events.EventEmitter implements stream.Writable {
   }
 
   void abort() => destroy(const SocketException('aborted'));
-  @override
   ClientRequest destroy([Object? error]) {
     if (destroyed) return this;
     destroyed = true;
@@ -1350,11 +1399,38 @@ void _mergeHeader(Map<String, Object?> headers, String name, String value) {
   }
 }
 
+void _bodyChunk(net.HTTPParser? parser, IncomingMessage message, Uint8List b) {
+  if (parser == null) {
+    message._add(b);
+  } else {
+    Function.apply(parser[net.HTTPParser.kOnBody]!, [b]);
+  }
+}
+
+void _messageComplete(
+  net.HTTPParser? parser,
+  IncomingMessage message, [
+  List<String> trailers = const [],
+]) {
+  if (parser == null) {
+    message._finish();
+    return;
+  }
+  if (trailers.isNotEmpty && parser[net.HTTPParser.kOnHeaders] != null) {
+    Function.apply(parser[net.HTTPParser.kOnHeaders]!, [
+      trailers,
+      message.url ?? '',
+    ]);
+  }
+  Function.apply(parser[net.HTTPParser.kOnMessageComplete]!, const []);
+}
+
 Future<void> _readMessageBody(
   _ByteReader reader,
   IncomingMessage message,
   Map<String, Object?> headers, {
   bool response = false,
+  net.HTTPParser? parser,
 }) async {
   if (headers['transfer-encoding']?.toString().toLowerCase().contains(
         'chunked',
@@ -1391,7 +1467,7 @@ Future<void> _readMessageBody(
             ..add(value);
           _mergeHeader(message.trailers, name.toLowerCase(), value);
         }
-        message._finish();
+        _messageComplete(parser, message, message.rawTrailers);
         return;
       }
       var remainingChunk = length;
@@ -1401,7 +1477,7 @@ Future<void> _readMessageBody(
         if (bytes == null)
           throw const SocketException('Unexpected EOF in chunk data');
         remainingChunk -= bytes.length;
-        message._add(bytes);
+        _bodyChunk(parser, message, Uint8List.fromList(bytes));
         await message._waitForBodyGate();
       }
       final crlf = await reader.exact(2);
@@ -1430,20 +1506,20 @@ Future<void> _readMessageBody(
         );
       }
       remaining -= bytes.length;
-      message._add(bytes);
+      _bodyChunk(parser, message, Uint8List.fromList(bytes));
       await message._waitForBodyGate();
     }
-    message._finish();
+    _messageComplete(parser, message);
     return;
   }
   if (response) {
     while (true) {
       final bytes = await reader.some(8192);
       if (bytes == null) break;
-      message._add(bytes);
+      _bodyChunk(parser, message, Uint8List.fromList(bytes));
     }
   }
-  message._finish();
+  _messageComplete(parser, message);
 }
 
 class _ByteReader {
@@ -1452,7 +1528,7 @@ class _ByteReader {
 
   Future<int?> _byte() async {
     while (true) {
-      final data = socket.read(1);
+      final data = socket.read(1) as Uint8List?;
       if (data != null && data.isNotEmpty) return data[0];
       if (socket.readableEnded || socket.destroyed) return null;
       final wake = Completer<void>();
@@ -1520,7 +1596,7 @@ class _ByteReader {
     if (first == null) return null;
     final bytes = BytesBuilder(copy: false)..addByte(first);
     while (bytes.length < max) {
-      final next = socket.read(max - bytes.length);
+      final next = socket.read(max - bytes.length) as Uint8List?;
       if (next == null || next.isEmpty) break;
       bytes.add(next);
     }

@@ -50,6 +50,7 @@ class NodeError extends NodeException {
 const Map<int, String> _linuxErrnoCodes = {
   1: 'EPERM',
   2: 'ENOENT',
+  3: 'ESRCH',
   4: 'EINTR',
   5: 'EIO',
   6: 'ENXIO',
