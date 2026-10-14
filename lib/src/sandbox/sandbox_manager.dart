@@ -28,7 +28,7 @@ import 'sandbox_schemas.dart'
 import 'sandbox_violation_store.dart' show SandboxViolationStore;
 
 /** Exported for testing. */
-void registerCommandText(String command, [WrapWithSandboxOptions? options]) =>
+void registerCommandText(String command, WrapWithSandboxOptions? options) =>
     throw UnimplementedError('pending port of src/sandbox/sandbox-manager.ts');
 
 /**
