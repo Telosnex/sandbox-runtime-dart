@@ -37,10 +37,15 @@ class Readable extends EventEmitter {
   Readable unpipe([Writable? destination]) =>
       throw UnimplementedError('node:stream: pending (wave 1)');
 
+  T pipe<T extends Writable>(T destination, {bool end = true}) =>
+      throw UnimplementedError('node:stream: pending (wave 1)');
+
   Readable pause() => throw UnimplementedError('node:stream: pending (wave 1)');
 
   Readable resume() =>
       throw UnimplementedError('node:stream: pending (wave 1)');
+
+  bool isPaused() => throw UnimplementedError('node:stream: pending (wave 1)');
 
   Object? read([int? size]) =>
       throw UnimplementedError('node:stream: pending (wave 1)');
@@ -61,13 +66,6 @@ class Readable extends EventEmitter {
   bool get readableEnded =>
       throw UnimplementedError('node:stream: pending (wave 1)');
   int get readableLength =>
-      throw UnimplementedError('node:stream: pending (wave 1)');
-}
-
-/// Node `Readable.pipe`: an extension so `net.NodeSocket.pipe(NodeSocket)` can
-/// keep its narrower NodeSocket-specific signature when it extends Duplex.
-extension ReadablePipe on Readable {
-  T pipe<T extends Writable>(T destination, {bool end = true}) =>
       throw UnimplementedError('node:stream: pending (wave 1)');
 }
 

@@ -1,5 +1,6 @@
 // Web Fetch API globals used by the port. No upstream counterpart.
 
+import 'dart:async';
 import 'dart:collection';
 import 'dart:typed_data';
 
@@ -25,12 +26,14 @@ class Request {
 }
 
 /// Fetch API HTTP headers. Names are case-insensitive and appended values are
-/// combined with `, `, as the Fetch standard specifies.
+/// combined with `, `, as the Fetch standard specifies, except Set-Cookie.
 class Headers extends IterableBase<MapEntry<String, String>> {
   Headers([Object? init]) {
     if (init == null) return;
     if (init is Headers) {
-      _values.addAll(init._values);
+      for (final entry in init._values.entries) {
+        _values[entry.key] = List<String>.of(entry.value);
+      }
     } else if (init is Map) {
       for (final entry in init.entries) {
         if (entry.value is Iterable && entry.value is! String) {
@@ -57,30 +60,39 @@ class Headers extends IterableBase<MapEntry<String, String>> {
     }
   }
 
-  final Map<String, String> _values = {};
+  final Map<String, List<String>> _values = {};
 
   void append(String name, String value) {
     final key = _normalizeName(name);
     final normalizedValue = _normalizeValue(value);
-    final previous = _values[key];
-    _values[key] = previous == null
-        ? normalizedValue
-        : '$previous, $normalizedValue';
+    if (key == 'set-cookie') {
+      (_values[key] ??= []).add(normalizedValue);
+    } else if (_values[key] == null) {
+      _values[key] = [normalizedValue];
+    } else {
+      _values[key]![0] = '${_values[key]![0]}, $normalizedValue';
+    }
   }
 
-  String? get(String name) => _values[_normalizeName(name)];
+  String? get(String name) => _values[_normalizeName(name)]?.first;
 
   void set(String name, String value) {
-    _values[_normalizeName(name)] = _normalizeValue(value);
+    _values[_normalizeName(name)] = [_normalizeValue(value)];
   }
 
   bool has(String name) => _values.containsKey(_normalizeName(name));
 
   void delete(String name) => _values.remove(_normalizeName(name));
 
+  /// Return each Set-Cookie value separately, without comma joining.
+  List<String> getSetCookie() =>
+      List<String>.of(_values['set-cookie'] ?? const []);
+
   Iterable<MapEntry<String, String>> entries() sync* {
     for (final name in _values.keys.toList()..sort()) {
-      yield MapEntry(name, _values[name]!);
+      for (final value in _values[name]!) {
+        yield MapEntry(name, value);
+      }
     }
   }
 
@@ -134,9 +146,20 @@ class Headers extends IterableBase<MapEntry<String, String>> {
   }
 }
 
+/// A Web ReadableStream source callback with its typed controller argument.
+typedef ReadableStreamStart<T> =
+    FutureOr<void> Function(ReadableStreamDefaultController<T> controller);
+typedef ReadableStreamPull<T> =
+    FutureOr<void> Function(ReadableStreamDefaultController<T> controller);
+typedef ReadableStreamCancel = FutureOr<void> Function(Object? reason);
+
 /// A Web ReadableStream declaration; its stream operations are pending.
 class ReadableStream<T> {
-  ReadableStream({Function? start, Function? pull, Function? cancel});
+  ReadableStream({
+    ReadableStreamStart<T>? start,
+    ReadableStreamPull<T>? pull,
+    ReadableStreamCancel? cancel,
+  });
 
   ReadableStreamDefaultReader<T> getReader() =>
       throw UnimplementedError('web ReadableStream: pending (wave 1)');
@@ -148,6 +171,21 @@ class ReadableStream<T> {
       throw UnimplementedError('web ReadableStream: pending (wave 1)');
 
   bool get locked =>
+      throw UnimplementedError('web ReadableStream: pending (wave 1)');
+}
+
+/// The controller supplied to a Web ReadableStream source callback.
+class ReadableStreamDefaultController<T> {
+  void enqueue(T chunk) =>
+      throw UnimplementedError('web ReadableStream: pending (wave 1)');
+
+  void close() =>
+      throw UnimplementedError('web ReadableStream: pending (wave 1)');
+
+  void error(Object error) =>
+      throw UnimplementedError('web ReadableStream: pending (wave 1)');
+
+  num? get desiredSize =>
       throw UnimplementedError('web ReadableStream: pending (wave 1)');
 }
 

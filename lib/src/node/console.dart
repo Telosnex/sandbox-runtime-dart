@@ -4,17 +4,25 @@ import 'dart:io';
 
 const Object _omitted = Object();
 
+typedef ConsoleMethod =
+    void Function([
+      Object? first,
+      Object? second,
+      Object? third,
+      Object? fourth,
+    ]);
+
 /// Node's `console.warn`. A variable so a test can replace it, as upstream's
 /// tests do with `spyOn(console, 'warn')`.
-dynamic warn = _warn;
+ConsoleMethod warn = _warn;
 
 /// Node's `console.error`. A variable so a test can replace it, as upstream's
 /// tests do with `spyOn(console, 'error')`.
-dynamic error = _error;
+ConsoleMethod error = _error;
 
 /// Node's `console.log`. A variable so a test can replace it, as upstream's
 /// tests do with `spyOn(console, 'log')`.
-dynamic log = _log;
+ConsoleMethod log = _log;
 
 void _warn([
   Object? first = _omitted,
