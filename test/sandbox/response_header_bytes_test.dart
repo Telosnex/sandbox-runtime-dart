@@ -1,11 +1,9 @@
 // Ported from sandbox-runtime test/sandbox/response-header-bytes.test.ts @ 24eb39e.
+// Dart: every case hangs in impl runs (fetchRaw never sees the 2-byte 'ok' tail or close); cause not isolated, may be the harness or the proxy.
 @Tags(['pending'])
 library;
-
 // ignore_for_file: slash_for_doc_comments, constant_identifier_names, non_constant_identifier_names, curly_braces_in_flow_control_structures
 import 'dart:async';
-import 'dart:convert' as convert;
-import 'dart:typed_data';
 
 import 'package:sandbox_runtime/src/node/buffer.dart';
 import 'package:sandbox_runtime/src/node/http.dart' as http;
@@ -234,10 +232,8 @@ void main() {
   for (final path in [...PATHS])
     group('bytes past ASCII through the proxy ($path)', () {
       final skip = path.endsWith('TLS') && !SERVES_EMITTED_CONNECTIONS;
-      void run(String name, Future<void> Function() body) =>
-          test(name, body, skip: skip);
 
-      run(
+      test(
         'a response header value reaches the client as the upstream sent it',
         () async {
           // Twice on one connection: every head on it, not only the first.
@@ -253,9 +249,10 @@ void main() {
             equals([...once, ...once]),
           );
         },
+        skip: skip,
       );
 
-      run("a refusal's reason is UTF-8, after a relayed response too", () async {
+      test("a refusal's reason is UTF-8, after a relayed response too", () async {
         final raw = await fetchRaw(path, ['/one', '/refuse']);
         final refusal = raw.sublist(
           raw.indexOfBytes(Buffer.from('HTTP/1.1 403')),
@@ -269,7 +266,7 @@ void main() {
           ).toString('latin1'),
           '${body.length.toRadixString(16)}\r\n${body.toString('latin1')}\r\n0\r\n\r\n',
         );
-      });
+      }, skip: skip);
     });
 
   test("a refusal's reason is handed to the response as bytes", () {
