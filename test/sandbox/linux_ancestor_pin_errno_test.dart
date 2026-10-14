@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import 'package:sandbox_runtime/src/sandbox/credential_mask_files.dart'
+    show MaskedFileBind;
 import 'package:sandbox_runtime/src/node/errno.dart' show NodeError;
 import 'package:sandbox_runtime/src/node/fs.dart' as fs;
 import 'package:sandbox_runtime/src/sandbox/linux_sandbox_utils.dart';
@@ -52,7 +54,7 @@ void main() {
     Future<String> wrap(
       String proj, {
       FsReadRestrictionConfig? readConfig,
-      List<({String realPath, String fakePath})>? maskedFileBinds,
+      List<MaskedFileBind>? maskedFileBinds,
     }) async {
       return wrapCommandWithSandboxLinux(
         LinuxSandboxParams(
@@ -146,7 +148,10 @@ void main() {
         final wrapped = await wrap(
           proj,
           maskedFileBinds: [
-            (realPath: join(missing, 'token'), fakePath: fakePath),
+            MaskedFileBind(
+              realPath: join(missing, 'token'),
+              fakePath: fakePath,
+            ),
           ],
         );
 

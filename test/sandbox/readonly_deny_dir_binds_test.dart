@@ -3,6 +3,8 @@
 import 'dart:io' show Directory, Link;
 
 import 'package:path/path.dart' show join;
+import 'package:sandbox_runtime/src/sandbox/credential_mask_files.dart'
+    show MaskedFileBind;
 import 'package:sandbox_runtime/src/node/child_process.dart'
     show SpawnSyncResult, spawnSync;
 import 'package:sandbox_runtime/src/node/fs.dart'
@@ -835,7 +837,9 @@ void main() {
                   allowOnly: [AREA, PEM],
                   denyWithinAllow: [SECRETS],
                 ),
-                maskedFileBinds: [(realPath: PEM, fakePath: FAKE)],
+                maskedFileBinds: [
+                  MaskedFileBind(realPath: PEM, fakePath: FAKE),
+                ],
                 maskedFileStoreDir: STORE,
               ),
             );
@@ -1002,7 +1006,9 @@ void main() {
               allowOnly: allow,
               denyWithinAllow: denyWrite,
             ),
-            maskedFileBinds: [(realPath: VIA_LINK, fakePath: FAKE)],
+            maskedFileBinds: [
+              MaskedFileBind(realPath: VIA_LINK, fakePath: FAKE),
+            ],
             maskedFileStoreDir: STORE,
           ),
         );
@@ -1683,7 +1689,9 @@ void main() {
                 allowOnly: [SUB],
                 denyWithinAllow: denyWithinAllow,
               ),
-              maskedFileBinds: [(realPath: NETRC, fakePath: FAKE)],
+              maskedFileBinds: [
+                MaskedFileBind(realPath: NETRC, fakePath: FAKE),
+              ],
               maskedFileStoreDir: STORE,
             ),
           );
