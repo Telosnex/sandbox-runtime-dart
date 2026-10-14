@@ -3,10 +3,11 @@
 // can be lost. This helper (the one the VM may reap) forks the real command
 // and reports its exact wait status over a pipe.
 //
-// usage: srt-spawn STATUSFD FILE ARGV0 [ARG...]
+// usage: srt-spawn STATUSFD:KEEP FILE ARGV0 [ARG...]
 // pipe protocol: 8 bytes {int32 pid, int32 errno} once the command has been
 // exec'd (errno != 0: exec failed, pid 0), then 4 bytes {int32 wait status}.
 #include <errno.h>
+#include <sys/syscall.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -39,6 +40,19 @@ int main(int argc, char **argv) {
   if (argc < 4) return 125;
   int sfd = atoi(argv[1]);
   fcntl(sfd, F_SETFD, FD_CLOEXEC);
+  // Only descriptors 0..KEEP-1 (the stdio slots) reach the command, as in
+  // Node: close whatever else the parent leaked, except the status pipe.
+  {
+    char *colon = strchr(argv[1], ':');
+    int keep = colon ? atoi(colon + 1) : 3;
+    if (keep < 3) keep = 3;
+    if (sfd >= keep) {
+      syscall(SYS_close_range, (unsigned)keep, (unsigned)sfd - 1, 0);
+      syscall(SYS_close_range, (unsigned)sfd + 1, ~0U, 0);
+    } else {
+      syscall(SYS_close_range, (unsigned)keep, ~0U, 0);
+    }
+  }
   int ep[2];
   if (pipe2(ep, O_CLOEXEC) != 0) return 125;
 
