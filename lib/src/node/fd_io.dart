@@ -25,6 +25,10 @@ typedef _AcceptN = Int32 Function(Int32, Pointer<Uint8>, Pointer<Uint32>);
 typedef _AcceptD = int Function(int, Pointer<Uint8>, Pointer<Uint32>);
 typedef _SockNameN = Int32 Function(Int32, Pointer<Uint8>, Pointer<Uint32>);
 typedef _SockNameD = int Function(int, Pointer<Uint8>, Pointer<Uint32>);
+typedef _SockOptN =
+    Int32 Function(Int32, Int32, Int32, Pointer<Uint8>, Pointer<Uint32>);
+typedef _SockOptD =
+    int Function(int, int, int, Pointer<Uint8>, Pointer<Uint32>);
 typedef _ShutdownN = Int32 Function(Int32, Int32);
 typedef _ShutdownD = int Function(int, int);
 typedef _FcntlN = Int32 Function(Int32, Int32, VarArgs<(Int32,)>);
@@ -50,6 +54,10 @@ class _Libc {
     accept = lib.lookupFunction<_AcceptN, _AcceptD>('accept');
     getsockname = lib.lookupFunction<_SockNameN, _SockNameD>('getsockname');
     getpeername = lib.lookupFunction<_SockNameN, _SockNameD>('getpeername');
+    getsockopt = lib.lookupFunction<_SockOptN, _SockOptD>('getsockopt');
+    getdtablesize = lib.lookupFunction<Int32 Function(), int Function()>(
+      'getdtablesize',
+    );
     shutdown = lib.lookupFunction<_ShutdownN, _ShutdownD>('shutdown');
     fcntl = lib.lookupFunction<_FcntlN, _FcntlD>('fcntl');
     if (Platform.isLinux) {
@@ -65,6 +73,8 @@ class _Libc {
   late final _PollD poll;
   late final _AcceptD accept;
   late final _SockNameD getsockname, getpeername;
+  late final _SockOptD getsockopt;
+  late final int Function() getdtablesize;
   late final _ShutdownD shutdown;
   late final _FcntlD fcntl;
   _Accept4D? accept4;
@@ -168,7 +178,11 @@ Socket fdSocket(int fd, {bool readable = true, bool writable = true}) =>
 /// dart:io does not expose it; this finds it by asking each descriptor.
 int? listeningFd(String address, int port) {
   final c = _Libc();
-  for (var fd = 3; fd < 4096; fd++) {
+  final limit = c.getdtablesize();
+  for (var fd = 3; fd < limit; fd++) {
+    if (_sockOpt(c, fd, Platform.isMacOS ? 2 : 30) != 1) continue; // ACCEPTCONN
+    if (_sockOpt(c, fd, Platform.isMacOS ? 0x1008 : 3) != 1)
+      continue; // SOCK_STREAM
     try {
       final name = _name(c, fd, false);
       if (name.$2 != port || name.$1.address != address) continue;
@@ -182,6 +196,21 @@ int? listeningFd(String address, int port) {
     }
   }
   return null;
+}
+
+/// getsockopt(SOL_SOCKET, [option]) as an int, or -1 on failure.
+int _sockOpt(_Libc c, int fd, int option) {
+  final buf = calloc<Uint8>(8);
+  final len = calloc<Uint32>()..value = 4;
+  try {
+    final r = c.getsockopt(fd, Platform.isMacOS ? 0xffff : 1, option, buf, len);
+    return r != 0
+        ? -1
+        : ByteData.sublistView(buf.asTypedList(8)).getInt32(0, Endian.host);
+  } finally {
+    calloc.free(buf);
+    calloc.free(len);
+  }
 }
 
 /// A listening stream descriptor as a dart:io [ServerSocket].

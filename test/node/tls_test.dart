@@ -253,6 +253,7 @@ Future<({String certPem, int port, Future<void> Function() close})> _server(
 }
 
 void main() {
+  chainTests();
   group('node:tls compatibility', () {
     test('uses the pinned Mozilla root bundle', () {
       expect(node_tls.rootCertificates, isNotEmpty);
@@ -698,6 +699,203 @@ void main() {
         raw.destroy();
         await closeProxy();
       });
+    });
+  });
+}
+
+class _FakeCert implements X509Certificate {
+  _FakeCert(this.der, this.startValidity, this.endValidity);
+  @override
+  final Uint8List der;
+  @override
+  final DateTime startValidity, endValidity;
+  @override
+  String get pem => '';
+  @override
+  String get subject => '';
+  @override
+  String get issuer => '';
+  @override
+  Uint8List get sha1 => Uint8List(0);
+}
+
+Uint8List _pemDer(String pem) =>
+    base64.decode(pem.replaceAll(RegExp(r'-----[A-Z ]+-----|\s'), ''));
+
+/// Runs openssl in [dir]; returns the PEM of file [name].
+String _ossl(Directory dir, List<String> args, String name) {
+  final r = Process.runSync('openssl', args, workingDirectory: dir.path);
+  if (r.exitCode != 0)
+    throw StateError('openssl ${args.join(' ')}: ${r.stderr}');
+  return File('${dir.path}/$name').readAsStringSync();
+}
+
+void chainTests() {
+  group('_chainTrusted', () {
+    final dir = Directory.systemTemp.createTempSync('chain');
+    tearDownAll(() => dir.deleteSync(recursive: true));
+    // Build with `openssl x509 -req` so extensions are explicit.
+    String caPem(
+      String tag,
+      String ext, {
+      int days = 30,
+      bool expired = false,
+    }) {
+      File('${dir.path}/$tag.ext').writeAsStringSync(ext);
+      _ossl(dir, ['genrsa', '-out', '$tag-ca.key', '2048'], '$tag-ca.key');
+      _ossl(dir, [
+        'req',
+        '-new',
+        '-key',
+        '$tag-ca.key',
+        '-subj',
+        '/CN=ca',
+        '-out',
+        '$tag-ca.csr',
+      ], '$tag-ca.csr');
+      return _ossl(dir, [
+        'x509',
+        '-req',
+        '-in',
+        '$tag-ca.csr',
+        '-signkey',
+        '$tag-ca.key',
+        ...(expired
+            ? [
+                '-not_before',
+                '20200101000000Z',
+                '-not_after',
+                '20200201000000Z',
+              ]
+            : ['-days', '$days']),
+        '-sha256',
+        '-extfile',
+        '$tag.ext',
+        '-out',
+        '$tag-ca.pem',
+      ], '$tag-ca.pem');
+    }
+
+    String leafPem(String tag, String ext, {String alg = '-sha256'}) {
+      File('${dir.path}/$tag.lext').writeAsStringSync(ext);
+      _ossl(dir, ['genrsa', '-out', '$tag-l.key', '2048'], '$tag-l.key');
+      _ossl(dir, [
+        'req',
+        '-new',
+        '-key',
+        '$tag-l.key',
+        '-subj',
+        '/CN=leaf',
+        '-out',
+        '$tag-l.csr',
+      ], '$tag-l.csr');
+      return _ossl(dir, [
+        'x509',
+        '-req',
+        '-in',
+        '$tag-l.csr',
+        '-CA',
+        '$tag-ca.pem',
+        '-CAkey',
+        '$tag-ca.key',
+        '-CAcreateserial',
+        '-days',
+        '10',
+        alg,
+        '-extfile',
+        '$tag.lext',
+        '-out',
+        '$tag-l.pem',
+      ], '$tag-l.pem');
+    }
+
+    X509Certificate fake(String pem) => _FakeCert(
+      _pemDer(pem),
+      DateTime.now().subtract(const Duration(days: 1)),
+      DateTime.now().add(const Duration(days: 5)),
+    );
+
+    test('good chain accepted', () {
+      final ca = caPem(
+        'good',
+        'basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign\n',
+      );
+      final leaf = leafPem('good', 'basicConstraints=CA:FALSE\n');
+      expect(node_tls.chainTrustedForTest(fake(leaf), ca), isTrue);
+    });
+    test('CA:FALSE anchor rejected', () {
+      final ca = caPem('noca', 'basicConstraints=CA:FALSE\n');
+      final leaf = leafPem('noca', 'basicConstraints=CA:FALSE\n');
+      expect(node_tls.chainTrustedForTest(fake(leaf), ca), isFalse);
+    });
+    test('anchor without keyCertSign rejected', () {
+      final ca = caPem(
+        'nks',
+        'basicConstraints=CA:TRUE\nkeyUsage=digitalSignature\n',
+      );
+      final leaf = leafPem('nks', '');
+      expect(node_tls.chainTrustedForTest(fake(leaf), ca), isFalse);
+    });
+    test('expired anchor rejected', () {
+      final ca = caPem(
+        'exp',
+        'basicConstraints=CA:TRUE\n',
+        days: 30,
+        expired: true,
+      );
+      final leaf = leafPem('exp', '');
+      expect(node_tls.chainTrustedForTest(fake(leaf), ca), isFalse);
+    });
+    test('unknown critical leaf extension rejected', () {
+      final ca = caPem('crit', 'basicConstraints=CA:TRUE\n');
+      final leaf = leafPem('crit', '1.2.3.4=critical,ASN1:UTF8String:x\n');
+      expect(node_tls.chainTrustedForTest(fake(leaf), ca), isFalse);
+    });
+    test('leaf signed by the wrong key rejected', () {
+      final ca = caPem('wrong', 'basicConstraints=CA:TRUE\n');
+      final other = caPem('wrong2', 'basicConstraints=CA:TRUE\n');
+      final leaf = leafPem('wrong2', '');
+      expect(node_tls.chainTrustedForTest(fake(leaf), ca), isFalse);
+      expect(node_tls.chainTrustedForTest(fake(leaf), other), isTrue);
+    });
+    test('mismatched outer/inner signature OIDs rejected', () {
+      final ca = caPem('oid', 'basicConstraints=CA:TRUE\n');
+      final der = Uint8List.fromList(_pemDer(leafPem('oid', '')));
+      // sha256WithRSA (…01 0b) → sha384WithRSA (…01 0c) in the outer copy only.
+      final needle = [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b];
+      var last = -1;
+      for (var i = 0; i < der.length - 9; i++) {
+        if (List.generate(9, (j) => der[i + j]).toString() == needle.toString())
+          last = i;
+      }
+      der[last + 8] = 0x0c;
+      expect(
+        node_tls.chainTrustedForTest(
+          _FakeCert(
+            der,
+            DateTime.now().subtract(const Duration(days: 1)),
+            DateTime.now().add(const Duration(days: 5)),
+          ),
+          ca,
+        ),
+        isFalse,
+      );
+    });
+    test('PeerCertificate fingerprint and subjectaltname', () {
+      final ca = caPem('san', 'basicConstraints=CA:TRUE\n');
+      final leaf = leafPem('san', 'subjectAltName=DNS:a.test,IP:127.0.0.1\n');
+      final pc = node_tls.PeerCertificate(fake(leaf));
+      expect(pc.subjectaltname, 'DNS:a.test, IP Address:127.0.0.1');
+      final r = Process.runSync('openssl', [
+        'x509',
+        '-in',
+        'san-l.pem',
+        '-noout',
+        '-fingerprint',
+        '-sha256',
+      ], workingDirectory: dir.path);
+      expect(r.stdout.toString().trim().split('=').last, pc.fingerprint256);
+      expect(ca, isNotEmpty);
     });
   });
 }

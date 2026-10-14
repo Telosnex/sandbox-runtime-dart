@@ -1123,8 +1123,10 @@ class NodeServer extends EventEmitter {
   int? get handleFd {
     if (!_listening) return null;
     if (_listenFd != null) return _listenFd;
-    if (_unixPath != null) return listeningFd(_unixPath!, 0);
-    return listeningFd(_tcp!.address.address, _tcp!.port);
+    // dart:io hides the descriptor: find it once, then keep it.
+    return _listenFd = _unixPath != null
+        ? listeningFd(_unixPath!, 0)
+        : listeningFd(_tcp!.address.address, _tcp!.port);
   }
 
   /// Node `server.getConnections(callback)`.
