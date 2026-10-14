@@ -1686,6 +1686,16 @@ class _ByteReader {
     if (count == 0) return Uint8List(0);
     final builder = BytesBuilder(copy: false);
     while (builder.length < count) {
+      // Take what is buffered in one read, not a byte at a time.
+      final avail = socket.readableLength;
+      if (avail > 0) {
+        final want = count - builder.length;
+        final data = socket.read(avail < want ? avail : want) as Uint8List?;
+        if (data != null && data.isNotEmpty) {
+          builder.add(data);
+          continue;
+        }
+      }
       final value = await _byte();
       if (value == null) return null;
       builder.addByte(value);

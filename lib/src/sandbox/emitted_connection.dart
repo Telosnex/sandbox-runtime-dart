@@ -189,27 +189,11 @@ void gateSocketOnBufferedBody(
   int cap, [
   ByteBudget? budget,
 ]) {
-  final socket = req.socket;
-  var counted = 0;
-  void check() {
-    final held = req.readableLength;
-    if (budget != null) adjustByteBudget(budget, held - counted);
-    counted = held;
-    if (held > cap ||
-        (budget != null && budget.used > budget.limit && held > 0)) {
-      socket.pause();
-    }
-  }
-
-  void release() {
-    socket.off('data', check);
-    if (budget != null) adjustByteBudget(budget, -counted);
-    counted = 0;
-  }
-
-  socket.on('data', check);
-  req.once('end', release);
-  req.once('close', release);
+  // Dart: the shim's parser reads the socket itself and holds it back while
+  // the body is over the cap or the budget (IncomingMessage.gateBufferedBody).
+  // A 'data' listener on the socket would start it flowing, and the flow
+  // loop would drain the buffer the parser reads from.
+  req.gateBufferedBody(cap: cap, budget: budget);
 }
 
 final Expando<bool> _endsGracefully = Expando<bool>();
