@@ -1,4 +1,4 @@
-// STUB: pending port of src/sandbox/body-substitution.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/body-substitution.ts @ 24eb39e.
 // ignore_for_file: dangling_library_doc_comments, slash_for_doc_comments
 
 /**
@@ -18,11 +18,13 @@
  * value reaches the API and auth fails — never a leaked secret.
  */
 
+import 'dart:math' as math;
 import 'dart:typed_data';
 
+import '../node/buffer.dart' show Buffer;
 import '../node/http.dart' as http;
 import '../node/stream.dart' as stream;
-import '../utils/debug.dart';
+import '../utils/debug.dart' show logForDebugging;
 import 'request_filter.dart' show BODYLESS_METHODS;
 
 /** One sentinel→real replacement, as raw bytes. */
@@ -44,8 +46,9 @@ typedef GetBodySubstitutions =
     List<SentinelBufferPair>? Function(String destHost);
 
 /** True when substitution cannot change the body length. */
-bool allLengthMatched(List<SentinelBufferPair> pairs) =>
-    pairs.every((p) => p.sentinel.length == p.realValue.length);
+bool allLengthMatched(List<SentinelBufferPair> pairs) {
+  return pairs.every((p) => p.sentinel.length == p.realValue.length);
+}
 
 /**
  * Build the substitution Transform for one forwarded request, or undefined
@@ -65,6 +68,9 @@ stream.Transform? prepareBodySubstitution(
   String destHost,
 ) {
   if (getBodySubstitutions == null) return null;
+  // A bodyless-method request can still carry a declared body (GET-with-body
+  // APIs are legal HTTP and forwarded today) — skip only when there is
+  // provably nothing to scan.
   final declaresBody =
       req.headers['content-length'] != null ||
       req.headers['transfer-encoding'] != null;
@@ -74,13 +80,22 @@ stream.Transform? prepareBodySubstitution(
   final pairs = getBodySubstitutions(destHost);
   if (pairs == null || pairs.isEmpty) return null;
   if (req.headers['content-encoding'] != null) {
+    // Fail-safe direction: an encoded body cannot be scanned for sentinel
+    // bytes, so it passes through unchanged — a sentinel in it reaches the
+    // upstream as the useless fake and auth fails, but the real secret
+    // cannot leak. Warn so the resulting 401 is diagnosable.
     logForDebugging(
-      '[body-substitution] $destHost: request body has Content-Encoding "${req.headers['content-encoding']}"; masked-credential substitution skipped — a sentinel in this body reaches the upstream as the fake value',
+      '[body-substitution] $destHost: request body has Content-Encoding '
+      '"${req.headers['content-encoding']}"; masked-credential '
+      'substitution skipped — a sentinel in this body reaches the '
+      'upstream as the fake value',
       level: 'warn',
     );
     return null;
   }
-  if (!allLengthMatched(pairs)) fwdHeaders.remove('content-length');
+  if (!allLengthMatched(pairs)) {
+    fwdHeaders.remove('content-length');
+  }
   return createBodySubstitutionTransform(pairs);
 }
 
@@ -100,63 +115,68 @@ stream.Transform createBodySubstitutionTransform(
 ) {
   final maxLen = pairs
       .map((p) => p.sentinel.length)
-      .reduce((a, b) => a > b ? a : b);
-  Uint8List carry = Uint8List(0);
+      .fold<num>(double.negativeInfinity, math.max);
+  Uint8List? carry;
   return stream.Transform(
-    transform: (Object chunk, Object? encoding, Function callback) {
-      final bytes = chunk is String
-          ? Uint8List.fromList(chunk.codeUnits)
-          : Uint8List.fromList(chunk as List<int>);
-      final work = Uint8List(carry.length + bytes.length)
-        ..setRange(0, carry.length, carry)
-        ..setRange(carry.length, carry.length + bytes.length, bytes);
-      final result = _substitute(work, pairs, maxLen);
-      carry = result.$2;
-      Function.apply(callback, [null, result.$1]);
+    transform: (Object chunk, String? encoding, Function callback) {
+      final buf = Buffer.isBuffer(chunk)
+          ? chunk as Uint8List
+          : Buffer.from(chunk, encoding ?? 'utf8').toUint8List();
+      final work = (carry?.length ?? 0) > 0
+          ? Buffer.concat([carry!, buf])
+          : buf;
+      final (:out, :tail) = _substitute(work, pairs, maxLen);
+      carry = tail;
+      callback(null, out);
     },
     flush: (Function callback) {
-      Function.apply(callback, [null, carry.isEmpty ? null : carry]);
+      // The hold-back cannot contain a complete sentinel — the scan loop
+      // only stops when no full match remains — so it flushes verbatim.
+      callback(null, (carry?.length ?? 0) > 0 ? carry : null);
     },
   );
 }
 
-(Uint8List, Uint8List) _substitute(
+({Uint8List out, Uint8List tail}) _substitute(
   Uint8List work,
   List<SentinelBufferPair> pairs,
-  int maxLen,
+  num maxLen,
 ) {
-  final out = BytesBuilder(copy: false);
+  final parts = <Uint8List>[];
   var pos = 0;
-  while (true) {
-    var matchIndex = -1;
+  for (;;) {
+    // Earliest match across all pairs (typically 1–3 sentinels per host).
+    // Matching is earliest-position-then-registration-order, not
+    // longest-match — sound because no sentinel is a substring of another
+    // (registerWithSentinel's caller contract).
+    var matchIdx = -1;
     SentinelBufferPair? matchPair;
-    for (final pair in pairs) {
-      final index = _indexOf(work, pair.sentinel, pos);
-      if (index >= 0 && (matchIndex < 0 || index < matchIndex)) {
-        matchIndex = index;
-        matchPair = pair;
+    for (final p in pairs) {
+      final i = Buffer.indexOf(work, p.sentinel, pos);
+      if (i != -1 && (matchIdx == -1 || i < matchIdx)) {
+        matchIdx = i;
+        matchPair = p;
       }
     }
     if (matchPair == null) break;
-    out.add(work.sublist(pos, matchIndex));
-    out.add(matchPair.realValue);
-    pos = matchIndex + matchPair.sentinel.length;
+    parts.addAll([
+      Uint8List.sublistView(work, pos, matchIdx),
+      matchPair.realValue,
+    ]);
+    pos = matchIdx + matchPair.sentinel.length;
   }
-  final tailStart = (work.length - (maxLen - 1)).clamp(pos, work.length);
-  out.add(work.sublist(pos, tailStart));
-  return (out.takeBytes(), Uint8List.fromList(work.sublist(tailStart)));
-}
-
-int _indexOf(List<int> haystack, List<int> needle, int start) {
-  for (var i = start; i + needle.length <= haystack.length; i++) {
-    var found = true;
-    for (var j = 0; j < needle.length; j++) {
-      if (haystack[i + j] != needle[j]) {
-        found = false;
-        break;
-      }
-    }
-    if (found) return i;
-  }
-  return -1;
+  // Hold back the longest suffix that could still be a proper prefix of a
+  // sentinel completed by the next chunk. A partial match of a sentinel of
+  // length L occupies at most L-1 trailing bytes, so maxLen-1 always covers
+  // it. Copied (not a subarray view) so the carry never aliases a buffer
+  // the stream may reuse.
+  // Dart: sublistView does not clamp an end past the length as subarray does.
+  final tailStart = math
+      .min(math.max(pos, work.length - (maxLen - 1)), work.length)
+      .toInt();
+  parts.add(Uint8List.sublistView(work, pos, tailStart));
+  return (
+    out: Buffer.concat(parts),
+    tail: Buffer.from(Uint8List.sublistView(work, tailStart)).toUint8List(),
+  );
 }
