@@ -22,7 +22,21 @@ class NodeError extends NodeException {
     this.path,
     this.address,
     this.port,
+    this.dest,
+    this.errno,
   });
+
+  /// Set on two-path errors (`rename`), as Node sets `err.dest`.
+  final String? dest;
+
+  /// Node's negative errno (`-2` for ENOENT), when known.
+  final int? errno;
+
+  /// Set on child_process errors, as Node sets `err.spawnargs`.
+  List<String>? spawnargs;
+
+  /// Set on execSync failures, as Node sets `err.status`.
+  int? status;
 
   final String code;
   final String? syscall;

@@ -59,7 +59,25 @@ class Buffer with ListMixin<int> {
     return Buffer._(Uint8List.fromList(utf8.encode(text)));
   }
 
-  static int byteLength(String value) => utf8.encode(value).length;
+  static int byteLength(Object value, [String encoding = 'utf8']) {
+    if (value is List<int>) return value.length;
+    return Buffer.from(value, encoding).length;
+  }
+
+  static bool isBuffer(Object? value) => value is Buffer;
+
+  static Buffer concat(List<List<int>> list) {
+    final out = BytesBuilder(copy: false);
+    for (final b in list) {
+      out.add(b);
+    }
+    return Buffer._(out.takeBytes());
+  }
+
+  /// Node's `buf.indexOf(value, byteOffset)` for a byte-sequence or string
+  /// [value] (named so it does not clash with `List.indexOf`).
+  int indexOfBytes(Object value, [int byteOffset = 0]) =>
+      bufferIndexOf(_bytes, value, byteOffset);
 
   @override
   String toString([String encoding = 'utf8']) {
@@ -74,4 +92,26 @@ class Buffer with ListMixin<int> {
   }
 
   Uint8List toUint8List() => Uint8List.fromList(_bytes);
+}
+
+/// Node's `buf.indexOf(value, byteOffset)` over any byte list: [value] is a
+/// byte list, a utf8 string, or a single byte. A negative offset counts from
+/// the end; an empty value matches at the clamped offset.
+int bufferIndexOf(List<int> haystack, Object value, [int byteOffset = 0]) {
+  final List<int> needle = value is int
+      ? [value & 0xff]
+      : value is List<int>
+      ? value
+      : utf8.encode(value.toString());
+  var start = byteOffset < 0 ? haystack.length + byteOffset : byteOffset;
+  if (start < 0) start = 0;
+  if (needle.isEmpty) return start > haystack.length ? haystack.length : start;
+  outer:
+  for (var i = start; i + needle.length <= haystack.length; i++) {
+    for (var j = 0; j < needle.length; j++) {
+      if (haystack[i + j] != needle[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
 }
