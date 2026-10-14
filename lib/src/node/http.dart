@@ -973,9 +973,34 @@ class ClientRequest extends events.EventEmitter {
     if (callback != null)
       scheduleMicrotask(() => Function.apply(callback, const []));
     _start();
-    return (socket?.writableLength ??
-            _body.fold<int>(0, (n, b) => n + b.length)) <
+    final ok =
+        (socket?.writableLength ?? _body.fold<int>(0, (n, b) => n + b.length)) <
         (socket?.writableHighWaterMark ?? 16384);
+    if (!ok) {
+      _needDrain = true;
+      if (_headersSent) _armDrain();
+    }
+    return ok;
+  }
+
+  bool _needDrain = false;
+
+  /// Node's OutgoingMessage 'drain': emitted once the socket has flushed
+  /// what a write that returned false queued.
+  void _armDrain() {
+    final sock = socket;
+    if (sock == null) return;
+    void drained() {
+      if (!_needDrain) return;
+      _needDrain = false;
+      _emit('drain');
+    }
+
+    if (sock.writableLength == 0) {
+      scheduleMicrotask(drained);
+    } else {
+      sock.once('drain', drained);
+    }
   }
 
   ClientRequest end([Object? data, Function? callback]) {
@@ -1149,6 +1174,7 @@ class ClientRequest extends events.EventEmitter {
         }
       }
       _body.clear();
+      if (_needDrain) _armDrain();
       if (_ended) _finishRequest();
       await _parseResponse(socket!, method, lease, key);
     } on Object catch (error) {

@@ -1907,9 +1907,6 @@ Future<void> main() async {
         expect(post.status, 200);
         expect(s.up.got.map((g) => g.body.length), [0, 100000]);
       },
-      tags: [
-        'pending',
-      ] /* Dart: hangs, GET after delayed verdict returns no reply */,
     );
   });
 
