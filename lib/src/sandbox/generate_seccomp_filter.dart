@@ -254,7 +254,10 @@ List<String> _getLocalSeccompPaths(String filename) {
  *   and exists, it will be used. If not provided, falls back to searching local paths and
  *   then global npm install (for native builds where vendor directory isn't bundled).
  */
-String? getApplySeccompBinaryPath([String? seccompBinaryPath]) {
+String? Function([String? seccompBinaryPath]) getApplySeccompBinaryPath =
+    _getApplySeccompBinaryPath;
+
+String? _getApplySeccompBinaryPath([String? seccompBinaryPath]) {
   final cacheKey = seccompBinaryPath ?? '';
   if (_applySeccompPathCache.containsKey(cacheKey)) {
     return _applySeccompPathCache[cacheKey];
