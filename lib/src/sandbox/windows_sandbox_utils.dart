@@ -1,16 +1,77 @@
-// STUB: pending port of src/sandbox/windows-sandbox-utils.ts @ 24eb39e.
-// Windows is not supported by this port (PORT_WORKLOG.md); this stays a stub.
+// Ported from sandbox-runtime src/sandbox/windows-sandbox-utils.ts @ 24eb39e.
+// Windows is not supported by this port (PORT_WORKLOG.md); pure helpers are ported, the rest throws.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments
+// ignore_for_file: unused_element, unused_element_parameter, prefer_is_empty, curly_braces_in_flow_control_structures
+// ignore_for_file: prefer_interpolation_to_compose_strings
 
-import 'sandbox_config.dart' show FilesystemPathEntry, SrtWinConfig;
+import 'dart:convert';
+
+import 'package:path/path.dart' as path;
+
+import '../node/fs.dart' as fs;
+import '../node/errno.dart' show NodeError, errorMessage;
+import '../node/process.dart' as process;
+import '../utils/debug.dart';
+import 'sandbox_config.dart'
+    show FilesystemPathEntry, FilesystemPathSpelling, SrtWinConfig;
 import 'linux_sandbox_utils.dart' show SandboxDependencyCheck;
+import 'path_entries.dart' show literalReadings;
+import 'sandbox_utils.dart'
+    show
+        generateProxyEnvVars,
+        encodeSandboxedCommand,
+        attributionKeyFor,
+        buildGitConfigEnv,
+        normalizePathForSandbox,
+        containsGlobCharsWin,
+        expandGlobPattern,
+        isAtOrUnder,
+        isUncPath,
+        markedLiteralPath,
+        normalizeCaseForComparison,
+        stripExtendedPathPrefix;
 
+// Kept on this module's surface for out-of-tree importers; the
+// implementations live in sandbox-utils.ts.
 export 'sandbox_utils.dart'
     show
         containsGlobCharsWin,
         stripExtendedPathPrefix,
         buildGitConfigEnv,
         isUncPath;
+
+/**
+ * Windows sandbox backend.
+ *
+ * Network isolation is enforced by `srt-win.exe` — a Rust helper that
+ * provisions a dedicated `srt-sandbox` local user account, installs a
+ * machine-wide WFP filter set keyed on that account's SID, and
+ * provides an `exec` subcommand that spawns the target via a two-hop
+ * launch (broker → `CreateProcessWithLogonW(runner)` → runner →
+ * restricted-token child) under `srt-sandbox`. The sandboxed child
+ * reaches the host only via the JS mux proxy, which the caller
+ * passes in via `--env`.
+ *
+ * The separate-user account structurally closes the surrogate-spawn
+ * class (schtasks, `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`, BITS,
+ * RunAs="Interactive User" COM): the child's token carries a
+ * different user SID, so it cannot reach real-user processes, tasks
+ * register under `srt-sandbox`, and the user-SID WFP filter fences
+ * `srt-sandbox` egress regardless of how the child was spawned.
+ *
+ * This module is a thin wrapper around the `srt-win` CLI; all status
+ * comes from live enumeration. There is no marker file.
+ *
+ * Filesystem rules (`denyRead`/`denyWrite`/`allowRead`/`allowWrite`)
+ * are enforced via additive explicit ACEs for `<sb-SID>` — see
+ * {@link grantWindowsAcl} / {@link stampWindowsAcl}.
+ */
+
+// ────────────────────────────────────────────────────────────────────
+
+// ────────────────────────────────────────────────────────────────────
+// Errors
+// ────────────────────────────────────────────────────────────────────
 
 /**
  * Stable machine-readable code carried on every
@@ -79,6 +140,10 @@ class WindowsSandboxError extends Error {
 
   WindowsSandboxError(this.code, this.message, [this.subcommand]);
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Types
+// ────────────────────────────────────────────────────────────────────
 
 const (int, int) DEFAULT_WINDOWS_PROXY_PORT_RANGE = (60080, 60089);
 
@@ -205,6 +270,8 @@ class WindowsBinShell {
   const WindowsBinShell({required this.exe, required this.args});
 }
 
+const List<String> _PWSH_FLAGS = ['-NoProfile', '-Command'];
+
 /**
  * Sole normalizer from the cross-platform `binShell?: string |
  * WindowsBinShell` surface ({@link SandboxManager.wrapWithSandboxArgv})
@@ -221,8 +288,84 @@ class WindowsBinShell {
  * Uses `path.win32` explicitly so the function (and its unit test)
  * is platform-independent.
  */
-WindowsBinShell parseWindowsBinShell([Object? raw]) =>
-    throw UnsupportedError('Windows is not supported by this port');
+WindowsBinShell parseWindowsBinShell([Object? raw]) {
+  final systemRoot = process.env['SystemRoot'] ?? 'C:\\Windows';
+  final cmdDefault = WindowsBinShell(
+    exe: path.windows.join(systemRoot, 'System32', 'cmd.exe'),
+    args: ['/d', '/s', '/c'],
+  );
+  if (raw == null) return cmdDefault;
+  if (raw is WindowsBinShell) {
+    if (!path.windows.isAbsolute(raw.exe)) {
+      throw WindowsSandboxError(
+        'bin_shell_invalid',
+        'binShell.exe must be an absolute path ' +
+            '(got ${jsonEncode(raw.exe)})',
+      );
+    }
+    // Dart: `args` is a typed List, so upstream's Array.isArray check cannot fail.
+    return raw;
+  }
+  raw as String;
+  final rawBase = path.windows.basename(raw);
+  final base = rawBase.toLowerCase();
+  final isAbs = path.windows.isAbsolute(raw);
+  // A relative path with a directory component (`bin\bash.exe`) is
+  // neither a token nor a resolved install — never silently degrade.
+  if (!isAbs && raw != rawBase) {
+    throw WindowsSandboxError(
+      'bin_shell_invalid',
+      'binShell string must be a bare token or an absolute path ' +
+          '(got ${jsonEncode(raw)})',
+    );
+  }
+  switch (base) {
+    case 'bash':
+    case 'bash.exe':
+    case 'sh':
+    case 'sh.exe':
+      // Bare 'bash' is ambiguous (WSL vs Git Bash) — require the
+      // resolved install path.
+      if (!isAbs) {
+        throw WindowsSandboxError(
+          'bin_shell_invalid',
+          'binShell bash path must be absolute ' +
+              '(got ${jsonEncode(raw)}); pass the resolved Git Bash ' +
+              'install path',
+        );
+      }
+      return WindowsBinShell(exe: raw, args: ['-c']);
+    case 'pwsh':
+    case 'pwsh.exe':
+      return WindowsBinShell(exe: isAbs ? raw : 'pwsh.exe', args: _PWSH_FLAGS);
+    case 'powershell':
+    case 'powershell.exe':
+      return WindowsBinShell(
+        exe: isAbs
+            ? raw
+            : path.windows.join(
+                systemRoot,
+                'System32',
+                'WindowsPowerShell',
+                'v1.0',
+                'powershell.exe',
+              ),
+        args: _PWSH_FLAGS,
+      );
+    case 'cmd':
+    case 'cmd.exe':
+      return isAbs
+          ? WindowsBinShell(exe: raw, args: cmdDefault.args)
+          : cmdDefault;
+    default:
+      throw WindowsSandboxError(
+        'bin_shell_invalid',
+        'unrecognised binShell ${jsonEncode(raw)}: expected ' +
+            "'cmd' | 'powershell' | 'pwsh' or an absolute path to " +
+            'bash.exe/sh.exe/pwsh.exe/powershell.exe',
+      );
+  }
+}
 
 class WindowsSandboxParams {
   final String command;
@@ -364,6 +507,10 @@ class WindowsSandboxParams {
   });
 }
 
+// ────────────────────────────────────────────────────────────────────
+// Binary resolution
+// ────────────────────────────────────────────────────────────────────
+
 /**
  * The srt-win binary packaged with this module
  * (`vendor/srt-win/<arch>/srt-win.exe`, arch from `process.arch`).
@@ -435,6 +582,143 @@ class SrtWinSpawn {
  */
 SrtWinSpawn resolveSrtWin([SrtWinConfig? cfg]) =>
     throw UnsupportedError('Windows is not supported by this port');
+
+// ────────────────────────────────────────────────────────────────────
+// Internal: spawn helpers
+// ────────────────────────────────────────────────────────────────────
+
+class _RunResult {
+  final int? status;
+  final String? signal;
+  final String stdout;
+  final String stderr;
+
+  const _RunResult({
+    required this.status,
+    required this.signal,
+    required this.stdout,
+    required this.stderr,
+  });
+}
+
+class _RunOpts {
+  final int? timeoutMs;
+  final String? stdin;
+  final SrtWinSpawn? srtWin;
+
+  const _RunOpts({this.timeoutMs, this.stdin, this.srtWin});
+}
+
+_RunResult _runSrtWin(List<String> args, [_RunOpts opts = const _RunOpts()]) =>
+    throw UnsupportedError('Windows is not supported by this port');
+
+/**
+ * Async twin of {@link runSrtWin}: same signature, same result shape,
+ * but the event loop stays live. Prefer it for any call reachable
+ * from a UI/render path — the sync variant `spawnSync`-blocks, which
+ * on Windows can be seconds when Defender cold-scans `srt-win.exe`.
+ */
+Future<_RunResult> _runSrtWinAsync(
+  List<String> args, [
+  _RunOpts opts = const _RunOpts(),
+]) => throw UnsupportedError('Windows is not supported by this port');
+
+T _parseSrtWinJson<T>(List<String> args, _RunResult r) {
+  if (r.status != 0) {
+    throw WindowsSandboxError(
+      'srt_win_nonzero',
+      'srt-win ${args.join(' ')} exited ${r.status}: ${r.stderr.isNotEmpty ? r.stderr : r.stdout}',
+      args[0],
+    );
+  }
+  try {
+    return jsonDecode(r.stdout) as T;
+  } catch (e) {
+    throw WindowsSandboxError(
+      'srt_win_bad_json',
+      'srt-win ${args.join(' ')}: unparseable JSON output ' +
+          '${jsonEncode(r.stdout)}: ${errorMessage(e)}',
+      args[0],
+    );
+  }
+}
+
+T _runSrtWinJson<T>(List<String> args, [_RunOpts? opts]) =>
+    _parseSrtWinJson<T>(args, _runSrtWin(args, opts ?? const _RunOpts()));
+
+Future<T> _runSrtWinJsonAsync<T>(List<String> args, [_RunOpts? opts]) async =>
+    _parseSrtWinJson<T>(
+      args,
+      await _runSrtWinAsync(args, opts ?? const _RunOpts()),
+    );
+
+/**
+ * As {@link runSrtWinJson} but parses stdout BEFORE checking the
+ * exit code, so a non-zero exit with the per-path JSON intact
+ * still surfaces every entry. For best-effort teardown helpers
+ * (`acl restore`/`acl revoke`).
+ */
+({bool ok, T json, String stderr}) _runSrtWinJsonAllowFail<T>(
+  List<String> args,
+  _RunOpts opts,
+) => throw UnsupportedError('Windows is not supported by this port');
+
+// ────────────────────────────────────────────────────────────────────
+// Status / install API
+// ────────────────────────────────────────────────────────────────────
+
+/** Shape of `srt-win wfp status` (and `srt-win status .wfp`) stdout. */
+typedef _RawWfpStatus = Map<String, dynamic>;
+
+List<String> _wfpStatusArgs([String? sublayerGuid]) {
+  final args = ['wfp', 'status'];
+  if (sublayerGuid != null && sublayerGuid.isNotEmpty)
+    args.addAll(['--sublayer-guid', sublayerGuid]);
+  return args;
+}
+
+WindowsWfpStatusResult _mapWfpStatus(_RawWfpStatus raw) {
+  final portRange = raw['port_range'] as List?;
+  final userSid = raw['user_sid'] as String?;
+  final hint = raw['hint'] as String?;
+  return WindowsWfpStatusResult(
+    state: raw['state'] as WindowsWfpStatus,
+    filters: raw['filters'] as int,
+    portRange: portRange != null
+        ? (portRange[0] as int, portRange[1] as int)
+        : null,
+    userSid: userSid != null && userSid.isNotEmpty ? userSid : null,
+    hint: hint != null && hint.isNotEmpty ? hint : null,
+  );
+}
+
+/** Shape of `srt-win user status` (and `srt-win status .user`) stdout. */
+typedef _RawUserStatus = Map<String, dynamic>;
+
+WindowsSandboxUserStatus _mapUserStatus(_RawUserStatus raw) {
+  final user = raw['user'] as Map<String, dynamic>;
+  final sid = user['sid'] as String?;
+  final groupSid = user['group_sid'] as String?;
+  final markerVersion = raw['marker_version'];
+  final caCertThumb = raw['ca_cert_thumb'] as String?;
+  final caCertPem = raw['ca_cert_pem'] as String?;
+  return WindowsSandboxUserStatus(
+    provisioned: user['exists'] as bool,
+    sid: sid != null && sid.isNotEmpty ? sid : null,
+    groupExists: user['group_exists'] as bool,
+    groupSid: groupSid != null && groupSid.isNotEmpty ? groupSid : null,
+    inBuiltinUsers: user['in_builtin_users'] as bool,
+    inSandboxGroup: user['in_sandbox_group'] as bool,
+    hiddenFromLogon: user['hidden_from_logon'] as bool,
+    credPresent: raw['cred_present'] as bool,
+    markerVersion: markerVersion is num ? markerVersion.toInt() : null,
+    realUserSid: raw['real_user_sid'] as String,
+    caCertThumb: caCertThumb != null && caCertThumb.isNotEmpty
+        ? caCertThumb
+        : null,
+    caCertPem: caCertPem != null && caCertPem.isNotEmpty ? caCertPem : null,
+  );
+}
 
 /** Combined result of `srt-win status` — see {@link checkWindowsSandboxStatus}. */
 class WindowsSandboxStatus {
@@ -581,6 +865,19 @@ Future<void> windowsTrustCaAsync(
   SrtWinSpawn? srtWin,
 }) async => throw UnsupportedError('Windows is not supported by this port');
 
+void _checkTrustCaResult(String caCertPath, _RunResult r) {
+  logForDebugging(
+    '[Sandbox Windows] user trust-ca exit=${r.status}: ${r.stderr.isNotEmpty ? r.stderr : r.stdout}',
+  );
+  if (r.status != 0) {
+    throw WindowsSandboxError(
+      'trust_ca_failed',
+      "srt-win user trust-ca '$caCertPath' failed (exit " +
+          '${r.status}): ${r.stderr.isNotEmpty ? r.stderr : r.stdout}',
+    );
+  }
+}
+
 /**
  * The machine-wide state directory `%ProgramData%\sandbox-runtime`,
  * mirroring `srt-win`'s `state_db::machine_store_dir()` exactly.
@@ -593,8 +890,12 @@ Future<void> windowsTrustCaAsync(
  * have modify, and the sandbox group carries an explicit
  * `(OI)(CI)` DENY.
  */
-String windowsStateDir() =>
-    throw UnsupportedError('Windows is not supported by this port');
+String windowsStateDir() {
+  final programData = process.env['ProgramData'];
+  if (programData == null || programData.isEmpty)
+    throw Exception('ProgramData is not set');
+  return path.windows.join(programData, 'sandbox-runtime');
+}
 
 /** Result of {@link ensurePersistentWindowsCa}. */
 class WindowsPersistentCa {
@@ -759,6 +1060,101 @@ class WindowsInstallResult {
 }
 
 /**
+ * Default spawn budget for the self-elevating install/uninstall. The Windows
+ * UAC consent dialog auto-dismisses after ~2 minutes, so anything shorter
+ * risks killing the subprocess while a legitimate approval is still pending
+ * (elevation is not retracted when the parent dies, so a late approval after
+ * we have timed out would half-complete).
+ */
+const int _INSTALL_TIMEOUT_MS = 120000;
+
+/** Effective spawn budget for the self-elevating install/uninstall. */
+int _installTimeoutMs({int? timeoutMs}) {
+  return timeoutMs ?? _INSTALL_TIMEOUT_MS;
+}
+
+List<String> _installArgs(WindowsInstallOptions opts) {
+  final args = ['install'];
+  if (opts.sublayerGuid != null && opts.sublayerGuid!.isNotEmpty)
+    args.addAll(['--sublayer-guid', opts.sublayerGuid!]);
+  if (opts.proxyPortRange != null) {
+    args.addAll([
+      '--proxy-port-range',
+      '${opts.proxyPortRange!.$1}-${opts.proxyPortRange!.$2}',
+    ]);
+  }
+  if (opts.sandboxUser != null && opts.sandboxUser!.isNotEmpty)
+    args.addAll(['--sandbox-user', opts.sandboxUser!]);
+  if (opts.force == true) args.add('--force');
+  return args;
+}
+
+/**
+ * Re-throw a `srt_win_timeout` from the install spawn as the more
+ * specific `install_timeout` (the UAC prompt is the usual cause).
+ * Shared by the sync and async install variants.
+ */
+Never _remapInstallTimeout(Object e) {
+  if (e is WindowsSandboxError && e.code == 'srt_win_timeout') {
+    throw WindowsSandboxError(
+      'install_timeout',
+      'srt-win install timed out — the UAC prompt may still be open. ' +
+          'Re-run when ready to grant elevation. (${e.message})',
+    );
+  }
+  throw e;
+}
+
+// srt-win install exit-code contract:
+//   0  ok
+//   10 user cancelled UAC elevation
+//   12 WFP install failed
+//   13 already installed with different config (use --force)
+//   14 sandbox-user provisioning failed
+//   17 ambient write-deny stamping failed
+//   1  other error (stderr has detail)
+// Throws on any failure code; the caller reads back state on 0/10.
+void _throwOnInstallFailure(_RunResult r) {
+  logForDebugging(
+    '[Sandbox Windows] install exit=${r.status}: ${r.stderr.isNotEmpty ? r.stderr : r.stdout}',
+  );
+  if (r.status == 0 || r.status == 10) return;
+  final out = r.stderr.isNotEmpty ? r.stderr : r.stdout;
+  switch (r.status) {
+    case 12:
+      throw WindowsSandboxError(
+        'install_wfp_failed',
+        'srt-win install: WFP filter install failed: $out',
+      );
+    case 14:
+      throw WindowsSandboxError(
+        'install_user_failed',
+        'srt-win install: sandbox user provisioning failed: $out',
+      );
+    case 13:
+      throw WindowsSandboxError(
+        'install_config_conflict',
+        'srt-win install: filters already exist under this sublayer with ' +
+            'a different port range or sandbox-user name. Pass ' +
+            '{force: true} to replace, or pick a different sublayerGuid. ' +
+            'Output: $out',
+      );
+    case 17:
+      throw WindowsSandboxError(
+        'install_ambient_failed',
+        'srt-win install: ambient write-deny stamping failed (stock ' +
+            'world-writable system dirs could not be deny-stamped for the ' +
+            'sandbox user): $out',
+      );
+    default:
+      throw WindowsSandboxError(
+        'install_failed',
+        'srt-win install failed (exit ${r.status}): $out',
+      );
+  }
+}
+
+/**
  * One-shot install: provisions the `srt-sandbox` user account and
  * installs the user-SID-keyed WFP filter set — all in a single
  * self-elevating process (one UAC prompt). Idempotent; re-running
@@ -863,7 +1259,109 @@ List<String> expandWindowsFsPaths(
 
   /// 'grant' or 'deny'.
   String? mode,
-}) => throw UnsupportedError('Windows is not supported by this port');
+}) {
+  final out = <String>{};
+  for (final entry in patterns) {
+    final marked = entry is! FilesystemPathSpelling;
+    final raw = marked ? markedLiteralPath(entry) : entry.path;
+    final norm = normalizePathForSandbox(raw, literal: marked);
+    if (marked && containsGlobCharsWin(norm)) {
+      logForDebugging(
+        '[Sandbox Windows] Skipping a literal path that no file can have: $norm',
+        level: 'warn',
+      );
+      continue;
+    }
+    final isGlob = !marked && containsGlobCharsWin(norm);
+    // UNC literal: pass raw (no stat) — see {@link isUncPath}. A
+    // UNC glob falls through to expandGlobPattern below.
+    if (isUncPath(norm) && !isGlob) {
+      out.add(norm);
+      continue;
+    }
+    final candidates = isGlob
+        ? [
+            ...expandGlobPattern(norm, caseInsensitive: true),
+            ...literalReadings(
+              raw,
+              mode == 'deny' ? 'deny' : 'allow',
+              isPattern: containsGlobCharsWin,
+            ).expand(
+              (reading) => reading.glob
+                  ? expandGlobPattern(
+                      reading.path,
+                      caseInsensitive: true,
+                      anchor: reading.anchor,
+                    )
+                  : <String>[],
+            ),
+          ]
+        : [norm];
+    for (final c in candidates) {
+      // statSync({throwIfNoEntry: false}): only a missing entry is undefined.
+      fs.Stats? st;
+      try {
+        st = fs.statSync(c);
+      } on NodeError catch (err) {
+        if (err.code != 'ENOENT') rethrow;
+      }
+      if (st == null) {
+        // normalizePathForSandbox (path.resolve) strips the
+        // trailing separator (the dir-leaf signal — see doc);
+        // re-apply it from the raw input.
+        if (mode == 'deny' && !isGlob) {
+          out.add(
+            RegExp(r'[\\/]$').hasMatch(raw) && !RegExp(r'[\\/]$').hasMatch(c)
+                ? c + '\\'
+                : c,
+          );
+        }
+        continue;
+      }
+      out.add(c);
+    }
+  }
+  return [...out];
+}
+
+/**
+ * `p` for comparison with another path, as the object `srt-win` opens for it:
+ * links, junctions, 8.3 names and the case on disk are resolved by the same
+ * final-path lookup the helper makes. On top of that, lower case, `/`
+ * separators and none at the end. A path that cannot be opened is compared as
+ * spelled, and so is a UNC path, which is never probed (see
+ * {@link isUncPath}).
+ */
+String _windowsPathKey(String p) {
+  var resolved = p;
+  if (!isUncPath(p)) {
+    try {
+      // The final-path lookup itself, which also resolves 8.3 names and the
+      // case on disk.
+      // eslint-disable-next-line no-restricted-properties
+      resolved = fs.realpathSync(p);
+    } catch (_) {
+      // Not there, so nothing lies beneath it either.
+    }
+  }
+  return normalizeCaseForComparison(
+    path.windows
+        .normalize(stripExtendedPathPrefix(resolved))
+        .replaceAll(r'\', '/')
+        .replaceAll(RegExp(r'/+$'), ''),
+  );
+}
+
+/** The one of `dirs` that a path is, or lies beneath. */
+String? Function(String) _coveringWindowsPath(List<String> dirs) {
+  final keys = dirs.map(_windowsPathKey).toList();
+  return (p) {
+    if (keys.length == 0) return null;
+    final key = _windowsPathKey(p);
+    final covering = keys.indexWhere((dir) => isAtOrUnder(key, dir));
+    return covering < 0 ? null : dirs[covering];
+  };
+}
 
 /** What `srt-win` is handed: see {@link rankWindowsFsAccess}. */
 class WindowsFsAccessSet {
@@ -908,7 +1406,51 @@ WindowsFsAccessSet rankWindowsFsAccess({
   required List<String> denyWrite,
   required List<String> credentialDeny,
   ({List<String> grantRead, List<String> grantWrite})? held,
-}) => throw UnsupportedError('Windows is not supported by this port');
+}) {
+  final credentialDenyOver = _coveringWindowsPath(credentialDeny);
+  final writeDenyOver = _coveringWindowsPath(denyWrite);
+  final grantRead = <String>{};
+  final grantWrite = <String>{};
+  void rank(String list, String p) {
+    final credentialDeny = credentialDenyOver(p);
+    final writeDeny = list == 'allowWrite' ? writeDenyOver(p) : null;
+    if (credentialDeny == null && writeDeny == null) {
+      final grants = list == 'allowRead' ? grantRead : grantWrite;
+      grants.add(p);
+      return;
+    }
+    if (credentialDeny == null) grantRead.add(p);
+    logForDebugging(
+      '[Sandbox Windows] $list $p is at or beneath ' +
+          (credentialDeny != null
+              ? 'the credential file entry $credentialDeny: not granted'
+              : 'denyWrite $writeDeny: granted read only'),
+      level: 'warn',
+    );
+  }
+
+  for (final p in allowRead) rank('allowRead', p);
+  for (final p in allowWrite) rank('allowWrite', p);
+  final heldRead = held?.grantRead ?? <String>[];
+  final heldWrite = held?.grantWrite ?? <String>[];
+  return WindowsFsAccessSet(
+    grantRead: [...grantRead],
+    grantWrite: [...grantWrite],
+    denyRead: [
+      ...{
+        ...denyRead,
+        ...credentialDeny,
+        ...[
+          ...heldRead,
+          ...heldWrite,
+        ].where((p) => credentialDenyOver(p) != null),
+      },
+    ],
+    denyWrite: [
+      ...{...denyWrite, ...heldWrite.where((p) => writeDenyOver(p) != null)},
+    ],
+  );
+}
 
 /**
  * {@link WindowsSandboxError} narrowed to `mapped_drive_cwd`,
@@ -939,8 +1481,27 @@ class MappedDriveCwdError extends WindowsSandboxError {
  * stderr is pumped through unchanged, so a child that happened to
  * print a matching JSON line would parse here too.
  */
-MappedDriveCwdError? parseWindowsSandboxError(String stderr) =>
-    throw UnsupportedError('Windows is not supported by this port');
+MappedDriveCwdError? parseWindowsSandboxError(String stderr) {
+  for (final line in stderr.split(RegExp(r'\r?\n'))) {
+    final t = line.trim();
+    if (!t.startsWith('{') || !t.contains('"code"')) continue;
+    try {
+      final j = jsonDecode(t) as Map<String, dynamic>;
+      if (j['code'] == 'mapped_drive_cwd') {
+        // The canonical class carries `code`/`subcommand`; `drive`
+        // is this one code's extra payload, attached as a plain
+        // property rather than forking the class.
+        return MappedDriveCwdError(
+          (j['message'] as String?) ?? 'mapped/network-drive working directory',
+          drive: j['drive'] as String?,
+        );
+      }
+    } catch (_) {
+      // not our line
+    }
+  }
+  return null;
+}
 
 class WindowsAclStampOptions {
   /** Paths the sandboxed child must not read. */
@@ -1056,6 +1617,10 @@ List<WindowsAclAceOutcome>? revokeWindowsAcl({
   SrtWinSpawn? srtWin,
 }) => throw UnsupportedError('Windows is not supported by this port');
 
+// ────────────────────────────────────────────────────────────────────
+// Wrap
+// ────────────────────────────────────────────────────────────────────
+
 /**
  * Build the spawn descriptor for running `command` inside the Windows
  * sandbox: an `argv` array plus the `env` to spawn it with.
@@ -1076,13 +1641,239 @@ List<WindowsAclAceOutcome>? revokeWindowsAcl({
  */
 ({List<String> argv, Map<String, String?> env}) wrapCommandWithSandboxWindows(
   WindowsSandboxParams p,
-) => throw UnsupportedError('Windows is not supported by this port');
+) {
+  final (:exe, :prependArgs) = (
+    exe: (p.srtWin ?? resolveSrtWin()).exe,
+    prependArgs: (p.srtWin ?? resolveSrtWin()).prependArgs,
+  );
+  // Generated proxy + CA-trust env. Single-sourced here so the
+  // same object feeds (a) the spawn env merge below and (b) the
+  // explicit `--env` overlay for the runner.
+  //
+  // The CA trust-bundle path is emitted with forward slashes:
+  // msys2's POSIX-path conversion leaves `C:/…` alone and every
+  // tool we set the var for (curl, git, node, python, …) accepts
+  // forward slashes on Windows; backslashes would be mangled if
+  // the value passes through a bash command line. Schannel-level
+  // trust comes from the registry write `srt-win user trust-ca`
+  // did at install time; the env-var layer here covers the
+  // OpenSSL-backed tools.
+  final generated = _envListToObject(
+    generateProxyEnvVars(
+      p.httpProxyPort,
+      p.socksProxyPort,
+      p.caCertPath?.replaceAll('\\', '/'),
+      p.proxyAuthToken,
+      null,
+      encodeSandboxedCommand(attributionKeyFor(p.command, p.commandId)),
+    ),
+  );
+  // TMPDIR is a POSIX path meant for the macOS/Linux FS sandbox — it
+  // serves no purpose on Windows and breaks msys2 tools (mktemp etc.).
+  generated.remove('TMPDIR');
+  // NO_PROXY=localhost,127.0.0.1,… is correct on POSIX where seatbelt/
+  // bwrap allow direct loopback: a NO_PROXY match makes the client
+  // connect directly and it works. On Windows the WFP fence blocks
+  // ALL direct connects from the sandbox user — including loopback
+  // outside the proxy-port PERMIT range — so NO_PROXY makes clients
+  // bypass the proxy and hit the fence; every localhost/127.0.0.1
+  // request fails. Consumers currently work around with
+  // `curl --noproxy ""`. Drop NO_PROXY here so localhost goes through
+  // the proxy (which connects on the child's behalf, from the broker's
+  // SID, and is not fenced).
+  generated.remove('NO_PROXY');
+  generated.remove('no_proxy');
+
+  // GIT_CONFIG_* set — safe.directory (dubious-ownership) + the
+  // schannel CA knobs. Composed against setEnvVars so a caller
+  // that already emits GIT_CONFIG_COUNT keeps its entries.
+  final gitCfg = buildGitConfigEnv(
+    safeDirs: [
+      p.cwd ?? process.cwd(),
+      ...(p.allowWrite ?? []),
+      ...(p.gitSafeDirectories ?? []),
+    ],
+    schannelCa: p.caCertPath != null,
+    baseEnv: p.setEnvVars,
+  );
+
+  final argv = <String>[exe, ...prependArgs, 'exec'];
+  if (p.quiet != false) argv.add('--quiet');
+  for (final d in p.denyRead ?? <String>[]) argv.addAll(['--deny-read', d]);
+  for (final d in p.denyWrite ?? <String>[]) argv.addAll(['--deny-write', d]);
+  // The two-hop runner starts with the SANDBOX user's profile env
+  // (USERPROFILE/TEMP isolated) and overlays exactly what we pass as
+  // `--env`. The broker does NOT enumerate its own env — the overlay
+  // is built here from the broker's PATH, the mode:'mask' sentinel
+  // set, the generated proxy set, and the GIT_CONFIG_* set.
+  // Sentinels precede `generated` so a caller masking e.g.
+  // `HTTPS_PROXY` cannot break the sandbox's own proxy plumbing —
+  // same precedence as the macOS/Linux `env -u … VAR=…
+  // sandbox-exec` order. `gitCfg` is last so its GIT_CONFIG_COUNT
+  // (which composes against setEnvVars) wins.
+  final overlay = <String, String?>{
+    'PATH': process.env['PATH'],
+    'PATHEXT': process.env['PATHEXT'],
+    ...(p.setEnvVars ?? {}),
+    ...generated,
+    ...gitCfg,
+  };
+  for (final MapEntry(key: k, value: v) in overlay.entries) {
+    if (v != null) argv.addAll(['--env', '$k=$v']);
+  }
+  argv.add('--');
+
+  // Inner shell: `{exe, args}` from parseWindowsBinShell — the SOLE
+  // normalizer. `p.command` lands as a single argv element; srt-win's
+  // `build_cmdline` MSVCRT-quotes it (or wraps in one outer "…" for
+  // cmd /s) so the inner shell receives it intact. See launch.rs.
+  final sh = p.binShell ?? parseWindowsBinShell(null);
+  argv.addAll([sh.exe, ...sh.args, p.command]);
+
+  // CreateProcessW's lpCommandLine is capped at 32 767 WCHARs.
+  // Node's `shell:false` spawn builds it by MSVCRT-quoting each
+  // argv element and joining with spaces; ~30 000 leaves headroom
+  // for the quote overhead the estimate doesn't model.
+  final cmdlineEstimate = argv.fold<int>(0, (n, a) => n + a.length + 3);
+  if (cmdlineEstimate > 30000) {
+    throw WindowsSandboxError(
+      'argv_too_long',
+      'Windows sandbox argv is ~$cmdlineEstimate chars ' +
+          '(CreateProcessW limit is 32 767).',
+    );
+  }
+
+  // The two-hop runner starts with a FRESH `srt-sandbox` profile
+  // env (`lpEnvironment = NULL` + `LOGON_WITH_PROFILE`), so the
+  // broker process's environment never reaches the child. The
+  // returned `env` is the spawn env for the broker (srt-win)
+  // process only; the child sees the `--env` overlay built into
+  // `argv` above (PATH/PATHEXT + mode:'mask' sentinels + proxy).
+  final env = <String, String?>{...process.env, ...generated};
+  return (argv: argv, env: env);
+}
+
+/**
+ * Parse a list of `KEY=VALUE` strings (as produced by
+ * {@link generateProxyEnvVars}) into an object. Splits on the FIRST
+ * `=` only, so values containing `=` survive intact.
+ */
+Map<String, String?> _envListToObject(List<String> list) {
+  final out = <String, String?>{};
+  for (final entry in list) {
+    final eq = entry.indexOf('=');
+    if (eq == -1) continue;
+    out[entry.substring(0, eq)] = entry.substring(eq + 1);
+  }
+  return out;
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Dependency / readiness check
+// ────────────────────────────────────────────────────────────────────
 
 /**
  * Install instructions, surfaced verbatim in error messages.
  */
-String windowsInstallInstructions(String? sublayerGuid) =>
-    throw UnsupportedError('Windows is not supported by this port');
+String windowsInstallInstructions(String? sublayerGuid) {
+  final sl = sublayerGuid != null && sublayerGuid.isNotEmpty
+      ? ' --sublayer-guid $sublayerGuid'
+      : '';
+  return 'Windows sandbox needs a one-time install (one UAC prompt):\n' +
+      '  npx sandbox-runtime windows-install\n' +
+      '  — or call installWindowsSandbox(), or run ' +
+      '`srt-win.exe install$sl` directly.\n' +
+      'No logout is needed: the WFP filter keys on the dedicated ' +
+      "`srt-sandbox` user's SID, so your network is unaffected.";
+}
+
+/// Dart: stands in for JavaScript's `PromiseSettledResult<T>`.
+class _PromiseSettledResult<T> {
+  final String status;
+  final T? value;
+  final Object? reason;
+
+  const _PromiseSettledResult.fulfilled(T this.value)
+    : status = 'fulfilled',
+      reason = null;
+  const _PromiseSettledResult.rejected(this.reason)
+    : status = 'rejected',
+      value = null;
+}
+
+_PromiseSettledResult<T> _settle<T>(T Function() fn) {
+  try {
+    return _PromiseSettledResult<T>.fulfilled(fn());
+  } catch (e) {
+    return _PromiseSettledResult<T>.rejected(e);
+  }
+}
+
+/**
+ * Interpret the two probe results into a {@link SandboxDependencyCheck}.
+ * Shared by the sync and async `checkWindowsDependencies*` variants so
+ * both produce byte-identical `errors[]` for the same underlying state.
+ *
+ * `getWfp` is lazy: the sync caller's thunk spawns `wfp status` on
+ * demand (preserving the short-circuit — no second spawn when
+ * `user status` already failed); the async caller has already run
+ * both probes concurrently and its thunk returns the settled result.
+ */
+SandboxDependencyCheck _interpretDependencyProbes(
+  String? sublayerGuid,
+  _PromiseSettledResult<WindowsSandboxUserStatus> user,
+  _PromiseSettledResult<WindowsWfpStatusResult> Function() getWfp,
+) {
+  final errors = <String>[];
+  final warnings = <String>[];
+
+  // 2. Sandbox user provisioned + credential readable.
+  if (user.status == 'rejected') {
+    errors.add('srt-win user status failed: ${errorMessage(user.reason)}');
+    return SandboxDependencyCheck(errors: errors, warnings: warnings);
+  }
+  final us = user.value!;
+  if (!us.provisioned || !us.credPresent) {
+    errors.add(
+      'Sandbox user is not provisioned (user=${us.provisioned}, ' +
+          'cred=${us.credPresent}). ' +
+          windowsInstallInstructions(sublayerGuid),
+    );
+  }
+
+  // 3. WFP filters installed under the sublayer. BFE enumeration is
+  // admin-gated; `cannot-read` is informational only — the
+  // BEHAVIORAL check (`verifyWindowsWfpEgress`) runs at
+  // `initialize()` and is what actually fails closed.
+  final wfp = getWfp();
+  if (wfp.status == 'rejected') {
+    errors.add('srt-win wfp status failed: ${errorMessage(wfp.reason)}');
+    return SandboxDependencyCheck(errors: errors, warnings: warnings);
+  }
+  final ws = wfp.value!;
+  if (ws.state == 'cannot-read') {
+    logForDebugging(
+      '[Sandbox Windows] wfp status cannot-read (non-elevated): ${ws.hint ?? 'undefined'}',
+    );
+  } else if (ws.state != 'installed') {
+    // 'absent'. If the user is also not-provisioned, the user-state
+    // error above already gave the right instruction; don't repeat.
+    if (us.provisioned && us.credPresent) {
+      errors.add(
+        'WFP filters not installed under sublayer ' +
+            "${sublayerGuid ?? '(default)'}. " +
+            windowsInstallInstructions(sublayerGuid),
+      );
+    }
+  } else if (ws.portRange != null) {
+    logForDebugging(
+      '[Sandbox Windows] WFP installed: ${ws.filters} filters, ' +
+          'proxy port range ${ws.portRange!.$1}-${ws.portRange!.$2}',
+    );
+  }
+
+  return SandboxDependencyCheck(errors: errors, warnings: warnings);
+}
 
 /**
  * Check the Windows backend is ready to sandbox. Errors block
