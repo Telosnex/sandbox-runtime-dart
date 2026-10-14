@@ -185,10 +185,19 @@ bool processHasBoundingCapability(int cap) => throw UnimplementedError(
  * line is absent. CapPrm and CapEff are deliberately not consulted — see
  * processHasBoundingCapability.
  */
-BigInt? boundingCapabilitiesFromStatus(String status) =>
-    throw UnimplementedError(
-      'pending port of src/sandbox/linux-sandbox-utils.ts',
-    );
+BigInt? boundingCapabilitiesFromStatus(String status) {
+  final bounding = RegExp(
+    r'^CapBnd:\s*([0-9a-fA-F]+)\s*$',
+    multiLine: true,
+  ).firstMatch(status);
+  final inheritable = RegExp(
+    r'^CapInh:\s*([0-9a-fA-F]+)\s*$',
+    multiLine: true,
+  ).firstMatch(status);
+  if (bounding == null || inheritable == null) return null;
+  return BigInt.parse(bounding[1]!, radix: 16) |
+      BigInt.parse(inheritable[1]!, radix: 16);
+}
 
 /**
  * The bwrap capability list. Always `--cap-drop ALL`, which for a non-root
@@ -212,9 +221,13 @@ List<String> capabilityArgs({
   required int? euid,
   required bool hasSetfcap,
   required bool usesSeccompHelper,
-}) => throw UnimplementedError(
-  'pending port of src/sandbox/linux-sandbox-utils.ts',
-);
+}) {
+  final args = <String>['--cap-drop', 'ALL'];
+  if (euid != 0) return args;
+  if (!hasSetfcap) return args;
+  if (usesSeccompHelper) args.addAll(['--cap-add', 'CAP_SETFCAP']);
+  return args;
+}
 
 const String CAP_SETFCAP_MISSING_MESSAGE =
     "running as uid 0 without CAP_SETFCAP in this process's capability bounding set - on "
