@@ -1,6 +1,5 @@
 // Ported from sandbox-runtime test/sandbox/linux-dependency-error.test.ts @ 24eb39e.
 // ignore_for_file: constant_identifier_names
-@Tags(['pending'])
 library;
 
 import 'package:test/test.dart';
