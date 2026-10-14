@@ -3,6 +3,8 @@
 
 import 'dart:async';
 
+import 'credential_mask_files.dart' show MaskedFileBind;
+
 // Filesystem restriction configs (internal structures built from permission rules)
 
 /**
@@ -117,7 +119,7 @@ class CredentialRestrictionConfig {
   List<String> denyReadPaths;
   List<String> unsetEnvVars;
   Map<String, String> setEnvVars;
-  List<({String realPath, String fakePath})> maskedFileBinds;
+  List<MaskedFileBind> maskedFileBinds;
   String? maskedFileStoreDir;
   List<String> degradeToDenyPaths;
 

@@ -9,6 +9,8 @@ import 'package:test/test.dart';
 
 // The namespace the library binds, so a spy on it is seen by the code under
 // test (see linux-ancestor-pin-errno.test.ts).
+import 'package:sandbox_runtime/src/sandbox/credential_mask_files.dart'
+    show MaskedFileBind;
 import 'package:sandbox_runtime/src/node/fs.dart' as fs;
 import 'package:sandbox_runtime/src/node/fs.dart'
     show
@@ -2751,7 +2753,9 @@ void main() {
                 allowOnly: [ROOT, secret],
                 denyWithinAllow: [build],
               ),
-              maskedFileBinds: [(realPath: secret, fakePath: fake)],
+              maskedFileBinds: [
+                MaskedFileBind(realPath: secret, fakePath: fake),
+              ],
               maskedFileStoreDir: store,
             ),
           );

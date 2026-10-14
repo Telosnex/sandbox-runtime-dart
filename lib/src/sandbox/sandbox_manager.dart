@@ -1681,11 +1681,7 @@ CredentialRestrictionConfig _getCredentialRestrictions(
     ],
     unsetEnvVars: [...unsetEnvVars.toSet()],
     setEnvVars: setEnvVars,
-    // Dart: the schema holds records; credential-mask-files returns MaskedFileBind.
-    maskedFileBinds: [
-      for (final b in maskedFileBinds)
-        (realPath: b.realPath, fakePath: b.fakePath),
-    ],
+    maskedFileBinds: maskedFileBinds,
     maskedFileStoreDir: _maskedFileStore.dirPath,
     degradeToDenyPaths: degradeToDenyPaths,
   );

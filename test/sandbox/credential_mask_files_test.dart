@@ -1570,7 +1570,9 @@ void main() {
             allowOnly: ['/tmp'],
             denyWithinAllow: [],
           ),
-          maskedFileBinds: [(realPath: TOKEN_FILE, fakePath: '/unused')],
+          maskedFileBinds: [
+            MaskedFileBind(realPath: TOKEN_FILE, fakePath: '/unused'),
+          ],
         ),
       );
       expect(wrapped, contains('deny file-read*'));
@@ -1586,7 +1588,9 @@ void main() {
           needsNetworkRestriction: false,
           readConfig: null,
           writeConfig: null,
-          maskedFileBinds: [(realPath: TOKEN_FILE, fakePath: '/unused')],
+          maskedFileBinds: [
+            MaskedFileBind(realPath: TOKEN_FILE, fakePath: '/unused'),
+          ],
         ),
       );
       expect(wrapped, isNot('echo hi'));
@@ -1620,10 +1624,7 @@ void main() {
             allowOnly: ['/tmp'],
             denyWithinAllow: [],
           ),
-          // Dart: maskedFileBinds takes records; buildMaskedFileBinds returns MaskedFileBind.
-          maskedFileBinds: [
-            for (final b in binds) (realPath: b.realPath, fakePath: b.fakePath),
-          ],
+          maskedFileBinds: binds,
         ),
       );
       expect(wrapped, contains('deny file-read*'));
