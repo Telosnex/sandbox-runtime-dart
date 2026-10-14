@@ -2418,9 +2418,6 @@ Future<void> main() async {
         expect(heldDuringStall, lessThan(MAX_QUEUED_BYTES));
       },
       skip: emitSkip,
-      tags: [
-        'pending',
-      ], // Dart: tls.connect({socket}) (shim-stream) / hangs on 64-192 MiB streaming
       timeout: Timeout(Duration(seconds: 60)),
     );
   });
