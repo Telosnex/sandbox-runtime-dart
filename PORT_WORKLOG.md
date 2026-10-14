@@ -73,6 +73,44 @@ expected output.
 - To test: `git clone /media/psf/Home/dev/sandbox-runtime-dart /root/srt-dart`,
   then `dart pub get`, `dart run tool/build_seccomp.dart` and `dart test`.
 
+### Wave 1: RUNNING (started 2026-10-13)
+
+Brief: ~/dev/srt-wt/WAVE1_BRIEF.md; review brief: ~/dev/srt-wt/REVIEW1_BRIEF.md.
+Each agent has worktree ~/dev/srt-wt/<name>, branch port/<name>. /root
+reviews each finished branch with a read-only reviewer, then merges through
+~/dev/srt-wt/gate. Ported tests whose module is a stub merge with
+`@Tags(['pending'])` (Rule 1a); the implementer removes the tag.
+
+Phase A (shims, helpers, implementations), owners:
+- shim-stream: node/{stream,net,http,tls,events,dns}.dart. NodeSocket
+  extends Duplex; IncomingMessage extends Readable; ServerResponse,
+  ClientRequest extend Writable. Proxy shim requests go here.
+- shim-web: node/{fetch,url,console}.dart, new node/https.dart.
+- shim-sys: node/{crypto,fs,os,process,child_process,buffer,errno,abort}
+  .dart, new node/zlib.dart, utils/which.dart spy point. Spy-point requests.
+- helpers: test/helpers/*.
+- impl-linux: linux_sandbox_utils (+ un-skips in seccomp_filter_test,
+  path_canonicalization_test).
+- impl-linux-small: linux_violation_monitor, read_deny_glob, own_files.
+- impl-manager: sandbox_manager, utils/config_loader (+ java_proxy_agent_test
+  un-skip).
+- impl-front: new src/index.dart, src/cli.dart, src/proxy_main.dart,
+  proxy_cli.dart, lib/sandbox_runtime.dart, bin/srt.dart,
+  bin/srt_proxy.dart, new node/fd.dart (control-fd CLOEXEC).
+- impl-http: http_proxy (+ resolved_address_guard_test un-skips).
+- impl-tls: tls_terminate_proxy, mitm_leaf.
+- impl-mitm-ca: mitm_ca, node/forge.dart.
+- impl-socks: socks_proxy, new node/socks5_server.dart.
+- impl-proxy-only: proxy_only, parent_proxy, mux_proxy,
+  emitted_connection, node/emitted_http.dart (+ mux_proxy_test un-skips).
+- impl-filter: request_filter, body_substitution.
+- impl-decider: decider_client.
+- impl-cred: credential_{sentinel,decode,mask_env,mask_files,aws_pairs}
+  (+ macos_literal_deny_brackets_test un-skips).
+
+Phase B (test porters, about 23 agents) starts when helpers and the
+https/crypto/zlib declarations are on main. Not ported: winsrt tests.
+
 ### Wave 0: DONE (2026-10-13, retry)
 
 Merged to main as a67c74b (gate PASS: 0 analyzer errors, 0 warnings;
