@@ -3,3 +3,16 @@
 # upstream tests call process.chdir). Run files one at a time, so that no
 # child process starts in another file's deleted directory.
 concurrency: 1
+
+# Wave 1: a ported test file whose module is still a stub carries
+# `@Tags(['pending'])`. It is skipped by default, so main stays green;
+# `dart test -P impl <file>` runs it. The implementer removes the tag when
+# the file passes.
+tags:
+  pending:
+    skip: "pending wave 1 implementation (run with -P impl)"
+presets:
+  impl:
+    tags:
+      pending:
+        skip: false

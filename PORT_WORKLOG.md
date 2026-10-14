@@ -268,6 +268,11 @@ Upstream test files are named for a behaviour, not a source file. So:
   exists. A test whose module is still a stub keeps its full body and runs;
   it fails with UnimplementedError until the implementation lands, and that
   failure is the implementer's to-do list. Do not skip it.
+- Such a file carries `@Tags(['pending'])` (before `library;`), so it can
+  merge to main while its module is a stub: `dart_test.yaml` skips the tag
+  by default, and `dart test -P impl <file>` runs it. The implementer whose
+  port makes the file pass removes the tag. Never use the tag for a file
+  that passes.
 - A test that needs Windows gets `skip: 'Windows not supported by this
   port'`.
 
@@ -626,6 +631,27 @@ and replaces paired EventEmitter one-shot callbacks with the
 | — (Node shims) | `lib/src/node/{abort,emitted_http,regexp}.dart` | `test/node/{emitted_http,regexp}_test.dart` | No upstream counterparts; AbortSignal, emitted-connection adapter over raw HTTP/socket shim, and exact supported RegExp-with-indices instrumentation |
 | — (Node shims) | `lib/src/node/{crypto,buffer}.dart` | — | No upstream counterparts; sha256 hash/HMAC for `aws-sigv4.ts`, Buffer helpers for `sandbox-utils.ts` |
 | — (Node shims) | `lib/src/node/{forge,tls}.dart` | `test/node/{forge,tls}_test.dart` | Pure-Dart forge subset; Mozilla root bundle `2026-09-25` SHA-256 `a41b5d35…37d00505`; bounded ClientHello replay and ALPN; secure client HTTP uses the raw socket shim |
+| `src/sandbox/linux-sandbox-utils.ts` | `lib/src/sandbox/linux_sandbox_utils.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/linux-violation-monitor.ts` | `lib/src/sandbox/linux_violation_monitor.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/read-deny-glob.ts` | `lib/src/sandbox/read_deny_glob.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/own-files.ts` | `lib/src/sandbox/own_files.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/sandbox-manager.ts` | `lib/src/sandbox/sandbox_manager.dart` | — | Stub (wave 0): full API |
+| `src/utils/config-loader.ts` | `lib/src/utils/config_loader.dart` | — | Stub (wave 0): full API |
+| `src/proxy-cli.ts` | `lib/src/proxy_cli.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/http-proxy.ts` | `lib/src/sandbox/http_proxy.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/proxy-only.ts` | `lib/src/sandbox/proxy_only.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/socks-proxy.ts` | `lib/src/sandbox/socks_proxy.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/tls-terminate-proxy.ts` | `lib/src/sandbox/tls_terminate_proxy.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/mitm-ca.ts` | `lib/src/sandbox/mitm_ca.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/mitm-leaf.ts` | `lib/src/sandbox/mitm_leaf.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/decider-client.ts` | `lib/src/sandbox/decider_client.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/body-substitution.ts` | `lib/src/sandbox/body_substitution.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/credential-sentinel.ts` | `lib/src/sandbox/credential_sentinel.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/credential-decode.ts` | `lib/src/sandbox/credential_decode.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/credential-mask-env.ts` | `lib/src/sandbox/credential_mask_env.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/credential-mask-files.ts` | `lib/src/sandbox/credential_mask_files.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/credential-aws-pairs.ts` | `lib/src/sandbox/credential_aws_pairs.dart` | — | Stub (wave 0): full API |
+| `src/sandbox/windows-sandbox-utils.ts` | `lib/src/sandbox/windows_sandbox_utils.dart` | — | Stub (wave 0): full API; permanent (Windows not ported), bodies throw UnsupportedError |
 
 ### Known port gaps
 
@@ -694,24 +720,3 @@ The upstream `src` and `test` grep for `maskedFileBinds` and
 `NetworkHostPattern` found reads and object construction only; no code mutates
 `realPath`, `fakePath`, `host`, or `port` fields. The existing named records
 remain appropriate for those nested object shapes.
-| `src/sandbox/linux-sandbox-utils.ts` | `lib/src/sandbox/linux_sandbox_utils.dart` | — | Stub (wave 0): full API |
-| `src/sandbox/linux-violation-monitor.ts` | `lib/src/sandbox/linux_violation_monitor.dart` | — | Stub (wave 0): full API |
-| `src/sandbox/read-deny-glob.ts` | `lib/src/sandbox/read_deny_glob.dart` | — | Stub (wave 0): full API |
-| `src/sandbox/own-files.ts` | `lib/src/sandbox/own_files.dart` | — | Stub (wave 0): full API |
-| `src/sandbox/sandbox-manager.ts` | `lib/src/sandbox/sandbox_manager.dart` | — | Stub (wave 0): full API |
-| `src/utils/config-loader.ts` | `lib/src/utils/config_loader.dart` | — | Stub (wave 0): full API |
-| `src/proxy-cli.ts` | `lib/src/proxy_cli.dart` | — | Stub (wave 0): full API |
-| `src/sandbox/http-proxy.ts` | `lib/src/sandbox/http_proxy.dart` | — | Stub (wave 0): full API |
-| `src/sandbox/proxy-only.ts` | `lib/src/sandbox/proxy_only.dart` | — | Stub (wave 0): full API |
-| `src/sandbox/socks-proxy.ts` | `lib/src/sandbox/socks_proxy.dart` | — | Stub (wave 0): full API |
-| `src/sandbox/tls-terminate-proxy.ts` | `lib/src/sandbox/tls_terminate_proxy.dart` | — | Stub (wave 0): full API |
-| `src/sandbox/mitm-ca.ts` | `lib/src/sandbox/mitm_ca.dart` | — | Stub (wave 0): full API |
-| `src/sandbox/mitm-leaf.ts` | `lib/src/sandbox/mitm_leaf.dart` | — | Stub (wave 0): full API |
-| `src/sandbox/decider-client.ts` | `lib/src/sandbox/decider_client.dart` | — | Stub (wave 0): full API |
-| `src/sandbox/body-substitution.ts` | `lib/src/sandbox/body_substitution.dart` | — | Stub (wave 0): full API |
-| `src/sandbox/credential-sentinel.ts` | `lib/src/sandbox/credential_sentinel.dart` | — | Stub (wave 0): full API |
-| `src/sandbox/credential-decode.ts` | `lib/src/sandbox/credential_decode.dart` | — | Stub (wave 0): full API |
-| `src/sandbox/credential-mask-env.ts` | `lib/src/sandbox/credential_mask_env.dart` | — | Stub (wave 0): full API |
-| `src/sandbox/credential-mask-files.ts` | `lib/src/sandbox/credential_mask_files.dart` | — | Stub (wave 0): full API |
-| `src/sandbox/credential-aws-pairs.ts` | `lib/src/sandbox/credential_aws_pairs.dart` | — | Stub (wave 0): full API |
-| `src/sandbox/windows-sandbox-utils.ts` | `lib/src/sandbox/windows_sandbox_utils.dart` | — | Stub (wave 0): full API; permanent (Windows not ported), bodies throw UnsupportedError |
