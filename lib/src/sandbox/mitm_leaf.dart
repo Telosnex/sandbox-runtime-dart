@@ -9,7 +9,7 @@ import '../node/tls.dart' as tls;
 import 'mitm_ca.dart';
 import '../utils/debug.dart' show logForDebugging;
 
-final pki = forge.forge.pki;
+final _pki = forge.forge.pki;
 
 /**
  * Per-host leaf certificate minter for the in-process TLS-terminating proxy.
@@ -40,8 +40,8 @@ LeafCert mintLeafCert(MitmCA ca, String hostname) {
   // One key for every leaf of this CA, as mitmproxy does: a new host name
   // then costs a signature, not an RSA key generation that would hold up
   // every other tunnel. The key never leaves this process.
-  final keys = ca.leafKeyPair ??= pki.rsa.generateKeyPair(2048);
-  final cert = pki.createCertificate();
+  final keys = ca.leafKeyPair ??= _pki.rsa.generateKeyPair(2048);
+  final cert = _pki.createCertificate();
   cert.publicKey = keys.publicKey;
   cert.serialNumber = randomSerial();
   final notBefore = daysFromNow(-1);
@@ -94,8 +94,8 @@ LeafCert mintLeafCert(MitmCA ca, String hostname) {
   signCertificateNative(cert, ca.keyPem);
 
   final leaf = LeafCert(
-    certPem: pki.certificateToPem(cert) + ca.certPem,
-    keyPem: pki.privateKeyToPem(keys.privateKey),
+    certPem: _pki.certificateToPem(cert) + ca.certPem,
+    keyPem: _pki.privateKeyToPem(keys.privateKey),
   );
   _cacheSet(ca.leafCerts, hostname, leaf, ca.cacheLimit ?? _LEAF_CACHE_LIMIT);
   logForDebugging('[mitm-leaf] minted RSA leaf for $hostname');
