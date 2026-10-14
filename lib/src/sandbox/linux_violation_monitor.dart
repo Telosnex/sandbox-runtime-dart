@@ -1,8 +1,20 @@
-// STUB: pending port of src/sandbox/linux-violation-monitor.ts @ 24eb39e.
+import 'dart:typed_data';
+// Ported from sandbox-runtime src/sandbox/linux-violation-monitor.ts @ 24eb39e.
 // ignore_for_file: slash_for_doc_comments
 
+import 'dart:convert';
+import 'dart:async';
+import 'dart:io';
+import 'dart:math' as math;
+
+import 'package:path/path.dart' as path;
+
+import '../node/buffer.dart' show Buffer;
+import '../utils/debug.dart';
 import 'macos_sandbox_utils.dart';
 import 'sandbox_config.dart';
+import 'sandbox_utils.dart';
+import 'sandbox_violation_store.dart';
 
 class LinuxViolationMonitorOptions {
   const LinuxViolationMonitorOptions({
@@ -11,7 +23,6 @@ class LinuxViolationMonitorOptions {
     this.ignoreViolations,
     required this.resolveCommandText,
   });
-
   /**
    * Paths bwrap mounts read-write. apply-seccomp's USER_NOTIF observer
    * reports every write-intent syscall (allowed or not, since the BPF filter
@@ -38,7 +49,6 @@ class LinuxViolationMonitor {
     required this.ready,
     required this.stop,
   });
-
   /** Filesystem unix-socket path the listener is bound to. Bind-mount this
    *  into each bwrap sandbox and pass it to apply-seccomp via
    *  SRT_OBSERVE_SOCK. `undefined` if listen() failed (the caller should
@@ -49,6 +59,22 @@ class LinuxViolationMonitor {
   final void Function() stop;
 }
 
+class _ObserveEvent {
+  _ObserveEvent(Map<String, dynamic> json)
+    : nr = json['nr'] as int?,
+      syscall = json['syscall'] as String?,
+      pid = json['pid'] as int?,
+      path = json['path'] as String?,
+      encodedCommand = json['encodedCommand'] as String?,
+      observeInitError = json['observe_init_error'] as String?;
+  final int? nr;
+  final String? syscall;
+  final int? pid;
+  final String? path;
+  final String? encodedCommand;
+  final String? observeInitError;
+}
+
 /**
  * Linux equivalent of [startMacOSSandboxLogMonitor]. Creates a single
  * filesystem unix-socket listener; each `apply-seccomp` instance's outer stub
@@ -57,7 +83,7 @@ class LinuxViolationMonitor {
  * already waitpid()s the workload), so there is no separate supervisor binary.
  *
  * Unlike Seatbelt's `log stream`, the kernel reports *attempts* here, not
- * denials, so this function intersects each path against the configured
+ * *denials*, so this function intersects each path against the configured
  * allow/deny set before forwarding it as a violation.
  *
  * The reported path is read out of the (untrusted) sandboxed process's memory
@@ -74,7 +100,150 @@ LinuxViolationMonitor startLinuxSandboxViolationMonitor(
   SandboxViolationCallback callback,
   LinuxViolationMonitorOptions opts,
 ) {
-  throw UnimplementedError(
-    'pending port of src/sandbox/linux-violation-monitor.ts',
+  final allowWritePaths = opts.allowWritePaths;
+  final denyWritePaths = opts.denyWritePaths;
+  final ignoreViolations = opts.ignoreViolations;
+  final resolveCommandText = opts.resolveCommandText;
+  // sun_path is 108 bytes; mkdtemp under tmpdir() keeps us well under.
+  final sockDir = Directory.systemTemp.createTempSync('srt-obs-').path;
+  final rand = math.Random.secure();
+  final sockPath = path.join(
+    sockDir,
+    's${List<int>.generate(4, (_) => rand.nextInt(256)).map((x) => x.toRadixString(16).padLeft(2, '0')).join()}.sock',
+  );
+  bool underPrefix(String p, String prefix) =>
+      p == prefix || p.startsWith(prefix.endsWith('/') ? prefix : '$prefix/');
+  /** A write attempt is a violation iff bwrap would refuse it: outside every
+   *  allowWrite prefix, or back inside a denyWrite carve-out. */
+  bool isDenied(String p) {
+    if (denyWritePaths.any((d) => underPrefix(p, d))) return true;
+    return !allowWritePaths.any((a) => underPrefix(p, a));
+  }
+
+  void handleEvent(_ObserveEvent ev, String? encodedCommand) {
+    if (ev.observeInitError != null && ev.observeInitError!.isNotEmpty) {
+      logForDebugging(
+        '[Sandbox Linux Monitor] observe filter not installed: ${ev.observeInitError}',
+      );
+      return;
+    }
+    if (ev.path == null) return;
+    // Only resolved absolute paths are classifiable. Anything else means
+    // resolution failed upstream (or an old producer): this channel is
+    // best-effort telemetry, so drop rather than guess.
+    if (!ev.path!.startsWith('/')) return;
+    // apply-seccomp resolves relative paths against the tracee's cwd/dirfd
+    // before emitting, so events arrive absolute; the joined form may still
+    // contain ./ and ../ segments. Collapse them ONCE, here: the policy check,
+    // the ignoreViolations match and the recorded line must all speak of the
+    // same path, or a `..` detour suppresses a record it did not match, or
+    // hides which file was written.
+    final observedPath = path.posix.normalize(ev.path!);
+    if (!isDenied(observedPath)) return;
+    String? command;
+    if (encodedCommand != null && encodedCommand.isNotEmpty) {
+      try {
+        command = resolveCommandText(decodeSandboxedCommand(encodedCommand));
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    if (shouldIgnoreViolation(observedPath, command, ignoreViolations)) return;
+    final violation = SandboxViolationEvent(
+      line: 'deny ${ev.syscall ?? 'syscall'} $observedPath',
+      command: command,
+      encodedCommand: encodedCommand,
+      timestamp: DateTime.now(),
+    );
+    callback(violation);
+  }
+
+  final ready = Completer<void>();
+  String? observeSocketPath = sockPath;
+  final server = ServerSocket.bind(
+    InternetAddress(sockPath, type: InternetAddressType.unix),
+    0,
+  );
+  final sockets = <Socket>{};
+  server.then(
+    (bound) {
+      if (!ready.isCompleted) ready.complete();
+      bound.listen((conn) {
+        sockets.add(conn);
+        String? encodedCommand;
+        final input = StringBuffer();
+        conn
+            .transform(
+              StreamTransformer<Uint8List, String>.fromHandlers(
+                handleData: (data, sink) => sink.add(utf8.decode(data)),
+              ),
+            )
+            .listen(
+              (chunk) {
+                input.write(chunk);
+                while (input.toString().contains('\n')) {
+                  final all = input.toString();
+                  final i = all.indexOf('\n');
+                  final raw = all.substring(0, i);
+                  input.clear();
+                  input.write(all.substring(i + 1));
+                  if (raw.isEmpty) continue;
+                  late _ObserveEvent ev;
+                  try {
+                    ev = _ObserveEvent(jsonDecode(raw) as Map<String, dynamic>);
+                  } catch (_) {
+                    continue;
+                  }
+                  // The socket is writable from inside the sandbox, so the attribution
+                  // field is attacker-chosen bytes of attacker-chosen length. One longer
+                  // than a carrier this process mints can hold attributes nothing: drop
+                  // it and keep the violation itself, unattributed.
+                  final attribution =
+                      ev.encodedCommand != null &&
+                          Buffer.byteLength(ev.encodedCommand!) <=
+                              MAX_ENCODED_COMMAND_BYTES
+                      ? ev.encodedCommand
+                      : null;
+                  // First line from each apply-seccomp instance is the encodedCommand
+                  // header; subsequent lines may also carry it but the header is
+                  // authoritative for this connection.
+                  if (attribution != null && encodedCommand == null)
+                    encodedCommand = attribution;
+                  handleEvent(ev, encodedCommand ?? attribution);
+                }
+              },
+              onError: (_) {},
+              onDone: () {
+                sockets.remove(conn);
+                conn.destroy();
+              },
+            );
+      });
+    },
+    onError: (Object err) {
+      logForDebugging(
+        '[Sandbox Linux Monitor] listen failed: $err - violation monitoring disabled',
+        level: 'warn',
+      );
+      observeSocketPath = null;
+      if (!ready.isCompleted) ready.complete();
+    },
+  );
+  final stop = () {
+    logForDebugging('[Sandbox Linux Monitor] stopping');
+    for (final s in sockets) {
+      s.destroy();
+    }
+    server.then((s) => s.close());
+    try {
+      Directory(sockDir).deleteSync(recursive: true);
+    } catch (_) {
+      /* best effort */
+    }
+  };
+  return LinuxViolationMonitor(
+    observeSocketPath: observeSocketPath,
+    ready: ready.future,
+    stop: stop,
   );
 }
