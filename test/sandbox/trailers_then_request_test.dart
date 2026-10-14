@@ -143,8 +143,6 @@ void main() {
         skip: tlsPath && !SERVES_EMITTED_CONNECTIONS
             ? 'TLS termination unavailable'
             : null,
-        // Dart: 'srt-proxy, TLS' gets no request through the terminated tunnel (decider sees no frame; same as proxy_only_edges tls cases, 421 misdirected).
-        tags: path == 'srt-proxy, TLS' ? ['pending'] : null,
         () async {
           final authority = generateCa();
           final got = <String>[];

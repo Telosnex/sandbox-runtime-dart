@@ -175,7 +175,12 @@ TLSSocket connect(Map<Object?, Object?> options, [Function? listener]) {
       throw UnimplementedError('tls.connect option "$key"');
     }
   }
-  final host = opts['host'] as String? ?? 'localhost';
+  final existingSocket = opts['socket'];
+  // Node: options.host, else options.socket._host, else 'localhost'.
+  final host =
+      opts['host'] as String? ??
+      (existingSocket is net.NodeSocket ? existingSocket.connectHost : null) ??
+      'localhost';
   // An empty servername asks for no SNI. Gap: dart:io always sends the name
   // it validates against, so '' only stops the name overriding [host].
   final requestedName = opts['servername'] as String?;
