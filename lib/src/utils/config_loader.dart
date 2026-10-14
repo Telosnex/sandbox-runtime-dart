@@ -4,6 +4,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../node/errno.dart' show codeForErrno;
 import '../sandbox/sandbox_config.dart' show SandboxRuntimeConfig;
 import '../sandbox/sandbox_config.dart' show SandboxRuntimeConfigSchema;
 
@@ -78,11 +79,11 @@ LoadConfigResult loadConfig(String filePath) {
     content = File(filePath).readAsStringSync(encoding: utf8);
   } on FileSystemException catch (error) {
     final code = error.osError?.errorCode;
-    // dart:io exposes errno, whereas Node exposes its symbolic code.
-    if (code == 2 || code == 3) return const LoadConfigResultMissing();
+    final symbolicCode = code == null ? null : codeForErrno(code);
+    if (symbolicCode == 'ENOENT') return const LoadConfigResultMissing();
     return LoadConfigResultUnreadable(
       reason:
-          '$filePath could not be read (${error.osError?.message ?? error.message}).',
+          '$filePath could not be read (${symbolicCode ?? error.toString()}).',
     );
   } catch (error) {
     return LoadConfigResultUnreadable(
