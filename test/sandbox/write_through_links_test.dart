@@ -11,6 +11,7 @@ import 'package:sandbox_runtime/src/node/fs.dart'
         readFileSync,
         realpathSync,
         rmSync,
+        linkSync,
         symlinkSync,
         writeFileSync;
 import 'package:sandbox_runtime/src/node/os.dart' show tmpdir;
@@ -24,12 +25,6 @@ import 'package:test/test.dart';
 
 import '../helpers/bwrap_namespace.dart' show bwrapCanNamespace;
 import '../helpers/platform.dart' show isLinux, isMacOS;
-
-// Dart: the `linkSync` shim does not exist; a hard link is made with `ln`.
-void linkSync(String existingPath, String newPath) {
-  final result = spawnSync('ln', [existingPath, newPath]);
-  if (result.status != 0) throw StateError('link failed: $newPath');
-}
 
 /**
  * A write is judged by where it lands, not by the name it was asked for by:

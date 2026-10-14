@@ -347,6 +347,16 @@ void _symlinkSync(String target, String path) => Link(path).createSync(target);
 /// Node's `fs.symlinkSync(target, path)`. A variable so a test can replace it.
 void Function(String target, String path) symlinkSync = _symlinkSync;
 
+/// Node's `fs.linkSync(existingPath, newPath)`: a hard link, via `ln` since
+/// dart:io has no link(2).
+void linkSync(String existingPath, String newPath) {
+  _observe('linkSync', newPath);
+  final r = Process.runSync('ln', [existingPath, newPath]);
+  if (r.exitCode != 0) {
+    throw FileSystemException('link failed: ${r.stderr}', newPath);
+  }
+}
+
 /// Reproduce `fs.statSync(path)`.
 Stats _statSync(String path) {
   _observe('statSync', path);

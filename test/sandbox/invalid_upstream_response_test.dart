@@ -254,23 +254,17 @@ void main() {
       ('TLS-terminated', tlsGet),
     ]) {
       for (final path in ['/status-099', '/status-000']) {
-        test(
-          '$name: $path becomes 502 and the proxy keeps serving',
-          () async {
-            final bad = await get(path);
-            expect(bad.status, 502);
-            // Nothing from the upstream head or body is relayed.
-            expect(bad.raw.toLowerCase(), isNot(contains('x-up')));
-            expect(bad.raw, isNot(contains('leak')));
+        test('$name: $path becomes 502 and the proxy keeps serving', () async {
+          final bad = await get(path);
+          expect(bad.status, 502);
+          // Nothing from the upstream head or body is relayed.
+          expect(bad.raw.toLowerCase(), isNot(contains('x-up')));
+          expect(bad.raw, isNot(contains('leak')));
 
-            final good = await get('/ok');
-            expect(good.status, 200);
-            expect(good.raw.endsWith('ok'), true);
-          },
-          skip: tlsSkip,
-          // Dart: plain HTTP: plainUpstream.close() in tearDownAll never calls back (proxy->upstream socket left open after the 502); TLS-terminated: tls_terminate_proxy.dart:1278 failUpstream casts NodeHttpError `as Error` and throws, so the 502 never comes.
-          tags: ['pending'],
-        );
+          final good = await get('/ok');
+          expect(good.status, 200);
+          expect(good.raw.endsWith('ok'), true);
+        }, skip: tlsSkip);
       }
     }
   });
@@ -380,8 +374,6 @@ void main() {
           expect(r.raw, contains('Bad Gateway'));
           expect(r.raw.toLowerCase(), isNot(contains('x-up')));
         },
-        // Dart: the http shim's ServerResponse.writeHead (http.dart:265) accepts status 99 and 1000, so relayResponseHead returns true instead of sending the 502.
-        tags: ['pending'],
       );
     }
 

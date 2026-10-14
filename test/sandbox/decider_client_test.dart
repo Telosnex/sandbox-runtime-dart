@@ -199,19 +199,16 @@ void main() {
           final toProxy = stream.PassThrough();
           final fromProxy = stream.PassThrough();
           var hello = false;
-          // Dart: the Buffer shim has no readUInt32BE or subarray; readUIntBE and sublist do the same.
           var buf = Buffer.alloc(0);
           fromProxy.on('data', (Object? c) {
             buf = Buffer.concat([buf, Buffer.wrap(c as Uint8List)]);
-            while (buf.length >= 4 && buf.length >= 4 + buf.readUIntBE(0, 4)) {
+            while (buf.length >= 4 && buf.length >= 4 + buf.readUInt32BE(0)) {
               final f =
                   jsonDecode(
-                        Buffer.from(
-                          buf.sublist(4, 4 + buf.readUIntBE(0, 4)),
-                        ).toString(),
+                        buf.subarray(4, 4 + buf.readUInt32BE(0)).toString(),
                       )
                       as Frame;
-              buf = Buffer.from(buf.sublist(4 + buf.readUIntBE(0, 4)));
+              buf = buf.subarray(4 + buf.readUInt32BE(0));
               if (!hello) {
                 hello = true;
                 toProxy.write(
