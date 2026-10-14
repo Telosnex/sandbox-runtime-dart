@@ -157,12 +157,12 @@ List<String> linuxGetCwdMandatoryDenyPaths([bool allowGitConfig = false]) =>
     () {
       final cwd = process.cwd();
       final denyPaths = <String>[
-        ...DANGEROUS_FILES.map((file) => path.resolve(cwd, file)),
+        ...DANGEROUS_FILES.map((file) => path.absolute(file, cwd)),
         ...getDangerousDirectories().map(
-          (directory) => path.resolve(cwd, directory),
+          (directory) => path.absolute(directory, cwd),
         ),
       ];
-      final dotGitPath = path.resolve(cwd, '.git');
+      final dotGitPath = path.absolute('.git', cwd);
       var dotGitIsDirectory = false;
       try {
         dotGitIsDirectory = fs.statSync(dotGitPath).isDirectory();
@@ -170,8 +170,8 @@ List<String> linuxGetCwdMandatoryDenyPaths([bool allowGitConfig = false]) =>
         // .git doesn't exist
       }
       if (dotGitIsDirectory) {
-        denyPaths.add(path.resolve(cwd, '.git/hooks'));
-        if (!allowGitConfig) denyPaths.add(path.resolve(cwd, '.git/config'));
+        denyPaths.add(path.absolute('.git/hooks', cwd));
+        if (!allowGitConfig) denyPaths.add(path.absolute('.git/config', cwd));
       }
       return denyPaths;
     }();
@@ -261,7 +261,7 @@ bool processHasBoundingCapability(int cap) {
       return false;
     }
   }
-  return ((bits >> BigInt.from(cap)) & BigInt.one) == BigInt.one;
+  return ((bits >> cap) & BigInt.one) == BigInt.one;
 }
 
 /**
