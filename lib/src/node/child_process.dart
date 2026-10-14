@@ -215,8 +215,11 @@ bool killPid(int pid, [Object signal = 'SIGTERM']) {
 // --- launching ----------------------------------------------------------------
 
 class _Launched {
-  _Launched(this.pid, this.fds);
+  _Launched(this.pid, this.fds, [this.statusFd = -1]);
   final int pid;
+
+  /// Linux spawn helper: pipe that delivers the exact wait status, or -1.
+  final int statusFd;
 
   /// Parent ends of the stdio pipes, -1 where the slot is not 'pipe'.
   final List<int> fds;
@@ -347,15 +350,62 @@ _Launched _launch(
       // the child's env PATH. Resolve against the child's PATH here.
       final file = _resolve(command, env['PATH']);
       final pid = arena<Int32>();
+      var spawnFile = file;
+      var spawnArgv = argv;
+      var statusRead = -1, statusWrite = -1;
+      final helper = _spawnHelper();
+      if (helper != null) {
+        final st = arena<Int32>(2);
+        if (n.pipe(st) != 0) throw _LaunchError(codeForErrno(n.errno));
+        statusRead = st[0];
+        statusWrite = st[1];
+        n.fcntl(statusRead, 2, 1);
+        final hargs = [
+          helper,
+          '$statusWrite',
+          file,
+          ...List.generate(args.length + 1, (i) => argv[i].toDartString()),
+        ];
+        spawnArgv = arena<Pointer<Utf8>>(hargs.length + 1);
+        for (var i = 0; i < hargs.length; i++) {
+          spawnArgv[i] = hargs[i].toNativeUtf8(allocator: arena);
+        }
+        spawnArgv[hargs.length] = nullptr;
+        spawnFile = helper;
+      }
       final rc = n.spawnp(
         pid,
-        file.toNativeUtf8(allocator: arena),
+        spawnFile.toNativeUtf8(allocator: arena),
         actions,
         attr,
-        argv,
+        spawnArgv,
         envp,
       );
-      if (rc != 0) throw _LaunchError(codeForErrno(rc));
+      if (statusWrite >= 0) n.close(statusWrite);
+      if (rc != 0) {
+        if (statusRead >= 0) n.close(statusRead);
+        throw _LaunchError(codeForErrno(rc));
+      }
+      if (statusRead >= 0) {
+        // The helper reports {pid, errno} once the command is exec'd.
+        final msg = arena<Uint8>(8);
+        int got;
+        do {
+          got = n.read(statusRead, msg, 8);
+        } while (got < 0 && codeForErrno(n.errno) == 'EINTR');
+        if (got != 8) {
+          n.close(statusRead);
+          throw _LaunchError('EIO');
+        }
+        final d = ByteData.sublistView(msg.asTypedList(8));
+        final realPid = d.getInt32(0, Endian.host);
+        final err = d.getInt32(4, Endian.host);
+        if (err != 0) {
+          n.close(statusRead);
+          throw _LaunchError(codeForErrno(err));
+        }
+        return _Launched(realPid, List.of(parentEnds), statusRead);
+      }
       return _Launched(pid.value, List.of(parentEnds));
     } finally {
       n.faDestroy(actions);
@@ -430,8 +480,45 @@ typedef _SyscallD = int Function(int, int, int);
 /// Outcome of waiting: `exited` false means the wait timed out.
 typedef _Exit = ({bool exited, int? status});
 
+String? _helperPath;
+bool _helperLooked = false;
+
+/// The Linux spawn helper (tool/build_spawn_helper.dart), or null.
+String? _spawnHelper() {
+  if (!io.Platform.isLinux) return null;
+  if (_helperLooked) return _helperPath;
+  _helperLooked = true;
+  final arch = process.arch;
+  final candidates = <String>[];
+  final env = io.Platform.environment['SRT_SPAWN_HELPER'];
+  if (env != null) candidates.add(env);
+  final cfg = io.Platform.packageConfig;
+  if (cfg != null) {
+    try {
+      final config = jsonDecode(io.File(cfg).readAsStringSync()) as Map;
+      for (final e in config['packages'] as List) {
+        if ((e as Map)['name'] == 'sandbox_runtime') {
+          final root = Uri.file(cfg).resolve(e['rootUri'] as String);
+          candidates.add(
+            '${root.toFilePath()}/vendor/spawn-helper/$arch/srt-spawn',
+          );
+        }
+      }
+    } on Object {
+      // fall through to cwd
+    }
+  }
+  candidates.add(
+    '${io.Directory.current.path}/vendor/spawn-helper/$arch/srt-spawn',
+  );
+  for (final c in candidates) {
+    if (io.File(c).existsSync()) return _helperPath = io.File(c).absolute.path;
+  }
+  return null;
+}
+
 class _ExitWatcher {
-  _ExitWatcher(this._n, this.pid) {
+  _ExitWatcher(this._n, this.pid, [this._statusFd = -1]) {
     if (io.Platform.isMacOS) {
       final kq = _libc!.lookupFunction<Int32 Function(), int Function()>(
         'kqueue',
@@ -448,7 +535,7 @@ class _ExitWatcher {
       } finally {
         calloc.free(ev);
       }
-    } else {
+    } else if (_statusFd < 0) {
       final syscall = _libc!.lookupFunction<_SyscallN, _SyscallD>('syscall');
       _fd = syscall(434, pid, 0); // pidfd_open
     }
@@ -456,6 +543,7 @@ class _ExitWatcher {
 
   final _Libc _n;
   final int pid;
+  int _statusFd;
   int _fd = -1;
   _Exit? _done;
 
@@ -497,6 +585,7 @@ class _ExitWatcher {
         calloc.free(ts);
       }
     }
+    if (_statusFd >= 0) return _waitHelper(timeoutMs);
     if (_fd >= 0) {
       final pfd = calloc<Int32>(2);
       try {
@@ -512,6 +601,33 @@ class _ExitWatcher {
       }
     }
     return _finish(_reap(blocking: _fd < 0));
+  }
+
+  _Exit _waitHelper(int timeoutMs) {
+    final pfd = calloc<Int32>(2);
+    final buf = calloc<Uint8>(4);
+    try {
+      pfd[0] = _statusFd;
+      pfd[1] = _pollIn;
+      int ready;
+      do {
+        ready = _n.poll(pfd, 1, timeoutMs);
+      } while (ready < 0 && codeForErrno(_n.errno) == 'EINTR');
+      if (ready == 0) return (exited: false, status: null);
+      int got;
+      do {
+        got = _n.read(_statusFd, buf, 4);
+      } while (got < 0 && codeForErrno(_n.errno) == 'EINTR');
+      final status = got == 4
+          ? ByteData.sublistView(buf.asTypedList(4)).getInt32(0, Endian.host)
+          : null;
+      _n.close(_statusFd);
+      _statusFd = -1;
+      return _done = (exited: true, status: status);
+    } finally {
+      calloc.free(pfd);
+      calloc.free(buf);
+    }
   }
 
   int? _reap({bool blocking = false}) {
@@ -601,7 +717,7 @@ SpawnSyncResult spawnSync(
     );
   }
 
-  final watcher = _ExitWatcher(native, launched.pid);
+  final watcher = _ExitWatcher(native, launched.pid, launched.statusFd);
   final fds = launched.fds;
   final outputs = <List<int>?>[
     null,
@@ -891,7 +1007,7 @@ ChildProcess spawn(
   child.stdout = reader(fds[1]);
   child.stderr = reader(fds[2]);
   Timer.run(() => child.emit('spawn'));
-  final watcher = _ExitWatcher(native, launched.pid);
+  final watcher = _ExitWatcher(native, launched.pid, launched.statusFd);
   Timer.periodic(const Duration(milliseconds: 10), (timer) {
     final exit = watcher.wait(0);
     if (!exit.exited) return;
