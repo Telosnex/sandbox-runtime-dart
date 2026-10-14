@@ -1105,6 +1105,37 @@ String execSync(String command, List<String> arguments, {Duration? timeout}) {
   return result.stdout as String;
 }
 
+/// Node's `execFileSync(file, args, options)`: runs [file] without a shell,
+/// returns stdout (a String with `encoding`, else a [Buffer]); throws on
+/// launch failure or non-zero exit with `status`, `stdout`, `stderr` set.
+/// Options are those of [spawnSync]; stderr is piped unless `stdio` is given.
+Object? execFileSync(
+  String file, [
+  List<String> args = const [],
+  Map<String, Object?> options = const {},
+]) {
+  final result = spawnSync(file, args, {
+    'stdio': ['pipe', 'pipe', 'pipe'],
+    ...options,
+  });
+  final error = result.error;
+  if (error != null) {
+    if (error is NodeError) {
+      error.status = result.status;
+    }
+    throw error;
+  }
+  if (result.status != 0 || result.signal != null) {
+    final err = NodeError(
+      'Command failed: ${[file, ...args].join(' ')}'
+      '${result.stderr == null ? '' : '\n${result.stderr}'}',
+      code: 'ERR_CHILD_PROCESS',
+    )..status = result.status;
+    throw err;
+  }
+  return result.stdout;
+}
+
 /// Asynchronously run a command and return stdout, or null on an exec error.
 /// This is the callback-error behavior needed by Node's `exec` call site.
 Future<String?> exec(
