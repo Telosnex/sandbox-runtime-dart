@@ -3,6 +3,106 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+/// The web-global / `node:url` URL declaration used by the port.
+///
+/// This declaration is pending its full WHATWG implementation. The constructor
+/// resolves a relative input against [base] and throws [FormatException] for
+/// invalid URLs, rather than Node's `TypeError`.
+class URL {
+  URL(String input, [String? base]) : _href = _parseUrl(input, base);
+
+  String _href;
+
+  String get href => _href;
+  set href(String value) => _href = _parseUrl(value, null);
+
+  String get protocol =>
+      throw UnimplementedError('node:url URL: pending (wave 1)');
+  set protocol(String value) =>
+      throw UnimplementedError('node:url URL: pending (wave 1)');
+
+  String get username =>
+      throw UnimplementedError('node:url URL: pending (wave 1)');
+  set username(String value) =>
+      throw UnimplementedError('node:url URL: pending (wave 1)');
+
+  String get password =>
+      throw UnimplementedError('node:url URL: pending (wave 1)');
+  set password(String value) =>
+      throw UnimplementedError('node:url URL: pending (wave 1)');
+
+  String get host => throw UnimplementedError('node:url URL: pending (wave 1)');
+  set host(String value) =>
+      throw UnimplementedError('node:url URL: pending (wave 1)');
+
+  String get hostname =>
+      throw UnimplementedError('node:url URL: pending (wave 1)');
+  set hostname(String value) =>
+      throw UnimplementedError('node:url URL: pending (wave 1)');
+
+  String get port => throw UnimplementedError('node:url URL: pending (wave 1)');
+  set port(String value) =>
+      throw UnimplementedError('node:url URL: pending (wave 1)');
+
+  String get pathname =>
+      throw UnimplementedError('node:url URL: pending (wave 1)');
+  set pathname(String value) =>
+      throw UnimplementedError('node:url URL: pending (wave 1)');
+
+  String get search =>
+      throw UnimplementedError('node:url URL: pending (wave 1)');
+  set search(String value) =>
+      throw UnimplementedError('node:url URL: pending (wave 1)');
+
+  String get hash => throw UnimplementedError('node:url URL: pending (wave 1)');
+  set hash(String value) =>
+      throw UnimplementedError('node:url URL: pending (wave 1)');
+
+  String get origin =>
+      throw UnimplementedError('node:url URL: pending (wave 1)');
+
+  URLSearchParams get searchParams =>
+      throw UnimplementedError('node:url URL: pending (wave 1)');
+
+  @override
+  String toString() => href;
+}
+
+String _parseUrl(String input, String? base) {
+  try {
+    final parsedInput = Uri.parse(input);
+    final Uri parsed;
+    if (parsedInput.hasScheme) {
+      parsed = parsedInput;
+    } else if (base != null) {
+      final parsedBase = Uri.parse(base);
+      if (!parsedBase.hasScheme) {
+        throw const FormatException('Invalid URL base');
+      }
+      parsed = parsedBase.resolveUri(parsedInput);
+    } else {
+      throw const FormatException('Invalid URL');
+    }
+    if (!parsed.hasScheme) throw const FormatException('Invalid URL');
+    if (parsed.host.isNotEmpty) {
+      // Reuse the URL-host parser used by address normalization so invalid
+      // hosts fail rather than being accepted by dart:core Uri alone.
+      whatwgUrlHostname(parsed.host);
+    }
+    if (const {'http', 'https', 'ftp', 'ws', 'wss'}.contains(parsed.scheme) &&
+        parsed.host.isEmpty) {
+      throw const FormatException('Invalid URL host');
+    }
+    return parsed.toString();
+  } on FormatException catch (error) {
+    throw FormatException('Invalid URL: $input', error);
+  }
+}
+
+/// `node:url` file URL conversion. Its platform-specific behavior is pending.
+String fileURLToPath(String url) =>
+    throw UnimplementedError('node:url URL: pending (wave 1)');
+
 /// Return the `hostname` of `new URL('http://$host/').hostname` for the
 /// supported special-URL host forms. Throws [FormatException] when the input
 /// is invalid or uses IDNA behavior outside this shim's supported subset.
