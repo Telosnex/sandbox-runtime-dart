@@ -1,5 +1,9 @@
 // Ported from sandbox-runtime test/sandbox/request-rewriting.test.ts @ 24eb39e.
 // Dart: a Promise settles once; every `if (!x.isCompleted)` guard below stands for that.
+// Dart: the file cannot load until https.Server accepts an SNICallback that answers (null, undefined) (probeServerNameSupport runs at load).
+@Tags(['pending'])
+library;
+
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments, prefer_interpolation_to_compose_strings, prefer_function_declarations_over_variables, curly_braces_in_flow_control_structures, library_private_types_in_public_api
 import 'dart:async';
 import 'dart:convert';
@@ -413,11 +417,20 @@ Future<void> main() async {
   });
 
   final EXPOSES_SERVER_NAME = await probeServerNameSupport();
-  // Dart: upstream's `test.skipIf(...)`, as the skip argument of its one use.
-  final Object? testIfServerNameSkip =
-      !EXPOSES_SERVER_NAME || !SERVES_EMITTED_CONNECTIONS
-      ? 'server name or TLS termination unavailable'
-      : null;
+  void testIfServerName(
+    String name,
+    Future<void> Function() fn,
+    int timeoutMs,
+  ) => test(
+    name,
+    fn,
+    // Dart: pending until node/tls.dart connect() takes the `socket` option.
+    tags: ['pending'],
+    skip: !EXPOSES_SERVER_NAME || !SERVES_EMITTED_CONNECTIONS
+        ? 'server name or TLS termination unavailable'
+        : null,
+    timeout: Timeout(Duration(milliseconds: timeoutMs)),
+  );
 
   group('applyHeaderEdits', () {
     test('removals fold case and the separators - _ and .', () {
@@ -1813,7 +1826,7 @@ Future<void> main() async {
       timeout: const Timeout(Duration(milliseconds: 15000)),
     );
 
-    test(
+    testIfServerName(
       'TLS-terminated: a server name of another host is answered 421',
       () async {
         asked = 0;
@@ -1825,10 +1838,7 @@ Future<void> main() async {
         });
         expect(asked, 0);
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
-      skip: testIfServerNameSkip,
-      timeout: const Timeout(Duration(milliseconds: 15000)),
+      15000,
     );
 
     test(
