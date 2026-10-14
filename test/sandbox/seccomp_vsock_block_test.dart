@@ -117,28 +117,25 @@ void main() {
     });
 
     // Dart: fails on the VM: apply-seccomp cannot write /proc/self/setgroups inside bwrap's userns (environment)
-    test(
-      'is refused when the network is not restricted',
-      () async {
-        final wrapped = await wrapCommandWithSandboxLinux(
-          LinuxSandboxParams(
-            command: quote(['python3', '-c', VSOCK_ATTEMPTS]),
-            needsNetworkRestriction: false,
-            writeConfig: FsWriteRestrictionConfig(
-              allowOnly: ['/tmp'],
-              denyWithinAllow: [],
-            ),
+    test('is refused when the network is not restricted', () async {
+      final wrapped = await wrapCommandWithSandboxLinux(
+        LinuxSandboxParams(
+          command: quote(['python3', '-c', VSOCK_ATTEMPTS]),
+          needsNetworkRestriction: false,
+          writeConfig: FsWriteRestrictionConfig(
+            allowOnly: ['/tmp'],
+            denyWithinAllow: [],
           ),
-        );
+        ),
+      );
 
-        final r = await spawnAsync(
-          wrapped,
-          const RunOpts(shell: true, encoding: 'utf8', timeout: 15000),
-        );
-        expect(r.stdout, contains(VSOCK_REFUSED));
-        expect(r.status, 0);
-      },
-    );
+      final r = await spawnAsync(
+        wrapped,
+        const RunOpts(shell: true, encoding: 'utf8', timeout: 15000),
+      );
+      expect(r.stdout, contains(VSOCK_REFUSED));
+      expect(r.status, 0);
+    });
 
     // Dart: fails on the VM: apply-seccomp cannot write /proc/self/setgroups inside bwrap's userns (environment)
     test(

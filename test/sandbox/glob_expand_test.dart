@@ -252,13 +252,10 @@ void main() {
       ('//server/share//*.key', '//server/share/'),
       ('/a//*.pem', '/a/'),
     ]) {
-      test(
-        'starts $pattern from $base',
-        () {
-          expect(globPatternBaseDir(pattern), base);
-          expect(globBaseDirIsRoot(base), false);
-        },
-      );
+      test('starts $pattern from $base', () {
+        expect(globPatternBaseDir(pattern), base);
+        expect(globBaseDirIsRoot(base), false);
+      });
     }
   });
 

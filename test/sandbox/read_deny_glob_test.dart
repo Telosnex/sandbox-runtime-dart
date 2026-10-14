@@ -2983,12 +2983,9 @@ void main() {
       ];
 
       for (final (why, tail) in LINK_PATTERNS)
-        test(
-          'covers the file behind a directory link when $why',
-          () {
-            expect(expandReadDenyGlobLinux(join(BASE, tail), []), [REALKEY]);
-          },
-        );
+        test('covers the file behind a directory link when $why', () {
+          expect(expandReadDenyGlobLinux(join(BASE, tail), []), [REALKEY]);
+        });
 
       test(
         'mounts a match behind a link whose target is outside the pattern base, at its target',
