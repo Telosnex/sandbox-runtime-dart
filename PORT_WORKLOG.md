@@ -12,7 +12,7 @@ pending ports). No agent is running, and there is no other worktree or branch.
 ### Test fidelity pass (done)
 
 Every ported test file now has all upstream titles in order and every
-upstream comment (`/tmp/audit/titles.py`, `/tmp/audit/comments.py`; see
+upstream comment (`tool/audit/titles.py`, `tool/audit/comments.py`; see
 below). What changed beyond comments:
 
 - `config_validation_test` was rebuilt from upstream statement for
@@ -54,10 +54,10 @@ Still open:
   `expect(vectors.length).toBe(22)`, moved into a test as the convention
   says.
 
-To repeat the audit: `python3 /tmp/audit/comments.py` (every upstream
+To repeat the audit: `python3 tool/audit/comments.py` (every upstream
 comment line of 12+ characters must appear after normalizing `{@link X}`
-and `**\/`) and `python3 /tmp/audit/titles.py all`. The scripts are not in
-the repo; copy them into `tool/audit/` if they should survive a reboot.
+and `**\/`) and `python3 tool/audit/titles.py all`. `tool/audit/README.md` lists the
+expected output.
 
 ### Linux VM
 
@@ -93,9 +93,9 @@ the repo; copy them into `tool/audit/` if they should survive a reboot.
 - Check an agent's report against `comments.py`/`titles.py` and its diff:
   in the fidelity pass, half the agents reported done with work missing,
   and one replaced an upstream comment with an invented one.
-- Mechanical test ports go faster with a translator: `/tmp/cv/ts2dart.py`
+- Mechanical test ports go faster with a translator: `tool/audit/ts2dart.py`
   (object keys, `expect` matchers, `test.each`/`test.if`, `for...of`) did
-  most of config-validation; hand fixes went in `/tmp/cv/fixups.py`.
+  most of config-validation; the rest was hand fixes.
 - Author: James O'Leary <jpohhhh@gmail.com>.
 
 ### Remaining source (about 19,000 of 27,700 upstream lines)
