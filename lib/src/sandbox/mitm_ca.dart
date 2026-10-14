@@ -443,7 +443,19 @@ CaPairValidation validateCaPair(String certPem, String keyPem) =>
 
 String randomSerial() => _randomSerial();
 
-DateTime daysFromNow(int days) => DateTime.now().add(Duration(days: days));
+DateTime daysFromNow(int days) {
+  final d = DateTime.now();
+  return DateTime(
+    d.year,
+    d.month,
+    d.day + days,
+    d.hour,
+    d.minute,
+    d.second,
+    d.millisecond,
+    d.microsecond,
+  );
+}
 
 Set<String> _ownedDirs(MitmCA ca) => {
   File(ca.trustBundlePath).parent.path,
