@@ -10,6 +10,7 @@ import 'package:path/path.dart' show dirname;
 import '../node/abort.dart';
 import '../node/child_process.dart' show NodeChildProcess;
 import '../node/crypto.dart' show randomBytes;
+import '../node/structured_clone.dart';
 import '../node/errno.dart' show NodeError, NodeException;
 import '../node/fs.dart' as fs;
 import '../node/os.dart' show EOL;
@@ -2977,8 +2978,8 @@ void _updateConfig(SandboxRuntimeConfig newConfig) {
   // Deep clone the config to avoid mutations. structuredClone cannot clone
   // functions, so pull filterRequest out, clone the rest, and put it back —
   // a function reference is immutable in the sense that matters here.
-  // Dart: no structuredClone; the config classes are immutable, so it is held as given.
-  _config = newConfig;
+  // Dart: functions pass through structuredClone by reference.
+  _config = structuredClone(newConfig);
   _configInstalls++;
   _resolvedAddressGuard = nextGuard;
   // Re-resolve parent proxy so hot-reload picks up changes. Note: the proxy
