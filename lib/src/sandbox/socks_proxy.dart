@@ -5,6 +5,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import '../node/buffer.dart' show readUInt16BE;
+import '../node/errno.dart' show errorMessage;
 import '../node/net.dart' as net;
 import '../node/socks5_server.dart' as socks5;
 import '../utils/debug.dart' show logForDebugging;
@@ -232,7 +234,7 @@ SocksProxyWrapper createSocksProxyServer(SocksProxyServerOptions options) {
         })
         .catchError((Object err) {
           logForDebugging(
-            'SOCKS connect to $host:$port failed: ${_message(err)}',
+            'SOCKS connect to $host:$port failed: ${errorMessage(err)}',
             level: 'error',
           );
           if (!clientGone) {
@@ -293,14 +295,6 @@ SocksProxyWrapper createSocksProxyServer(SocksProxyServerOptions options) {
       openSockets.clear();
     },
   );
-}
-
-String _message(Object err) {
-  try {
-    return (err as dynamic).message as String;
-  } catch (_) {
-    return err.toString();
-  }
 }
 
 class _SocksProxyWrapper implements SocksProxyWrapper {
@@ -422,9 +416,6 @@ Future<void> _refuseUnauthenticated(
 Uint8List _socksReply(int status) =>
     Uint8List.fromList([0x05, status, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
 
-int _readUInt16BE(Uint8List buf, int offset) =>
-    (buf[offset] << 8) | buf[offset + 1];
-
 /** Parse the SOCKS5 CONNECT request (after method selection). */
 Future<({String host, int port})?> _readSocksConnect(net.NodeSocket socket) {
   final completer = Completer<({String host, int port})?>();
@@ -452,22 +443,22 @@ Future<({String host, int port})?> _readSocksConnect(net.NodeSocket socket) {
     if (atyp == 0x01) {
       if (buf.length < 10) return;
       final host = buf.sublist(4, 8).join('.');
-      finish((host: host, port: _readUInt16BE(buf, 8)));
+      finish((host: host, port: readUInt16BE(buf, 8)));
     } else if (atyp == 0x03) {
       if (buf.length < 5) return;
       final len = buf[4];
       if (buf.length < 5 + len + 2) return;
       finish((
         host: utf8.decode(buf.sublist(5, 5 + len), allowMalformed: true),
-        port: _readUInt16BE(buf, 5 + len),
+        port: readUInt16BE(buf, 5 + len),
       ));
     } else if (atyp == 0x04) {
       if (buf.length < 22) return;
       final parts = <String>[];
       for (var i = 0; i < 16; i += 2) {
-        parts.add(_readUInt16BE(buf, 4 + i).toRadixString(16));
+        parts.add(readUInt16BE(buf, 4 + i).toRadixString(16));
       }
-      finish((host: parts.join(':'), port: _readUInt16BE(buf, 20)));
+      finish((host: parts.join(':'), port: readUInt16BE(buf, 20)));
     } else {
       finish(null);
     }
@@ -489,8 +480,8 @@ Future<({String host, int port})?> _readSocksConnect(net.NodeSocket socket) {
  * configured reason can't fabricate extra log lines, and cap the length.
  */
 Uint8List _sshDisconnectPacket(String description) {
+  // eslint-disable-next-line no-control-regex -- stripping control chars is the point
   var text = description.replaceAll(RegExp(r'[\x00-\x1f\x7f-\x9f]+'), ' ');
-  // JS String#slice counts UTF-16 code units, as Dart's substring does.
   if (text.length > 1000) text = text.substring(0, 1000);
   final desc = utf8.encode(text);
   final lang = Uint8List(0);

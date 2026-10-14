@@ -103,11 +103,21 @@ class Socks5Connection {
     final authMethods = await readBytes(authMethodsAmount);
     final authMethodByteCode = server.authHandler != null ? 2 : 0;
     if (!authMethods.contains(authMethodByteCode)) {
-      socket.write(Uint8List.fromList([5, 255]));
+      socket.write(
+        Uint8List.fromList([
+          5, // Version 5 - Socks5
+          255, // no acceptable auth modes were offered
+        ]),
+      );
       socket.destroy();
       return;
     }
-    socket.write(Uint8List.fromList([5, authMethodByteCode]));
+    socket.write(
+      Uint8List.fromList([
+        5, // Version 5 - Socks5
+        authMethodByteCode, // The chosen auth method, 0x00 for no auth, 0x02 for user-pass
+      ]),
+    );
     if (server.authHandler != null) {
       unawaited(handleUserPassword());
     } else {
@@ -127,14 +137,24 @@ class Socks5Connection {
     void acceptCallback() {
       if (calledBack) return;
       calledBack = true;
-      socket.write(Uint8List.fromList([1, 0]));
+      socket.write(
+        Uint8List.fromList([
+          1, // User pass auth version
+          0, // Success
+        ]),
+      );
       unawaited(handleConnectionRequest());
     }
 
     void denyCallback() {
       if (calledBack) return;
       calledBack = true;
-      socket.write(Uint8List.fromList([1, 1]));
+      socket.write(
+        Uint8List.fromList([
+          1, // User pass auth version
+          1, // Failure
+        ]),
+      );
       socket.destroy();
     }
 
@@ -177,7 +197,7 @@ class Socks5Connection {
     final portBytes = await readBytes(2);
     final port = (portBytes[0] << 8) | portBytes[1];
     if (!server.supportedCommands.contains(command)) {
-      socket.write(Uint8List.fromList([5, 7]));
+      socket.write(Uint8List.fromList([5, 7 /* COMMAND_NOT_SUPPORTED */]));
       socket.destroy();
       return;
     }
@@ -194,7 +214,13 @@ class Socks5Connection {
     void denyCallback() {
       if (calledBack) return;
       calledBack = true;
-      socket.write(Uint8List.fromList([5, 2, 0, 1, 0, 0, 0, 0, 0, 0]));
+      socket.write(
+        Uint8List.fromList([
+          5,
+          2, // connection not allowed by ruleset
+          0, 1, 0, 0, 0, 0, 0, 0,
+        ]),
+      );
       socket.destroy();
     }
 
