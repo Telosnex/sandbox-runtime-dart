@@ -2,7 +2,7 @@
 // ignore_for_file: constant_identifier_names, dangling_library_doc_comments
 // ignore_for_file: slash_for_doc_comments, curly_braces_in_flow_control_structures
 // ignore_for_file: prefer_interpolation_to_compose_strings, non_constant_identifier_names
-// ignore_for_file: avoid_dynamic_calls, prefer_adjacent_string_concatenation
+// ignore_for_file: prefer_adjacent_string_concatenation
 
 import 'dart:async';
 import 'dart:typed_data';
@@ -424,7 +424,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
   // ECONNRESET uncaughtException from node:_http_server and can take down
   // the host process. Parse errors get the RFC-required 400; resets and
   // already-unwritable sockets are just dropped.
-  server.on('clientError', (dynamic err, net.NodeSocket socket) {
+  server.on('clientError', (Object err, net.NodeSocket socket) {
     logForDebugging(
       'Client connection error: ${errorMessage(err)}',
       level: 'error',
@@ -488,7 +488,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
     Uint8List head,
   ) async {
     // Attach error handler immediately to prevent unhandled errors
-    socket.on('error', (dynamic err) {
+    socket.on('error', (Object err) {
       logForDebugging(
         'Client socket error: ${errorMessage(err)}',
         level: 'error',
@@ -924,7 +924,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
       upstream.pipe(socket);
       socket.pipe(upstream);
 
-      upstream.on('error', (dynamic err) {
+      upstream.on('error', (Object err) {
         logForDebugging(
           'CONNECT tunnel failed: ${errorMessage(err)}',
           level: 'error',
@@ -953,13 +953,13 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
     // listener it escapes as an uncaughtException (the runtime emits it
     // from node:_http_server). `pipe()` does not forward error events, so
     // the body pipelines below never see it either.
-    req.on('error', (dynamic err) {
+    req.on('error', (Object err) {
       logForDebugging(
         'Client request error: ${errorMessage(err)}',
         level: 'error',
       );
     });
-    res.on('error', (dynamic err) {
+    res.on('error', (Object err) {
       logForDebugging(
         'Client response error: ${errorMessage(err)}',
         level: 'error',
@@ -1234,7 +1234,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
             // The response stream errors independently of proxyReq (e.g.
             // upstream reset mid-body after headers); pipe() does not
             // handle source errors.
-            proxyRes.on('error', (dynamic err) {
+            proxyRes.on('error', (Object err) {
               logForDebugging(
                 'Upstream response error: ${errorMessage(err)}',
                 level: 'error',
@@ -1273,7 +1273,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
             // The response stream errors independently of proxyReq (e.g.
             // upstream reset mid-body after headers); pipe() does not
             // handle source errors.
-            proxyRes.on('error', (dynamic err) {
+            proxyRes.on('error', (Object err) {
               logForDebugging(
                 'Upstream response error: ${errorMessage(err)}',
                 level: 'error',
@@ -1323,7 +1323,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
             // The response stream errors independently of proxyReq (e.g.
             // upstream reset mid-body after headers); pipe() does not
             // handle source errors.
-            proxyRes.on('error', (dynamic err) {
+            proxyRes.on('error', (Object err) {
               logForDebugging(
                 'Upstream response error: ${errorMessage(err)}',
                 level: 'error',
