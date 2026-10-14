@@ -17,29 +17,6 @@ class Server extends http.NodeHttpServer {
   }
   final Map<Object?, Object?> options;
 
-  /// TLS server side over each accepted socket, then the HTTP parser on it.
-  @override
-  void serveConnection(net.NodeSocket accepted) {
-    final context =
-        options['secureContext'] as tls.SecureContext? ??
-        tls.createSecureContext(
-          cert: _pem(options['cert']),
-          key: _pem(options['key']),
-        );
-    final secured = tls.TLSSocket(accepted, {
-      'isServer': true,
-      'secureContext': context,
-    });
-    secured.on('error', ([_]) {});
-    super.serveConnection(secured);
-  }
-
-  static String _pem(Object? v) => v is String
-      ? v
-      : v is List<int>
-      ? String.fromCharCodes(v)
-      : throw ArgumentError('https.createServer needs PEM cert and key');
-
   @override
   net.NodeSocket wrapConnection(net.NodeSocket accepted) {
     Object? context = options['secureContext'];
