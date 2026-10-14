@@ -8,7 +8,17 @@ import 'credential_mask_files.dart' show MaskedFileStore;
 import 'credential_sentinel.dart' show SentinelRegistry;
 import 'linux_sandbox_utils.dart' show SandboxDependencyCheck;
 import 'mitm_ca.dart' show MitmCA;
-import 'sandbox_config.dart' show SandboxRuntimeConfig;
+import 'sandbox_config.dart'
+    show
+        CredentialsConfig,
+        FilesystemConfig,
+        GitConfig,
+        IgnoreViolationsConfig,
+        NetworkConfig,
+        RipgrepConfig,
+        SandboxRuntimeConfig,
+        SeccompConfig,
+        WindowsConfig;
 import 'sandbox_schemas.dart'
     show
         FsReadRestrictionConfig,
@@ -64,6 +74,45 @@ class WrapWithSandboxOptions {
   const WrapWithSandboxOptions({this.commandId, this.commandText});
 }
 
+/// TS `Partial<SandboxRuntimeConfig>`: every field of [SandboxRuntimeConfig], all optional.
+class PartialSandboxRuntimeConfig {
+  final NetworkConfig? network;
+  final FilesystemConfig? filesystem;
+  final CredentialsConfig? credentials;
+  final IgnoreViolationsConfig? ignoreViolations;
+  final bool? enableWeakerNestedSandbox;
+  final bool? enableWeakerNetworkIsolation;
+  final bool? allowAppleEvents;
+  final RipgrepConfig? ripgrep;
+  final int? mandatoryDenySearchDepth;
+  final bool? allowPty;
+  final SeccompConfig? seccomp;
+  final String? bwrapPath;
+  final String? socatPath;
+  final String? javaAgentJarPath;
+  final WindowsConfig? windows;
+  final GitConfig? git;
+
+  const PartialSandboxRuntimeConfig({
+    this.network,
+    this.filesystem,
+    this.credentials,
+    this.ignoreViolations,
+    this.enableWeakerNestedSandbox,
+    this.enableWeakerNetworkIsolation,
+    this.allowAppleEvents,
+    this.ripgrep,
+    this.mandatoryDenySearchDepth,
+    this.allowPty,
+    this.seccomp,
+    this.bwrapPath,
+    this.socatPath,
+    this.javaAgentJarPath,
+    this.windows,
+    this.git,
+  });
+}
+
 /**
  * Interface for the sandbox manager API
  */
@@ -98,14 +147,14 @@ abstract interface class ISandboxManager {
   Future<String> wrapWithSandbox(
     String command, [
     String? binShell,
-    SandboxRuntimeConfig? customConfig,
+    PartialSandboxRuntimeConfig? customConfig,
     AbortSignal? abortSignal,
     WrapWithSandboxOptions? options,
   ]);
   Future<({List<String> argv, Map<String, String?> env})> wrapWithSandboxArgv(
     String command, [
-    String? binShell,
-    SandboxRuntimeConfig? customConfig,
+    Object? binShell, // String | WindowsBinShell
+    PartialSandboxRuntimeConfig? customConfig,
     AbortSignal? abortSignal,
     String? cwd,
     WrapWithSandboxOptions? options,
@@ -292,7 +341,7 @@ class _SandboxManager implements ISandboxManager {
   Future<String> wrapWithSandbox(
     String command, [
     String? binShell,
-    SandboxRuntimeConfig? customConfig,
+    PartialSandboxRuntimeConfig? customConfig,
     AbortSignal? abortSignal,
     WrapWithSandboxOptions? options,
   ]) => throw UnimplementedError(
@@ -302,8 +351,8 @@ class _SandboxManager implements ISandboxManager {
   @override
   Future<({List<String> argv, Map<String, String?> env})> wrapWithSandboxArgv(
     String command, [
-    String? binShell,
-    SandboxRuntimeConfig? customConfig,
+    Object? binShell, // String | WindowsBinShell
+    PartialSandboxRuntimeConfig? customConfig,
     AbortSignal? abortSignal,
     String? cwd,
     WrapWithSandboxOptions? options,
