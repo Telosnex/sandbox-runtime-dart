@@ -73,7 +73,21 @@ expected output.
 - To test: `git clone /media/psf/Home/dev/sandbox-runtime-dart /root/srt-dart`,
   then `dart pub get`, `dart run tool/build_seccomp.dart` and `dart test`.
 
-### Wave 1 restart: STATE (2026-10-13 late; rate-limit suspension)
+### Wave 1 phase A: nearly DONE (2026-10-14)
+
+Main 3b7769d has every src/ module ported and reviewed except where noted:
+shims (stream/net/http/tls/fd_io, web/https, sys incl. the Linux spawn
+helper vendor/spawn-helper-src/srt-spawn.c), linux_sandbox_utils,
+sandbox_manager, http/tls/socks/proxy-only/parent/mux/emitted, filter,
+body-substitution, decider, credentials, mitm, cli/proxy-cli/proxy-main,
+config toJson. Open: shim-stream review fixes in flight (Agent defaults
+maxSockets Infinity/keepAlive false, fd_io nonblocking writes + CLOEXEC
+accept, early 400 on an invalid request line); then untag the mux_proxy_test
+TLS-first-byte case. Known gaps: servername '' cannot disable SNI (dart:io);
+https SNICallback gets '' (dart:io does not report the client's name).
+Next: phase B, the ~100 unported upstream test files.
+
+### (historical) Wave 1 restart: STATE (2026-10-13 late; rate-limit suspension)
 
 Agents are gone (new run); worktrees and branches are the state. Main =
 3da14cd: shim-web, shim-sys to e5ded96, impl-linux-small, impl-mitm-ca,
