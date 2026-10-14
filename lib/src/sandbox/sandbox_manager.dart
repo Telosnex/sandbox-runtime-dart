@@ -1367,7 +1367,7 @@ Future<void> _initializeSteps(
           : null;
 
       // The auth token is only set when this process owns the proxy; an
-      // external proxy (_config!.network.httpProxyPort) handles its own auth,
+      // external proxy (config.network.httpProxyPort) handles its own auth,
       // and embedding our token in its URL would be wrong.
       _proxyAuthToken = _config!.network.httpProxyPort != null
           ? null
@@ -1375,7 +1375,7 @@ Future<void> _initializeSteps(
 
       // The mux front-end serves both protocols on one port. Each side's
       // reported port is the external override if configured, else the mux
-      // port — so the public _config!.network.{http,socks}ProxyPort contract
+      // port — so the public config.network.{http,socks}ProxyPort contract
       // is unchanged. The mux is skipped only when BOTH are external.
       final needLocalProxy =
           _config!.network.httpProxyPort == null ||

@@ -6,12 +6,16 @@ import 'dart:io';
 
 /**
  * Find the path to an executable, similar to the `which` command.
- * Uses the system `which` command to find executables.
+ * Uses Bun.which when running in Bun, falls back to spawnSync for Node.js.
  *
  * @param bin - The name of the executable to find
  * @returns The full path to the executable, or null if not found
  */
 String? _whichSync(String bin) {
+  // Check if we're running in Bun
+  // Dart: JS-only branch (Bun.which); never taken.
+
+  // Fallback to Node.js implementation
   try {
     // Run the `which` command synchronously.
     final result = Process.runSync(

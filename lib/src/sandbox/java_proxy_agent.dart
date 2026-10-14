@@ -64,7 +64,7 @@ final String _JAR_REL_PATH = path.join(
   JAVA_PROXY_AGENT_JAR_NAME,
 );
 
-/// Steps 0–3 of the lookup; null means try the global npm install.
+/// Steps 0–3 of the lookup; undefined means try the global npm install.
 Future<String?> _findLocalJar([String? explicitPath]) async {
   if (explicitPath != null && explicitPath.isNotEmpty) {
     if (fs.existsSync(explicitPath)) return explicitPath;
@@ -111,7 +111,7 @@ String? _findGlobalJar(List<String> globalBases) {
 /// own JAVA_TOOL_OPTIONS is preserved unless that var is on the
 /// credential-deny list, in which case it is dropped so the deny holds.
 /// Flags already present in the inherited value are not duplicated.
-/// Returns null when there is nothing to set.
+/// Returns undefined when there is nothing to set.
 ///
 String? buildJavaToolOptions({
   String? agentJarPath,

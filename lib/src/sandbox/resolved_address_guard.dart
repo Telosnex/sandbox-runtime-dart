@@ -108,6 +108,12 @@ List<String> localInterfaceAddresses() {
 }
 
 class ResolvedAddressDeniedError extends dns.NodeLookupError {
+  /**
+   * @param reason parenthetical for the violation line and the client, e.g.
+   *   `resolved to a loopback address` — the class, never the address, which
+   *   the sandboxed client should not learn from a refusal.
+   * @param addresses the refused addresses, for operator logs.
+   */
   ResolvedAddressDeniedError(this.hostname, this.reason, this.addresses)
     : super(
         'ERR_SRT_RESOLVED_ADDRESS_DENIED',

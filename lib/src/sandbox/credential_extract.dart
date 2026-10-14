@@ -27,7 +27,10 @@ class ExtractResult {
 }
 
 /**
- * Match with the Node `d`-flag offset array supplied by the Node shim.
+ * `RegExpMatchArray` with the `d`-flag indices array. The project targets
+ * ES2020 so `lib.es2022.regexp` is not loaded, but Node ≥18 (the engine
+ * floor) supports `hasIndices` at runtime.
+ * Dart: the Node shim supplies the offset array.
  */
 typedef _MatchWithIndices = node_regexp.NodeMatchWithIndices;
 
@@ -96,8 +99,9 @@ ExtractResult? extractAndSubstitute(
   String Function(String capture, int index) sentinelFor, {
   bool maskDuplicates = false,
 }) {
-  // The schema validates `pattern` compiles; the Node shim iterates every
-  // occurrence and supplies the capture-group offset array.
+  // The schema validates `pattern` compiles; `g` makes matchAll iterate
+  // every occurrence and `d` populates `m.indices` with group offsets.
+  // Dart: the Node shim does both.
   final indexByCapture = <String, int>{};
   // First sentinel returned per capture — reused for verbatim spans so
   // the duplicate pass never re-invokes the callback.
@@ -157,7 +161,7 @@ ExtractResult? extractAndSubstitute(
     spans.sort((a, b) => a.start.compareTo(b.start));
   }
 
-  // Spans are non-overlapping and sorted by offset (allMatches yields
+  // Spans are non-overlapping and sorted by offset (matchAll yields
   // matches in order; the verbatim pass re-sorts), so a single
   // slice-and-concat pass over the original content is sound.
   final out = StringBuffer();
