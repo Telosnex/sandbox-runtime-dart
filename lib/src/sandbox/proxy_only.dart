@@ -496,6 +496,8 @@ String readPemFromFd(int fd) {
   bool writable = true,
 }) {
   if (isBunRuntime()) {
+    // On a broken pipe flush() throws rather than rejects.
+    // Dart: Bun-only branch (sink.flush()); not reachable here.
     throw UnimplementedError('Bun only');
   }
   final sock = net.NodeSocket(fd: fd, readable: readable, writable: writable);

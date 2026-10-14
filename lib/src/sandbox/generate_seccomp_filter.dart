@@ -68,6 +68,8 @@ Future<List<String>> getGlobalNpmPathsAsync() {
       command.skip(1).toList(),
       timeout: const Duration(milliseconds: _NPM_ROOT_TIMEOUT_MS),
     );
+    // Match execSync's closed stdin: npm never waits on it.
+    // Dart: child_process.exec closes stdin itself.
     // A sync call that ran while npm was in flight already filled the cache;
     // keep its array so every caller sees the same one.
     _cachedGlobalNpmPaths ??= _buildGlobalNpmPaths(npmRoot);
