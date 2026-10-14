@@ -1273,8 +1273,12 @@ mixin _WritableImpl on NodeStream {
 
   bool get hasFinalImpl => _finalFn != null;
 
+  /// Dart-only test seam for spyOn(stream, 'write' | 'end'); call-through.
+  void Function(String method, List<Object?> args)? callObserver;
+
   /// Node `writable.write(chunk[, encoding][, callback])`.
   bool write(Object chunk, [Object? encoding, Function? callback]) {
+    callObserver?.call('write', [chunk, encoding, callback]);
     final r = _write(chunk, encoding, callback);
     return r is bool ? r : false;
   }
@@ -1510,6 +1514,7 @@ mixin _WritableImpl on NodeStream {
 
   /// Node `writable.end([chunk][, encoding][, callback])`.
   NodeStream end([Object? chunk, Object? encoding, Function? cb]) {
+    callObserver?.call('end', [chunk, encoding, cb]);
     final state = _ws;
     if (chunk is Function) {
       cb = chunk;
