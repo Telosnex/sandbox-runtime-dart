@@ -1,13 +1,16 @@
 // Ported from sandbox-runtime src/sandbox/mitm-ca.ts @ 24eb39e.
 // ignore_for_file: slash_for_doc_comments, dangling_library_doc_comments
 // ignore_for_file: constant_identifier_names, doc_directive_unknown
+// ignore_for_file: curly_braces_in_flow_control_structures, prefer_function_declarations_over_variables
 
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
+import '../node/crypto.dart' as crypto;
 import '../node/forge.dart' as forge;
+import '../utils/debug.dart' show logForDebugging;
 import '../node/tls.dart' as tls;
 import 'mitm_leaf.dart';
 
@@ -117,9 +120,14 @@ const CRL_PATH = '/srt.crl';
  * RFC 5280 method-1 value from its public key.
  */
 String caSubjectKeyId(forge.Certificate caCert) =>
-    caCert.getExtension('subjectKeyIdentifier')?['subjectKeyIdentifier'] is String
-        ? forge.forge.util.hexToBytes(caCert.getExtension('subjectKeyIdentifier')!['subjectKeyIdentifier'] as String)
-        : caCert.generateSubjectKeyIdentifier().getBytes();
+    (caCert.getExtension('subjectKeyIdentifier')?['subjectKeyIdentifier']
+            as String?) !=
+        null
+    ? forge.forge.util.hexToBytes(
+        caCert.getExtension('subjectKeyIdentifier')!['subjectKeyIdentifier']
+            as String,
+      )
+    : caCert.generateSubjectKeyIdentifier().getBytes();
 
 /**
  * Drop-in replacement for `cert.sign(key, md.sha256.create())` that computes
@@ -139,6 +147,8 @@ void signCertificateNative(forge.Certificate cert, String keyPem) {
   cert.tbsCertificate = forge.forge.pki.getTBSCertificate(cert);
   final tbsDer = forge.forge.asn1.toDer(cert.tbsCertificate!).getBytes();
   cert.signature = rsaSha256SignNative(tbsDer, keyPem);
+  // Match cert.sign()'s side effect so callers that read cert.md see the same
+  // populated digest a forge-signed cert would carry.
   cert.md = forge.forge.md.sha256.create()..update(tbsDer);
 }
 
@@ -147,8 +157,14 @@ void signCertificateNative(forge.Certificate cert, String keyPem) {
  * PEM-encoded RSA private key `keyPem`, returning the signature as a forge
  * binary string. Native equivalent of `forgeKey.sign(sha256Digest)`.
  */
-String rsaSha256SignNative(String der, String keyPem) =>
-    forge.forge.pki.privateKeyFromPem(keyPem).sign(der);
+String rsaSha256SignNative(String der, String keyPem) => String.fromCharCodes(
+  (crypto.sign(
+        'sha256',
+        Uint8List.fromList(der.codeUnits.map((e) => e & 0xff).toList()),
+        keyPem,
+      )
+      as Uint8List),
+);
 
 /**
  * Create a MitmCA. If `caCertPath`/`caKeyPath` are provided, load from disk
@@ -173,23 +189,63 @@ MitmCA createMitmCA({
 
   /// PEM CA files appended to the trust bundle; unreadable paths skipped.
   List<String>? extraCaCertPaths,
-}) => throw UnimplementedError('pending port of src/sandbox/mitm-ca.ts');
+}) {
+  if (caCertPem != null &&
+      caCertPem.isNotEmpty &&
+      caKeyPem != null &&
+      caKeyPem.isNotEmpty) {
+    final v = validateCaPair(caCertPem, caKeyPem);
+    if (!v.ok)
+      throw Exception(
+        'tlsTerminate: CA PEM pair: ${(v as CaPairValidationFailure).reason}',
+      );
+    final ok = v as CaPairValidationSuccess;
+    return _buildMitmCA(
+      caCertPem,
+      caKeyPem,
+      ok.cert,
+      ok.key,
+      certPath: caCertPath ?? '',
+      keyPath: caKeyPath ?? '',
+      extraCaCertPaths: extraCaCertPaths,
+    );
+  }
+  if (caCertPath != null && caKeyPath != null)
+    return _loadCA(caCertPath, caKeyPath, extraCaCertPaths);
+  if (caCertPath != null || caKeyPath != null)
+    throw Exception(
+      'tlsTerminate: caCertPath and caKeyPath must be provided together',
+    );
+  return _generateEphemeralCA(extraCaCertPaths);
+}
 
 /**
  * Remove the SRT-owned temp directories for this CA: the trust-bundle dir
  * always, and the cert/key dir, a directory of its own, too when SRT
  * generated the CA. User-supplied CA files are left alone.
  */
-Future<void> disposeMitmCA(MitmCA ca) =>
-    throw UnimplementedError('pending port of src/sandbox/mitm-ca.ts');
+Future<void> disposeMitmCA(MitmCA ca) => Future.wait(
+  _ownedDirs(ca).map((dir) async {
+    try {
+      await Directory(dir).delete(recursive: true);
+    } catch (err) {
+      logForDebugging('[mitm-ca] cleanup failed: $err', level: 'warn');
+    }
+  }),
+);
 
 /**
  * {@link disposeMitmCA} in one synchronous step, as a process 'exit' handler
  * needs it: nothing awaited runs there. Harmless before, during or after the
  * asynchronous one.
  */
-void disposeMitmCASync(MitmCA ca) =>
-    throw UnimplementedError('pending port of src/sandbox/mitm-ca.ts');
+void disposeMitmCASync(MitmCA ca) => _ownedDirs(ca).forEach((dir) {
+  try {
+    Directory(dir).deleteSync(recursive: true);
+  } catch (err) {
+    logForDebugging('[mitm-ca] cleanup failed: $err', level: 'warn');
+  }
+});
 
 /**
  * Build a DER-encoded X.509 v2 CRL, signed by `key`, listing zero revoked
@@ -203,8 +259,91 @@ void disposeMitmCASync(MitmCA ca) =>
  * §5.2 says conforming issuers MUST include: `authorityKeyIdentifier`
  * (matching the CA's SKI) and `cRLNumber`.
  */
-Uint8List generateEmptyCrl(forge.Certificate cert, String keyPem) =>
-    throw UnimplementedError('pending port of src/sandbox/mitm-ca.ts');
+Uint8List generateEmptyCrl(forge.Certificate cert, String keyPem) {
+  final asn1 = forge.forge.asn1;
+  final pki = forge.forge.pki;
+  final sigAlg = () => _seq([
+    asn1.create(
+      asn1.Class.UNIVERSAL,
+      asn1.Type.OID,
+      false,
+      asn1.oidToDer(pki.oids.sha256WithRSAEncryption).getBytes(),
+    ),
+    asn1.create(asn1.Class.UNIVERSAL, asn1.Type.NULL, false, ''),
+  ]);
+  forge.ForgeAsn1 ext(String oid, forge.ForgeAsn1 value) => _seq([
+    asn1.create(
+      asn1.Class.UNIVERSAL,
+      asn1.Type.OID,
+      false,
+      asn1.oidToDer(oid).getBytes(),
+    ),
+    asn1.create(
+      asn1.Class.UNIVERSAL,
+      asn1.Type.OCTETSTRING,
+      false,
+      asn1.toDer(value).getBytes(),
+    ),
+  ]);
+  final extensions = asn1.create(asn1.Class.CONTEXT_SPECIFIC, 0, true, [
+    _seq([
+      ext(
+        pki.oids.authorityKeyIdentifier,
+        _seq([
+          asn1.create(
+            asn1.Class.CONTEXT_SPECIFIC,
+            0,
+            false,
+            caSubjectKeyId(cert),
+          ),
+        ]),
+      ),
+      ext(
+        '2.5.29.20',
+        asn1.create(asn1.Class.UNIVERSAL, asn1.Type.INTEGER, false, '\x01'),
+      ),
+    ]),
+  ]);
+  final now = DateTime.now();
+  final nextUpdate = cert.validity.notAfter.isAfter(now)
+      ? cert.validity.notAfter
+      : daysFromNow(1);
+  final tbs = _seq([
+    asn1.create(asn1.Class.UNIVERSAL, asn1.Type.INTEGER, false, '\x01'),
+    sigAlg(),
+    pki.distinguishedNameToAsn1(cert.subject),
+    _asn1Time(now),
+    _asn1Time(nextUpdate),
+    extensions,
+  ]);
+  final sig = rsaSha256SignNative(asn1.toDer(tbs).getBytes(), keyPem);
+  final crl = _seq([
+    tbs,
+    sigAlg(),
+    asn1.create(asn1.Class.UNIVERSAL, asn1.Type.BITSTRING, false, '\x00$sig'),
+  ]);
+  return asn1.toDer(crl).getBuffer();
+}
+
+forge.ForgeAsn1 _seq(List<forge.ForgeAsn1> values) => forge.forge.asn1.create(
+  forge.forge.asn1.Class.UNIVERSAL,
+  forge.forge.asn1.Type.SEQUENCE,
+  true,
+  values,
+);
+forge.ForgeAsn1 _asn1Time(DateTime d) => d.toUtc().year < 2050
+    ? forge.forge.asn1.create(
+        forge.forge.asn1.Class.UNIVERSAL,
+        forge.forge.asn1.Type.UTCTIME,
+        false,
+        forge.forge.asn1.dateToUtcTime(d),
+      )
+    : forge.forge.asn1.create(
+        forge.forge.asn1.Class.UNIVERSAL,
+        forge.forge.asn1.Type.GENERALIZEDTIME,
+        false,
+        forge.forge.asn1.dateToGeneralizedTime(d),
+      );
 
 /** Result of {@link generateCa}. PEMs plus the parsed forge objects. */
 class GeneratedCa {
@@ -239,7 +378,7 @@ class GeneratedCa {
  *   binding on a private CA, but a reasonable rotation horizon).
  */
 GeneratedCa generateCa({String? cn, int? validityDays}) =>
-    throw UnimplementedError('pending port of src/sandbox/mitm-ca.ts');
+    _generateCa(cn: cn, validityDays: validityDays);
 
 /**
  * SHA-1 thumbprint of `certPem` as uppercase hex with no separators —
@@ -247,8 +386,9 @@ GeneratedCa generateCa({String? cn, int? validityDays}) =>
  * PowerShell's `Cert:\…\Thumbprint` uses. Throws if `certPem` is not a
  * parseable X.509 certificate.
  */
-String certThumbprint(String certPem) =>
-    throw UnimplementedError('pending port of src/sandbox/mitm-ca.ts');
+String certThumbprint(String certPem) => crypto.X509Certificate(
+  certPem,
+).fingerprint.replaceAll(':', '').toUpperCase();
 
 /** Result of {@link validateCaPair}. */
 sealed class CaPairValidation {
@@ -299,10 +439,213 @@ class CaPairValidationFailure extends CaPairValidation {
  * pair on disk treats `{ok: false}` as "regenerate", not a hard error.
  */
 CaPairValidation validateCaPair(String certPem, String keyPem) =>
-    throw UnimplementedError('pending port of src/sandbox/mitm-ca.ts');
+    _validateCaPair(certPem, keyPem);
 
-String randomSerial() =>
-    throw UnimplementedError('pending port of src/sandbox/mitm-ca.ts');
+String randomSerial() => _randomSerial();
 
-DateTime daysFromNow(int days) =>
-    DateTime.now().add(Duration(days: days));
+DateTime daysFromNow(int days) => DateTime.now().add(Duration(days: days));
+
+Set<String> _ownedDirs(MitmCA ca) => {
+  File(ca.trustBundlePath).parent.path,
+  if (ca.ephemeral) File(ca.certPath).parent.path,
+};
+
+MitmCA _loadCA(
+  String certPath,
+  String keyPath,
+  List<String>? extraCaCertPaths,
+) {
+  final certPem = _readPem(certPath, 'CERTIFICATE', 'tlsTerminate.caCertPath');
+  final keyPem = _readPem(keyPath, 'PRIVATE KEY', 'tlsTerminate.caKeyPath');
+  final v = validateCaPair(certPem, keyPem);
+  if (!v.ok)
+    throw Exception(
+      'tlsTerminate: CA at $certPath: ${(v as CaPairValidationFailure).reason}',
+    );
+  final ok = v as CaPairValidationSuccess;
+  logForDebugging('[mitm-ca] loaded CA from $certPath');
+  return _buildMitmCA(
+    certPem,
+    keyPem,
+    ok.cert,
+    ok.key,
+    certPath: certPath,
+    keyPath: keyPath,
+    extraCaCertPaths: extraCaCertPaths,
+  );
+}
+
+MitmCA _buildMitmCA(
+  String certPem,
+  String keyPem,
+  forge.Certificate cert,
+  forge.PrivateKey key, {
+  required String certPath,
+  required String keyPath,
+  List<String>? extraCaCertPaths,
+  bool ephemeral = false,
+}) {
+  final bundleDir = Directory.systemTemp.createTempSync('srt-ca-');
+  final trustPath = _writeTrustBundle(
+    bundleDir.path,
+    certPem,
+    extraCaCertPaths,
+  );
+  return MitmCA(
+    certPath: certPath,
+    keyPath: keyPath,
+    trustBundlePath: trustPath,
+    certPem: certPem,
+    keyPem: keyPem,
+    cert: cert,
+    key: key,
+    leafCerts: {},
+    secureContexts: {},
+    crlDer: generateEmptyCrl(cert, keyPem),
+    ephemeral: ephemeral,
+  );
+}
+
+String _writeTrustBundle(
+  String dir,
+  String caCertPem,
+  List<String>? extraCaCertPaths,
+) {
+  final parts = [caCertPem.trim(), ...tls.rootCertificates];
+  final extra = Platform.environment['NODE_EXTRA_CA_CERTS'];
+  if (extra != null) {
+    try {
+      parts.add(File(extra).readAsStringSync().trim());
+    } catch (_) {}
+  }
+  for (final extraPath in extraCaCertPaths ?? <String>[]) {
+    String raw;
+    try {
+      raw = File(extraPath).readAsStringSync();
+    } catch (err) {
+      logForDebugging(
+        '[mitm-ca] extraCaCertPaths: cannot read $extraPath ($err); skipping',
+        level: 'warn',
+      );
+      continue;
+    }
+    final certs = RegExp(
+      r'-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----',
+    ).allMatches(raw).map((m) => m.group(0)!).toList();
+    if (certs.isEmpty) {
+      logForDebugging(
+        '[mitm-ca] extraCaCertPaths: $extraPath has no PEM CERTIFICATE block; skipping',
+        level: 'warn',
+      );
+      continue;
+    }
+    parts.addAll(certs);
+  }
+  final path = '${Directory(dir).path}/trust-bundle.crt';
+  File(path).writeAsStringSync(
+    '${parts.join('\n')}\n',
+    mode: FileMode.write,
+    flush: true,
+  );
+  return path;
+}
+
+GeneratedCa _generateCa({String? cn, int? validityDays}) {
+  final keys = forge.forge.pki.rsa.generateKeyPair(2048);
+  final cert = forge.forge.pki.createCertificate()..publicKey = keys.publicKey;
+  cert.serialNumber = randomSerial();
+  cert.validity.notBefore = daysFromNow(-1);
+  cert.validity.notAfter = daysFromNow(validityDays ?? 825);
+  final subject = [
+    {'name': 'commonName', 'value': cn ?? 'sandbox-runtime ephemeral CA'},
+    {'name': 'organizationName', 'value': 'sandbox-runtime'},
+  ];
+  cert.setSubject(subject);
+  cert.setIssuer(subject);
+  cert.setExtensions([
+    {'name': 'basicConstraints', 'cA': true, 'critical': true},
+    {
+      'name': 'keyUsage',
+      'critical': true,
+      'keyCertSign': true,
+      'cRLSign': true,
+      'digitalSignature': true,
+    },
+    {'name': 'subjectKeyIdentifier'},
+  ]);
+  final keyPem = forge.forge.pki.privateKeyToPem(keys.privateKey);
+  signCertificateNative(cert, keyPem);
+  return GeneratedCa(
+    certPem: forge.forge.pki.certificateToPem(cert),
+    keyPem: keyPem,
+    cert: cert,
+    key: keys.privateKey,
+  );
+}
+
+CaPairValidation _validateCaPair(String certPem, String keyPem) {
+  late forge.Certificate cert;
+  late forge.PrivateKey key;
+  try {
+    cert = forge.forge.pki.certificateFromPem(certPem);
+    key = forge.forge.pki.privateKeyFromPem(keyPem);
+  } catch (err) {
+    return CaPairValidationFailure('parse: $err');
+  }
+  if (cert.publicKey == null || cert.publicKey!.n != key.n)
+    return const CaPairValidationFailure(
+      'key does not match certificate public key',
+    );
+  if (cert.validity.notBefore.isAfter(DateTime.now()))
+    return CaPairValidationFailure(
+      'notBefore ${cert.validity.notBefore.toIso8601String()} is in the future (clock skew?)',
+    );
+  try {
+    return CaPairValidationSuccess(
+      thumbprint: certThumbprint(certPem),
+      notAfter: cert.validity.notAfter,
+      cert: cert,
+      key: key,
+    );
+  } catch (err) {
+    return CaPairValidationFailure('thumbprint: $err');
+  }
+}
+
+MitmCA _generateEphemeralCA(List<String>? extraCaCertPaths) {
+  final generated = generateCa();
+  final dir = Directory.systemTemp.createTempSync('srt-ca-');
+  final certPath = '${dir.path}/ca.crt';
+  final keyPath = '${dir.path}/ca.key';
+  File(certPath).writeAsStringSync(generated.certPem);
+  File(keyPath).writeAsStringSync(generated.keyPem);
+  logForDebugging('[mitm-ca] generated ephemeral CA at $certPath');
+  return _buildMitmCA(
+    generated.certPem,
+    generated.keyPem,
+    generated.cert,
+    generated.key,
+    certPath: certPath,
+    keyPath: keyPath,
+    extraCaCertPaths: extraCaCertPaths,
+    ephemeral: true,
+  );
+}
+
+String _readPem(String path, String label, String field) {
+  late String pem;
+  try {
+    pem = File(path).readAsStringSync();
+  } catch (err) {
+    throw Exception('$field: cannot read $path ($err)');
+  }
+  if (!RegExp('-----BEGIN [A-Z ]*$label-----').hasMatch(pem))
+    throw Exception('$field: $path is not a PEM $label');
+  return pem;
+}
+
+String _randomSerial() {
+  final hex = forge.forge.util.bytesToHex(forge.forge.random.getBytesSync(16));
+  final firstNibble = (int.parse(hex[0], radix: 16) & 0x3) | 0x4;
+  return '${firstNibble.toRadixString(16)}${hex.substring(1)}';
+}
