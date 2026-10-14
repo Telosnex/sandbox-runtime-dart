@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:test/test.dart';
 
+import 'package:sandbox_runtime/src/sandbox/credential_mask_files.dart'
+    show MaskedFileBind;
 import 'package:sandbox_runtime/src/sandbox/credential_mask_files.dart';
 import 'package:sandbox_runtime/src/sandbox/credential_sentinel.dart';
 import 'package:sandbox_runtime/src/sandbox/macos_sandbox_utils.dart';
@@ -284,7 +286,7 @@ void main() {
       });
 
       String wrapMasked({
-        List<({String realPath, String fakePath})>? maskedFileBinds,
+        List<MaskedFileBind>? maskedFileBinds,
         List<String>? degradeToDenyPaths,
       }) => wrapCommandWithSandboxMacOS(
         MacOSSandboxParams(
@@ -309,11 +311,7 @@ void main() {
           store,
         ).binds;
         expect(binds, hasLength(1));
-        final profile = wrapMasked(
-          maskedFileBinds: [
-            for (final b in binds) (realPath: b.realPath, fakePath: b.fakePath),
-          ],
-        );
+        final profile = wrapMasked(maskedFileBinds: binds);
         expect(profile, contains('(subpath ${jsonEncode(credential)})'));
         expect(profile, isNot(contains(sniffedFilter(credential, r'(/.*)?$'))));
         store.dispose();

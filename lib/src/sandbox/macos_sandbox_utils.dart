@@ -17,6 +17,7 @@ import '../utils/which.dart';
 import 'java_proxy_agent.dart';
 import 'path_entries.dart' show PathListKind, literalReadings;
 import 'sandbox_config.dart' show IgnoreViolationsConfig;
+import 'credential_mask_files.dart' show MaskedFileBind;
 import 'sandbox_schemas.dart'
     show FsReadRestrictionConfig, FsWriteRestrictionConfig;
 import 'sandbox_utils.dart';
@@ -64,7 +65,7 @@ class MacOSSandboxParams {
   /// these degrade to read-deny on realPath until the DYLD interposer
   /// lands. fakePath is unused here.
   ///
-  List<({String realPath, String fakePath})>? maskedFileBinds;
+  List<MaskedFileBind>? maskedFileBinds;
 
   ///
   /// Masked files that degraded to a read-deny because their extract

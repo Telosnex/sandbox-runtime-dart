@@ -62,7 +62,7 @@ class MitmCA {
    */
   final String trustBundlePath;
   final String certPem;
-  final String keyPem;
+  String keyPem;
 
   /// Parsed CA certificate (issuer for minted leaf certs).
   final forge.Certificate cert;
@@ -77,7 +77,7 @@ class MitmCA {
   final Map<String, tls.SecureContext> secureContexts;
 
   /// How many host names the two caches above keep (default 256).
-  final int? cacheLimit;
+  int? cacheLimit;
 
   /// The key pair every leaf minted against this CA uses (see mintLeafCert).
   forge.KeyPair? leafKeyPair;

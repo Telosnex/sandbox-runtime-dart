@@ -38,6 +38,7 @@ import 'sandbox_utils.dart'
         nameLocation,
         getDangerousDirectories,
         workingDirectory;
+import 'credential_mask_files.dart' show MaskedFileBind;
 import 'sandbox_schemas.dart'
     show FsReadRestrictionConfig, FsWriteRestrictionConfig;
 import 'generate_seccomp_filter.dart' show getApplySeccompBinaryPath;
@@ -94,7 +95,7 @@ class LinuxSandboxParams {
    * Whole-file credential masks: bind fakePath (sentinel content) over
    * realPath read-only so the sandbox reads the sentinel.
    */
-  final List<({String realPath, String fakePath})>? maskedFileBinds;
+  final List<MaskedFileBind>? maskedFileBinds;
 
   /**
    * Host directory holding the fake files. Ro-bound over itself so the
@@ -2042,7 +2043,7 @@ typedef _StubSkipVetoInputs = ({
 Future<({List<String> args, int mandatoryDenyArgs})> _generateFilesystemArgs(
   FsReadRestrictionConfig? readConfig,
   FsWriteRestrictionConfig? writeConfig,
-  List<({String realPath, String fakePath})>? maskedFileBinds,
+  List<MaskedFileBind>? maskedFileBinds,
   String? maskedFileStoreDir, [
   RipgrepConfig? ripgrepConfig,
   int mandatoryDenySearchDepth = _DEFAULT_MANDATORY_DENY_SEARCH_DEPTH,
@@ -3020,8 +3021,8 @@ Future<({List<String> args, int mandatoryDenyArgs})> _generateFilesystemArgs(
   // file ('~/.netrc' and its absolute form), the last is kept: it is the
   // mask bubblewrap would leave in force there.
   final credentialMaskFakes = <String, String>{};
-  for (final (:realPath, :fakePath)
-      in maskedFileBinds ?? const <({String realPath, String fakePath})>[]) {
+  for (final MaskedFileBind(:realPath, :fakePath)
+      in maskedFileBinds ?? const <MaskedFileBind>[]) {
     credentialMaskFakes[canonicalForm(realPath)] = fakePath;
   }
   // Destinations a file mask has been placed at, or will be: one mount per

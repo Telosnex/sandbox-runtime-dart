@@ -532,6 +532,7 @@ void _deny(
   String? denyHeader,
 ) {
   final s = decision.status;
+  // Dart: status is int?, so Number.isInteger(s) always holds.
   final status = s != null && s >= 400 && s <= 599 ? s : 403;
   respondDenied(
     res,

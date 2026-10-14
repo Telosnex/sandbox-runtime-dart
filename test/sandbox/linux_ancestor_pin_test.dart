@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' show dirname, join;
+import 'package:sandbox_runtime/src/sandbox/credential_mask_files.dart'
+    show MaskedFileBind;
 import 'package:sandbox_runtime/src/node/child_process.dart'
     show SpawnSyncResult, spawnSync;
 import 'package:sandbox_runtime/src/node/errno.dart' show NodeError;
@@ -883,7 +885,9 @@ void main() {
               denyOnly: [homeDir],
               allowWithinDeny: [netrcName],
             ),
-            maskedFileBinds: [(realPath: netrcTarget, fakePath: fakePath)],
+            maskedFileBinds: [
+              MaskedFileBind(realPath: netrcTarget, fakePath: fakePath),
+            ],
             maskedFileStoreDir: storeDir,
           ),
         );
@@ -991,7 +995,9 @@ void main() {
                 denyOnly: [homeDir],
                 allowWithinDeny: [netrcName],
               ),
-              maskedFileBinds: [(realPath: netrcTarget, fakePath: fakePath)],
+              maskedFileBinds: [
+                MaskedFileBind(realPath: netrcTarget, fakePath: fakePath),
+              ],
               maskedFileStoreDir: storeDir,
             ),
           ),
@@ -1597,7 +1603,9 @@ void main() {
               allowOnly: [PROJECT],
               denyWithinAllow: [],
             ),
-            maskedFileBinds: [(realPath: realPath, fakePath: fakePath)],
+            maskedFileBinds: [
+              MaskedFileBind(realPath: realPath, fakePath: fakePath),
+            ],
           ),
         );
 
@@ -1637,7 +1645,9 @@ void main() {
             command: command,
             needsNetworkRestriction: false,
             allowAllUnixSockets: true,
-            maskedFileBinds: [(realPath: realPath, fakePath: fakePath)],
+            maskedFileBinds: [
+              MaskedFileBind(realPath: realPath, fakePath: fakePath),
+            ],
           ),
         ),
       );
