@@ -9,6 +9,7 @@ import 'package:test/test.dart';
 import 'package:sandbox_runtime/src/index.dart';
 import 'package:sandbox_runtime/src/node/crypto.dart' show randomBytes;
 import 'package:sandbox_runtime/src/node/console.dart' as console;
+import 'package:sandbox_runtime/src/node/fetch.dart' as fetch;
 import 'package:sandbox_runtime/src/node/errno.dart' show NodeException;
 import 'package:sandbox_runtime/src/node/process.dart' as process;
 import 'package:sandbox_runtime/src/node/net.dart'
@@ -1272,6 +1273,646 @@ void main() {
           403,
         );
       });
+    });
+  });
+
+  group('ask callback answers', () {
+    late ({NodeServer server, String target}) loopback;
+
+    /** One CONNECT to the loopback listener, decided by `answer` alone. */
+    Future<({int? status, List<String> lines})> decideWith(
+      Object answer,
+    ) async {
+      await SandboxManager.initialize(
+        const SandboxRuntimeConfig(
+          network: NetworkConfig(allowedDomains: [], deniedDomains: []),
+          filesystem: NO_FILESYSTEM_RULES,
+        ),
+        (NetworkHostPattern _) async => answer,
+      );
+      SandboxManager.getSandboxViolationStore().clear();
+      final status = await connectAs(
+        SandboxManager.getProxyPort()!,
+        loopback.target,
+        'srt',
+      );
+      return (status: status, lines: violationLines());
+    }
+
+    List<String> deniedBecause(String reason) => [
+      'deny network-outbound ${loopback.target} ($reason)',
+    ];
+
+    setUp(() async {
+      await SandboxManager.reset();
+      loopback = await listenOnLoopback();
+    });
+
+    tearDown(() async {
+      await SandboxManager.reset();
+      loopback.server.close();
+    });
+
+    test('declares that it reads a denial with a reason', () {
+      expect(SandboxManager.askCallbackDenyReason, isTrue);
+    });
+
+    test('allows on true', () async {
+      final r = await decideWith(true);
+      expect(r.status, 200);
+      expect(r.lines, <String>[]);
+    });
+
+    test('denies on false, with the generic reason', () async {
+      final r = await decideWith(false);
+      expect(r.status, 403);
+      expect(r.lines, deniedBecause('user denied'));
+    });
+
+    test(
+      'denies on { allow: false, reason }, and reports that reason',
+      () async {
+        Future<Object> callback(NetworkHostPattern _) async => {
+          'allow': false,
+          'reason':
+              'not listed for this command; list the host and run it again',
+        };
+        final r = await decideWith(await callback((host: '', port: 0)));
+        expect(r.status, 403);
+        expect(
+          r.lines,
+          deniedBecause(
+            'not listed for this command; list the host and run it again',
+          ),
+        );
+      },
+    );
+
+    for (final (name, answer) in <(String, Object)>[
+      ('an empty reason', {'allow': false, 'reason': ''}),
+      (
+        'a reason of nothing but whitespace',
+        {'allow': false, 'reason': ' \n\t '},
+      ),
+      ('no reason', {'allow': false}),
+      ('a reason that is not a string', {'allow': false, 'reason': 42}),
+    ]) {
+      test('denies with the generic reason on $name', () async {
+        final r = await decideWith(answer);
+        expect(r.status, 403);
+        expect(r.lines, deniedBecause('user denied'));
+      });
+    }
+
+    // A filter that tested truthiness would allow every one of these.
+    for (final (name, answer) in <(String, Object)>[
+      ('the number 1', 1),
+      ('a non-empty string', 'yes'),
+      ('an empty object', <String, Object?>{}),
+      ('an empty array', <Object?>[]),
+      ('an object that says allow: true', {'allow': true}),
+      ('the string "true"', 'true'),
+      // A reason is reported only for an answer that says allow: false.
+      (
+        'an object that says allow: true and gives a reason',
+        {'allow': true, 'reason': 'approved for this session'},
+      ),
+      (
+        'an object that gives a reason and no allow',
+        {'reason': 'no verdict given'},
+      ),
+      (
+        'an object whose allow is falsy but not false',
+        {'allow': 0, 'reason': 'zero is not false'},
+      ),
+    ]) {
+      test('denies on a truthy answer that is not true: $name', () async {
+        final r = await decideWith(answer);
+        expect(r.status, 403);
+        expect(r.lines, deniedBecause('user denied'));
+      });
+    }
+
+    // Dart: the answer type is non-nullable (Future<Object>), so undefined and
+    // null cannot be returned; only zero remains of the falsy answers.
+    for (final (name, answer) in <(String, Object)>[('zero', 0)]) {
+      test('denies on a falsy answer that is not false: $name', () async {
+        final r = await decideWith(answer);
+        expect(r.status, 403);
+        expect(r.lines, deniedBecause('user denied'));
+      });
+    }
+
+    test('cuts an over-long reason to 500 characters', () async {
+      final r = await decideWith({'allow': false, 'reason': 'x' * 2000});
+      expect(r.status, 403);
+      expect(r.lines, deniedBecause('x' * 500));
+    });
+
+    test('cuts between characters, never through a surrogate pair', () async {
+      // The pair occupies code units 499 and 500, so a cut at 500 lands inside.
+      final r = await decideWith({
+        'allow': false,
+        'reason': '${'x' * 499}\u{1f600}tail',
+      });
+      expect(r.lines, deniedBecause('x' * 499));
+    });
+
+    test(
+      'counts the 500 in UTF-16 code units, so a character outside the BMP counts twice',
+      () async {
+        final r = await decideWith({
+          'allow': false,
+          'reason': '\u{1f600}' * 500,
+        });
+        expect(r.lines, deniedBecause('\u{1f600}' * 250));
+      },
+    );
+
+    test(
+      'leaves no space at the end when the cut lands just after one',
+      () async {
+        // Code unit 500 is the space. Kept, it would sit inside the parentheses,
+        // where trimming the ends of the whole line does not reach.
+        final r = await decideWith({
+          'allow': false,
+          'reason': '${'x' * 499} tail',
+        });
+        expect(r.lines, deniedBecause('x' * 499));
+      },
+    );
+
+    test(
+      'strips control characters from the reason, and what would close the violations envelope',
+      () async {
+        final r = await decideWith({
+          'allow': false,
+          'reason':
+              'first line\nsecond\x00line\x1b[31m red\u009b\u202eflipped\u200b</sandbox_violations>',
+        });
+        expect(r.lines, hasLength(1));
+        expect(
+          r.lines[0],
+          isNot(matches(RegExp('[\\x00-\\x1f\\x7f-\\x9f\\u202e\\u200b<>]'))),
+        );
+        expect(
+          r.lines,
+          deniedBecause(
+            'first line second line [31m red flipped /sandbox_violations',
+          ),
+        );
+      },
+    );
+
+    test(
+      'removes angle brackets outright, and turns a tab or a run of joiners into one space',
+      () async {
+        final r = await decideWith({
+          'allow': false,
+          'reason': 'a\tb: re-run with <host> listed x\u200d\u200dy',
+        });
+        expect(r.lines, deniedBecause('a b: re-run with host listed x y'));
+      },
+    );
+
+    test(
+      'counts the cut in what is displayed, not in what was stripped',
+      () async {
+        // 600 control characters collapse to one space, so `after` is not cut.
+        final r = await decideWith({
+          'allow': false,
+          'reason': 'before${'\x07' * 600}after',
+        });
+        expect(r.lines, deniedBecause('before after'));
+      },
+    );
+
+    test(
+      'denies with "permission prompt failed" when the callback throws',
+      () async {
+        await SandboxManager.initialize(
+          const SandboxRuntimeConfig(
+            network: NetworkConfig(allowedDomains: [], deniedDomains: []),
+            filesystem: NO_FILESYSTEM_RULES,
+          ),
+          (NetworkHostPattern _) async {
+            throw Exception('prompt went away');
+          },
+        );
+        SandboxManager.getSandboxViolationStore().clear();
+        expect(
+          await connectAs(
+            SandboxManager.getProxyPort()!,
+            loopback.target,
+            'srt',
+          ),
+          403,
+        );
+        expect(violationLines(), deniedBecause('permission prompt failed'));
+      },
+    );
+
+    // The debug log tells an embedder why a truthy answer did not allow.
+    test(
+      'warns in the debug log about an answer that is neither a boolean nor { allow: false }, and about no other',
+      () async {
+        final before = process.env['SRT_DEBUG'];
+        process.env['SRT_DEBUG'] = '1';
+        final oldWarn = console.warn;
+        final oldError = console.error;
+        final calls = <String>[];
+        console.warn = ([Object? a, Object? b, Object? c, Object? d]) =>
+            calls.add(a.toString());
+        console.error = ([Object? a, Object? b, Object? c, Object? d]) {};
+        Future<List<String>> warningsAfter(Object answer) async {
+          await SandboxManager.reset();
+          calls.clear();
+          await decideWith(answer);
+          return calls
+              .where(
+                (message) => message.contains('Ask callback answered neither'),
+              )
+              .toList();
+        }
+
+        try {
+          for (final undeclared in <Object>[
+            1,
+            'yes',
+            <String, Object?>{},
+            {'allow': true, 'reason': 'ok'},
+          ]) {
+            final warnings = await warningsAfter(undeclared);
+            expect(warnings, hasLength(1));
+            expect(warnings[0], contains('treating it as a denial'));
+            expect(warnings[0], contains(loopback.target));
+          }
+          for (final declared in <Object>[
+            true,
+            false,
+            {'allow': false, 'reason': 'no'},
+          ]) {
+            expect(await warningsAfter(declared), <String>[]);
+          }
+        } finally {
+          console.warn = oldWarn;
+          console.error = oldError;
+          if (before == null) {
+            process.env.remove('SRT_DEBUG');
+          } else {
+            process.env['SRT_DEBUG'] = before;
+          }
+        }
+      },
+    );
+  });
+
+  group('SandboxManager.updateConfig', () {
+    setUp(() async {
+      await SandboxManager.reset();
+    });
+
+    tearDown(() async {
+      await SandboxManager.reset();
+    });
+
+    test('should handle updateConfig called before initialize', () async {
+      // updateConfig before initialize - should not throw
+      SandboxManager.updateConfig(
+        const SandboxRuntimeConfig(
+          network: NetworkConfig(
+            allowedDomains: ['example.com'],
+            deniedDomains: [],
+          ),
+          filesystem: noFs,
+        ),
+      );
+
+      // Config should be set
+      expect(SandboxManager.getConfig(), isNotNull);
+
+      // But network infrastructure not ready
+      expect(SandboxManager.getProxyPort(), isNull);
+
+      // Initialize should still work and respect the pre-set config
+      await SandboxManager.initialize(
+        const SandboxRuntimeConfig(
+          network: NetworkConfig(
+            allowedDomains: ['other.com'],
+            deniedDomains: [],
+          ),
+          filesystem: noFs,
+        ),
+      );
+
+      // initialize() overwrites config
+      final config = SandboxManager.getConfig();
+      expect(config?.network.allowedDomains, contains('other.com'));
+      expect(config?.network.allowedDomains, isNot(contains('example.com')));
+    });
+
+    test('should update network restriction config dynamically', () async {
+      // Initialize with no allowed domains
+      await SandboxManager.initialize(
+        const SandboxRuntimeConfig(
+          network: NetworkConfig(allowedDomains: [], deniedDomains: []),
+          filesystem: noFs,
+        ),
+      );
+
+      // Initial state: allowlist configured with zero entries. The getter must
+      // preserve the empty array — consumers distinguish "no allowlist
+      // configured" (undefined) from "allowlist configured, nothing allowed".
+      expect(
+        SandboxManager.getNetworkRestrictionConfig().allowedHosts,
+        <String>[],
+      );
+
+      // Update config to allow example.com
+      SandboxManager.updateConfig(
+        const SandboxRuntimeConfig(
+          network: NetworkConfig(
+            allowedDomains: ['example.com'],
+            deniedDomains: [],
+          ),
+          filesystem: noFs,
+        ),
+      );
+
+      // Config should now reflect the update
+      final config = SandboxManager.getNetworkRestrictionConfig();
+      expect(config.allowedHosts, contains('example.com'));
+    });
+
+    test('should handle moving domain from allowlist to denylist', () async {
+      // Initialize with example.com allowed
+      await SandboxManager.initialize(
+        const SandboxRuntimeConfig(
+          network: NetworkConfig(
+            allowedDomains: ['example.com'],
+            deniedDomains: [],
+          ),
+          filesystem: noFs,
+        ),
+      );
+
+      var config = SandboxManager.getNetworkRestrictionConfig();
+      expect(config.allowedHosts, contains('example.com'));
+      expect(config.deniedHosts, isNull);
+
+      // Move to denylist
+      SandboxManager.updateConfig(
+        const SandboxRuntimeConfig(
+          network: NetworkConfig(
+            allowedDomains: [],
+            deniedDomains: ['example.com'],
+          ),
+          filesystem: noFs,
+        ),
+      );
+
+      config = SandboxManager.getNetworkRestrictionConfig();
+      expect(config.allowedHosts, <String>[]);
+      expect(config.deniedHosts, contains('example.com'));
+
+      // Move back to allowlist
+      SandboxManager.updateConfig(
+        const SandboxRuntimeConfig(
+          network: NetworkConfig(
+            allowedDomains: ['example.com'],
+            deniedDomains: [],
+          ),
+          filesystem: noFs,
+        ),
+      );
+
+      config = SandboxManager.getNetworkRestrictionConfig();
+      expect(config.allowedHosts, contains('example.com'));
+      expect(config.deniedHosts, isNull);
+    });
+
+    test('should handle updating to empty allowlist', () async {
+      // Initialize with example.com allowed
+      await SandboxManager.initialize(
+        const SandboxRuntimeConfig(
+          network: NetworkConfig(
+            allowedDomains: ['example.com'],
+            deniedDomains: [],
+          ),
+          filesystem: noFs,
+        ),
+      );
+
+      expect(
+        SandboxManager.getNetworkRestrictionConfig().allowedHosts,
+        contains('example.com'),
+      );
+
+      // Update to empty allowlist (should block all)
+      SandboxManager.updateConfig(
+        const SandboxRuntimeConfig(
+          network: NetworkConfig(allowedDomains: [], deniedDomains: []),
+          filesystem: noFs,
+        ),
+      );
+
+      // The getter preserves the explicitly-empty allowlist so consumers can
+      // tell a configured block-all apart from no restriction at all
+      expect(
+        SandboxManager.getNetworkRestrictionConfig().allowedHosts,
+        <String>[],
+      );
+
+      // Verify the actual config still exists
+      final fullConfig = SandboxManager.getConfig();
+      expect(fullConfig, isNotNull);
+      expect(fullConfig?.network.allowedDomains, <String>[]);
+    });
+
+    test(
+      'preserves filterRequest across updateConfig (structuredClone cannot clone functions)',
+      () {
+        Future<RequestDecision> filterRequest(
+          fetch.Request request, [
+          RequestInfo? info,
+        ]) async => const RequestDecision(action: 'allow');
+        // Must not throw: structuredClone(fn) throws DataCloneError; the
+        // function is pulled out, the rest is cloned, then the reference is
+        // restored.
+        SandboxManager.updateConfig(
+          SandboxRuntimeConfig(
+            network: NetworkConfig(
+              allowedDomains: [],
+              deniedDomains: [],
+              filterRequest: filterRequest,
+            ),
+            filesystem: noFs,
+          ),
+        );
+        expect(
+          SandboxManager.getConfig()?.network.filterRequest,
+          same(filterRequest),
+        );
+      },
+    );
+  });
+
+  group('SandboxManager.updateConfig proxy filtering', () {
+    tearDown(() async {
+      await SandboxManager.reset();
+    });
+
+    test('should allow then block domain after config update', () async {
+      // Initialize with example.com allowed
+      await SandboxManager.initialize(
+        const SandboxRuntimeConfig(
+          network: NetworkConfig(
+            allowedDomains: ['example.com'],
+            deniedDomains: [],
+          ),
+          filesystem: noFs,
+        ),
+      );
+
+      final proxyPort = SandboxManager.getProxyPort();
+      expect(proxyPort, isNotNull);
+
+      // Should be allowed initially
+      final result1 = await proxyRequest(proxyPort!, 'example.com');
+      expect(result1.allowed, isTrue);
+
+      // Update to block example.com (empty allowlist)
+      SandboxManager.updateConfig(
+        const SandboxRuntimeConfig(
+          network: NetworkConfig(allowedDomains: [], deniedDomains: []),
+          filesystem: noFs,
+        ),
+      );
+
+      // Should now be blocked
+      final result2 = await proxyRequest(proxyPort, 'example.com');
+      expect(result2.allowed, isFalse);
+    });
+
+    test('should block then allow domain after config update', () async {
+      // Initialize with empty allowlist (blocks all)
+      await SandboxManager.initialize(
+        const SandboxRuntimeConfig(
+          network: NetworkConfig(allowedDomains: [], deniedDomains: []),
+          filesystem: noFs,
+        ),
+      );
+
+      final proxyPort = SandboxManager.getProxyPort();
+      expect(proxyPort, isNotNull);
+
+      // Should be blocked initially
+      final result1 = await proxyRequest(proxyPort!, 'example.com');
+      expect(result1.allowed, isFalse);
+
+      // Update to allow example.com
+      SandboxManager.updateConfig(
+        const SandboxRuntimeConfig(
+          network: NetworkConfig(
+            allowedDomains: ['example.com'],
+            deniedDomains: [],
+          ),
+          filesystem: noFs,
+        ),
+      );
+
+      // Should now be allowed
+      final result2 = await proxyRequest(proxyPort, 'example.com');
+      expect(result2.allowed, isTrue);
+    });
+
+    test('should handle moving domain between allow and deny lists', () async {
+      // Initialize with example.com allowed
+      await SandboxManager.initialize(
+        const SandboxRuntimeConfig(
+          network: NetworkConfig(
+            allowedDomains: ['example.com'],
+            deniedDomains: [],
+          ),
+          filesystem: noFs,
+        ),
+      );
+
+      final proxyPort = SandboxManager.getProxyPort();
+      expect(proxyPort, isNotNull);
+
+      // Should be allowed initially
+      final result1 = await proxyRequest(proxyPort!, 'example.com');
+      expect(result1.allowed, isTrue);
+
+      // Move to denylist
+      SandboxManager.updateConfig(
+        const SandboxRuntimeConfig(
+          network: NetworkConfig(
+            allowedDomains: [],
+            deniedDomains: ['example.com'],
+          ),
+          filesystem: noFs,
+        ),
+      );
+
+      // Should now be blocked
+      final result2 = await proxyRequest(proxyPort, 'example.com');
+      expect(result2.allowed, isFalse);
+
+      // Move back to allowlist
+      SandboxManager.updateConfig(
+        const SandboxRuntimeConfig(
+          network: NetworkConfig(
+            allowedDomains: ['example.com'],
+            deniedDomains: [],
+          ),
+          filesystem: noFs,
+        ),
+      );
+
+      // Should be allowed again
+      final result3 = await proxyRequest(proxyPort, 'example.com');
+      expect(result3.allowed, isTrue);
+    });
+
+    test('should handle rapid config updates', () async {
+      await SandboxManager.initialize(
+        const SandboxRuntimeConfig(
+          network: NetworkConfig(
+            allowedDomains: ['example.com'],
+            deniedDomains: [],
+          ),
+          filesystem: noFs,
+        ),
+      );
+
+      final proxyPort = SandboxManager.getProxyPort();
+      expect(proxyPort, isNotNull);
+
+      // Rapid updates
+      for (var i = 0; i < 5; i++) {
+        SandboxManager.updateConfig(
+          const SandboxRuntimeConfig(
+            network: NetworkConfig(allowedDomains: [], deniedDomains: []),
+            filesystem: noFs,
+          ),
+        );
+
+        SandboxManager.updateConfig(
+          const SandboxRuntimeConfig(
+            network: NetworkConfig(
+              allowedDomains: ['example.com'],
+              deniedDomains: [],
+            ),
+            filesystem: noFs,
+          ),
+        );
+      }
+
+      // Final state should allow example.com
+      final result = await proxyRequest(proxyPort!, 'example.com');
+      expect(result.allowed, isTrue);
     });
   });
 }
