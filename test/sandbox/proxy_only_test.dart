@@ -698,7 +698,7 @@ Future<({String raw, String? cn})> sendWithSni(
       'ca': s.ca,
       'servername': servername,
       'checkServerIdentity': (Object? _host, Object? cert) {
-        cn = '${((cert as dynamic).subject as Map)['CN']}';
+        cn = (cert as tls.PeerCertificate).subject.CN;
         return null;
       },
     });
@@ -1268,9 +1268,6 @@ Future<void> main() async {
         },
         skip: !TAKES_MAX_HEADER_SIZE ? 'maxHeaderSize not taken' : null,
         timeout: Timeout(Duration(milliseconds: 20000)),
-        tags: [
-          'pending',
-        ] /* Dart: needs tls.connect({socket}) (shim-stream) or hangs; see report */,
       );
     },
   );
@@ -1543,9 +1540,6 @@ Future<void> main() async {
       },
       skip: !SERVES_UPGRADE_FIELD ? 'Upgrade field not answered' : null,
       timeout: Timeout(Duration(milliseconds: 15000)),
-      tags: [
-        'pending',
-      ] /* Dart: needs tls.connect({socket}) (shim-stream) or hangs; see report */,
     );
   });
 
@@ -1667,9 +1661,6 @@ Future<void> main() async {
         },
         skip: CLIENT_SENDS_PATH_AS_GIVEN ? null : 'client rewrites paths',
         timeout: Timeout(Duration(seconds: 20)),
-        tags: [
-          'pending',
-        ] /* Dart: needs tls.connect({socket}) (shim-stream) or hangs; see report */,
       );
 
       test(
@@ -1690,9 +1681,6 @@ Future<void> main() async {
         },
         skip: emitSkip,
         timeout: Timeout(Duration(seconds: 20)),
-        tags: [
-          'pending',
-        ] /* Dart: needs tls.connect({socket}) (shim-stream) or hangs; see report */,
       );
 
       test(
@@ -1714,9 +1702,6 @@ Future<void> main() async {
           expect(_seen(s.d), hasLength(0));
           expect(s.up.seen, hasLength(0));
         },
-        tags: [
-          'pending',
-        ] /* Dart: needs tls.connect({socket}) (shim-stream) or hangs; see report */,
       );
 
       test(
@@ -1764,9 +1749,6 @@ Future<void> main() async {
       },
       skip: emitSkip,
       timeout: Timeout(Duration(seconds: 20)),
-      tags: [
-        'pending',
-      ] /* Dart: needs tls.connect({socket}) (shim-stream) or hangs; see report */,
     );
 
     test(
@@ -1790,9 +1772,6 @@ Future<void> main() async {
       },
       skip: emitSkip,
       timeout: Timeout(Duration(seconds: 20)),
-      tags: [
-        'pending',
-      ] /* Dart: needs tls.connect({socket}) (shim-stream) or hangs; see report */,
     );
 
     test('the plain path: 421 misdirected', () async {
@@ -1907,9 +1886,6 @@ Future<void> main() async {
         expect(post.status, 200);
         expect(s.up.got.map((g) => g.body.length), [0, 100000]);
       },
-      tags: [
-        'pending',
-      ] /* Dart: hangs, GET after delayed verdict returns no reply */,
     );
   });
 
@@ -2075,9 +2051,6 @@ Future<void> main() async {
           expect(readDuringStall, lessThan(24 << 20));
         },
         skip: emitSkip,
-        tags: [
-          'pending',
-        ], // Dart: tls.connect({socket}) (shim-stream) / hangs on 64-192 MiB streaming
         timeout: Timeout(Duration(seconds: 30)),
       );
     },
@@ -2190,7 +2163,7 @@ Future<void> main() async {
           skip: emitSkip,
           tags: [
             'pending',
-          ], // Dart: tls.connect({socket}) (shim-stream) / hangs on 64-192 MiB streaming
+          ], // Dart: TLS-terminated tunnel socket reads the whole body ahead (no backpressure to the client); stalled-client response read 65 KB only
           timeout: Timeout(Duration(seconds: 30)),
         );
       }
@@ -2216,7 +2189,7 @@ Future<void> main() async {
       skip: emitSkip,
       tags: [
         'pending',
-      ], // Dart: tls.connect({socket}) (shim-stream) / hangs on 64-192 MiB streaming
+      ], // Dart: TLS-terminated tunnel socket reads the whole body ahead (no backpressure to the client); stalled-client response read 65 KB only
     );
   });
 
@@ -2298,7 +2271,7 @@ Future<void> main() async {
       skip: emitSkip,
       tags: [
         'pending',
-      ], // Dart: tls.connect({socket}) (shim-stream) / hangs on 64-192 MiB streaming
+      ], // Dart: TLS-terminated tunnel socket reads the whole body ahead (no backpressure to the client); stalled-client response read 65 KB only
       timeout: Timeout(Duration(seconds: 60)),
     );
   });
@@ -2347,9 +2320,6 @@ Future<void> main() async {
         expect(await s.send('/ok'), startsWith('HTTP/1.1 200'));
       },
       skip: emitSkip,
-      tags: [
-        'pending',
-      ], // Dart: tls.connect({socket}) (shim-stream) / hangs on 64-192 MiB streaming
     );
   });
 
@@ -2369,9 +2339,6 @@ Future<void> main() async {
         expect(s.up.seen, hasLength(0));
       },
       skip: emitSkip,
-      tags: [
-        'pending',
-      ], // Dart: tls.connect({socket}) (shim-stream) / hangs on 64-192 MiB streaming
     );
 
     test(
@@ -2388,9 +2355,6 @@ Future<void> main() async {
         expect(s.up.seen, hasLength(0));
       },
       skip: emitSkip,
-      tags: [
-        'pending',
-      ], // Dart: tls.connect({socket}) (shim-stream) / hangs on 64-192 MiB streaming
     );
   });
 
@@ -2454,9 +2418,6 @@ Future<void> main() async {
         expect(heldDuringStall, lessThan(MAX_QUEUED_BYTES));
       },
       skip: emitSkip,
-      tags: [
-        'pending',
-      ], // Dart: tls.connect({socket}) (shim-stream) / hangs on 64-192 MiB streaming
       timeout: Timeout(Duration(seconds: 60)),
     );
   });
