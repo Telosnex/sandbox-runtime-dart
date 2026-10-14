@@ -1,7 +1,11 @@
 // Node process values reproduced for the ported files. Overrides let tests
 // model upstream tests which temporarily replace process.platform/env/cwd.
+import 'dart:async';
 import 'dart:ffi';
-import 'dart:io';
+import 'dart:io' as io;
+import 'dart:io' show Directory, Platform, ProcessInfo, ProcessSignal;
+
+import 'child_process.dart' as child_process;
 
 String? _platformOverride;
 Map<String, String>? _envOverride;
@@ -26,6 +30,149 @@ int Function()? _loadGetuid() {
 /// Windows.
 int Function()? getuid = _loadGetuid();
 
+int Function()? _loadGeteuid() {
+  if (Platform.isWindows) return null;
+  try {
+    return DynamicLibrary.process().lookupFunction<_GetuidNative, _GetuidDart>(
+      'geteuid',
+    );
+  } on ArgumentError {
+    return null;
+  }
+}
+
+/// Node's `process.geteuid`; null on Windows, as in Node.
+int Function()? geteuid = _loadGeteuid();
+
+/// Node's `process.pid`.
+int get pid => io.pid;
+
+/// Node's `process.argv`: `[runtime, script, ...args]`. Dart exposes the
+/// command-line arguments only to `main`; an entry point stores them here.
+List<String> argv = [Platform.resolvedExecutable, Platform.script.toFilePath()];
+
+/// Node's `process.version`. This runtime is the Dart VM, so the value is the
+/// Dart SDK version in Node's `v`-prefixed form.
+String get version => 'v${Platform.version.split(' ').first}';
+
+/// Node's `process.versions`: `node` is absent; `dart` names the runtime.
+/// `versions['bun']` is null, as upstream's Bun probes expect.
+Map<String, String> get versions => {'dart': Platform.version.split(' ').first};
+
+/// Node's `process.memoryUsage()`. Only `rss` is measurable from Dart.
+({int rss}) memoryUsage() => (rss: ProcessInfo.currentRss);
+
+/// Node's `process.stdout` / `process.stderr`: `write(String | bytes)`.
+class WriteStream {
+  WriteStream._(this._sink);
+  final io.Stdout _sink;
+
+  bool write(Object data) {
+    if (data is List<int>) {
+      _sink.add(data);
+    } else {
+      _sink.write(data);
+    }
+    return true;
+  }
+
+  bool get isTTY => _sink.hasTerminal;
+  int? get columns => _sink.hasTerminal ? _sink.terminalColumns : null;
+}
+
+final WriteStream stdout = WriteStream._(io.stdout);
+final WriteStream stderr = WriteStream._(io.stderr);
+
+/// Node's `process.kill(pid, signal)`.
+bool kill(int pid, [Object signal = 'SIGTERM']) =>
+    child_process.killPid(pid, signal);
+
+/// Node's `process.exitCode`.
+int? exitCode;
+
+/// Node's `process.exit(code)`: runs the 'exit' listeners, then exits.
+/// Dart cannot observe a natural end of `main`, so 'exit' listeners run
+/// only through this call.
+Never exit([int? code]) {
+  final status = code ?? exitCode ?? 0;
+  exitCode = status;
+  if (!_exiting) {
+    _exiting = true;
+    for (final l in List.of(_listeners['exit'] ?? const <_Listener>[])) {
+      if (l.once) _listeners['exit']!.remove(l);
+      _call(l.fn, status);
+    }
+  }
+  io.exit(exitCode ?? status);
+}
+
+bool _exiting = false;
+
+class _Listener {
+  _Listener(this.fn, this.once);
+  final Function fn;
+  final bool once;
+}
+
+final Map<String, List<_Listener>> _listeners = {};
+final Map<String, StreamSubscription<ProcessSignal>> _signalWatches = {};
+
+void _call(Function fn, Object? arg) {
+  if (fn is void Function()) {
+    fn();
+  } else {
+    (fn as dynamic)(arg);
+  }
+}
+
+ProcessSignal? _signal(String event) => switch (event) {
+  'SIGINT' => ProcessSignal.sigint,
+  'SIGTERM' => ProcessSignal.sigterm,
+  'SIGHUP' => ProcessSignal.sighup,
+  'SIGUSR1' => ProcessSignal.sigusr1,
+  'SIGUSR2' => ProcessSignal.sigusr2,
+  'SIGWINCH' => ProcessSignal.sigwinch,
+  'SIGQUIT' => ProcessSignal.sigquit,
+  _ => null,
+};
+
+void _add(String event, Function fn, bool once) {
+  (_listeners[event] ??= []).add(_Listener(fn, once));
+  final signal = _signal(event);
+  if (signal != null && !_signalWatches.containsKey(event)) {
+    // As in Node, a listener replaces the default action (termination).
+    _signalWatches[event] = signal.watch().listen((_) {
+      for (final l in List.of(_listeners[event] ?? const <_Listener>[])) {
+        if (l.once) off(event, l.fn);
+        _call(l.fn, event);
+      }
+    });
+  } else if (signal == null && event != 'exit') {
+    throw UnsupportedError('process.on($event)');
+  }
+}
+
+/// Node's `process.on(event, fn)` for 'exit' and the signal events.
+void on(String event, Function listener) => _add(event, listener, false);
+
+/// Node's `process.once(event, fn)`.
+void once(String event, Function listener) => _add(event, listener, true);
+
+/// Node's `process.off(event, fn)`. With no listener left for a signal, its
+/// default action is restored.
+void off(String event, Function listener) {
+  final list = _listeners[event];
+  if (list == null) return;
+  final i = list.lastIndexWhere((l) => l.fn == listener);
+  if (i >= 0) list.removeAt(i);
+  if (list.isEmpty) {
+    _listeners.remove(event);
+    unawaited(_signalWatches.remove(event)?.cancel());
+  }
+}
+
+int listenerCount(String event) => _listeners[event]?.length ?? 0;
+
 /// The Node `process.platform` spelling for the current Dart host.
 String get platform =>
     _platformOverride ??
@@ -41,7 +188,9 @@ String get platform =>
 String get arch => Abi.current().toString().split('_').last;
 
 /// Node's live `process.env` map, unless a test has supplied an override.
-Map<String, String> get env => _envOverride ?? Platform.environment;
+/// Node's live, mutable `process.env`, unless a test supplied an override.
+Map<String, String> get env => _envOverride ?? _env;
+final Map<String, String> _env = Map.of(Platform.environment);
 
 /// Node's `process.cwd()` value, unless a test has supplied an override.
 String cwd() => _cwdOverride ?? Directory.current.path;

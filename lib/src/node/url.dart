@@ -1,107 +1,860 @@
 // Node `url` compatibility: WHATWG URL host parsing (for canonicalizeHost)
 // and URLSearchParams (for aws-sigv4). No upstream counterpart.
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'dart:typed_data';
 
-/// The web-global / `node:url` URL declaration used by the port.
+/// The web-global / `node:url` URL: the WHATWG URL Standard's basic URL
+/// parser and serializer, with the setters' state overrides.
 ///
-/// This declaration is pending its full WHATWG implementation. The constructor
-/// resolves a relative input against [base] and throws [FormatException] for
-/// invalid URLs, rather than Node's `TypeError`.
+/// Invalid input throws [FormatException] rather than Node's `TypeError`.
+/// Hosts go through [whatwgUrlHostname]'s parser, so IDNA input outside its
+/// supported subset is rejected rather than guessed.
 class URL {
-  URL(String input, [String? base]) : _href = _parseUrl(input, base);
+  URL(String input, [String? base]) {
+    _UrlRecord? baseRecord;
+    if (base != null) {
+      baseRecord = _UrlParser(base).parse();
+      if (baseRecord == null) throw FormatException('Invalid URL: $base');
+    }
+    final record = _UrlParser(input, base: baseRecord).parse();
+    if (record == null) throw FormatException('Invalid URL: $input');
+    _url = record;
+  }
 
-  String _href;
+  /// Whether [input] (against [base]) parses, as `URL.canParse`.
+  static bool canParse(String input, [String? base]) {
+    try {
+      URL(input, base);
+      return true;
+    } on FormatException {
+      return false;
+    }
+  }
 
-  String get href => _href;
-  set href(String value) => _href = _parseUrl(value, null);
+  late _UrlRecord _url;
 
-  String get protocol =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  String get href => _url.serialize();
+  set href(String value) {
+    final record = _UrlParser(value).parse();
+    if (record == null) throw FormatException('Invalid URL: $value');
+    _url = record;
+  }
+
+  String get origin {
+    switch (_url.scheme) {
+      case 'blob':
+        final inner = _UrlParser(_url.pathString).parse();
+        if (inner != null &&
+            (inner.scheme == 'http' || inner.scheme == 'https')) {
+          return URL(inner.serialize()).origin;
+        }
+        return 'null';
+      case 'ftp' || 'http' || 'https' || 'ws' || 'wss':
+        final port = _url.port == null ? '' : ':${_url.port}';
+        return '${_url.scheme}://${_url.host}$port';
+      default:
+        return 'null';
+    }
+  }
+
+  String get protocol => '${_url.scheme}:';
   set protocol(String value) =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+      _UrlParser('$value:', url: _url, override: _State.schemeStart).parse();
 
-  String get username =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
-  set username(String value) =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  String get username => _url.username;
+  set username(String value) {
+    if (_url.cannotHaveCredentialsOrPort) return;
+    _url.username = _percentEncodeString(value, _isUserinfoEncode);
+  }
 
-  String get password =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
-  set password(String value) =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  String get password => _url.password;
+  set password(String value) {
+    if (_url.cannotHaveCredentialsOrPort) return;
+    _url.password = _percentEncodeString(value, _isUserinfoEncode);
+  }
 
-  String get host => throw UnimplementedError('node:url URL: pending (wave 1)');
-  set host(String value) =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  String get host {
+    if (_url.host == null) return '';
+    if (_url.port == null) return _url.host!;
+    return '${_url.host}:${_url.port}';
+  }
 
-  String get hostname =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
-  set hostname(String value) =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  set host(String value) {
+    if (_url.opaquePath != null) return;
+    _UrlParser(value, url: _url, override: _State.host).parse();
+  }
 
-  String get port => throw UnimplementedError('node:url URL: pending (wave 1)');
-  set port(String value) =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  String get hostname => _url.host ?? '';
+  set hostname(String value) {
+    if (_url.opaquePath != null) return;
+    _UrlParser(value, url: _url, override: _State.hostname).parse();
+  }
 
-  String get pathname =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
-  set pathname(String value) =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  String get port => _url.port == null ? '' : '${_url.port}';
+  set port(String value) {
+    if (_url.cannotHaveCredentialsOrPort) return;
+    if (value.isEmpty) {
+      _url.port = null;
+    } else {
+      _UrlParser(value, url: _url, override: _State.port).parse();
+    }
+  }
 
-  String get search =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
-  set search(String value) =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  String get pathname => _url.pathString;
+  set pathname(String value) {
+    if (_url.opaquePath != null) return;
+    _url.path.clear();
+    _UrlParser(value, url: _url, override: _State.pathStart).parse();
+  }
 
-  String get hash => throw UnimplementedError('node:url URL: pending (wave 1)');
-  set hash(String value) =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  String get search {
+    final query = _url.query;
+    return query == null || query.isEmpty ? '' : '?$query';
+  }
 
-  String get origin =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  set search(String value) {
+    if (value.isEmpty) {
+      _url.query = null;
+      _stripTrailingSpacesFromOpaquePath();
+      return;
+    }
+    final input = value.startsWith('?') ? value.substring(1) : value;
+    _url.query = '';
+    _UrlParser(input, url: _url, override: _State.query).parse();
+  }
 
-  URLSearchParams get searchParams =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  String get hash {
+    final fragment = _url.fragment;
+    return fragment == null || fragment.isEmpty ? '' : '#$fragment';
+  }
+
+  set hash(String value) {
+    if (value.isEmpty) {
+      _url.fragment = null;
+      _stripTrailingSpacesFromOpaquePath();
+      return;
+    }
+    final input = value.startsWith('#') ? value.substring(1) : value;
+    _url.fragment = '';
+    _UrlParser(input, url: _url, override: _State.fragment).parse();
+  }
+
+  void _stripTrailingSpacesFromOpaquePath() {
+    final path = _url.opaquePath;
+    if (path == null || _url.fragment != null || _url.query != null) return;
+    _url.opaquePath = path.replaceFirst(RegExp(r' +$'), '');
+  }
+
+  URLSearchParams get searchParams => URLSearchParams(_url.query ?? '');
+
+  String toJSON() => href;
 
   @override
   String toString() => href;
 }
 
-String _parseUrl(String input, String? base) {
-  try {
-    final parsedInput = Uri.parse(input);
-    final Uri parsed;
-    if (parsedInput.hasScheme) {
-      parsed = parsedInput;
-    } else if (base != null) {
-      final parsedBase = Uri.parse(base);
-      if (!parsedBase.hasScheme) {
-        throw const FormatException('Invalid URL base');
+const _specialPorts = <String, int?>{
+  'ftp': 21,
+  'file': null,
+  'http': 80,
+  'https': 443,
+  'ws': 80,
+  'wss': 443,
+};
+
+bool _isSpecialScheme(String scheme) => _specialPorts.containsKey(scheme);
+
+class _UrlRecord {
+  String scheme = '';
+  String username = '';
+  String password = '';
+  String? host;
+  int? port;
+  List<String> path = [];
+  String? opaquePath;
+  String? query;
+  String? fragment;
+
+  bool get isSpecial => _isSpecialScheme(scheme);
+
+  bool get includesCredentials => username.isNotEmpty || password.isNotEmpty;
+
+  bool get cannotHaveCredentialsOrPort =>
+      host == null || host == '' || scheme == 'file';
+
+  String get pathString => opaquePath ?? path.map((s) => '/$s').join();
+
+  void shortenPath() {
+    if (scheme == 'file' &&
+        path.length == 1 &&
+        _isNormalizedWindowsDriveLetter(path[0])) {
+      return;
+    }
+    if (path.isNotEmpty) path.removeLast();
+  }
+
+  _UrlRecord copy() => _UrlRecord()
+    ..scheme = scheme
+    ..username = username
+    ..password = password
+    ..host = host
+    ..port = port
+    ..path = List.of(path)
+    ..opaquePath = opaquePath
+    ..query = query
+    ..fragment = fragment;
+
+  String serialize({bool excludeFragment = false}) {
+    final out = StringBuffer('$scheme:');
+    if (host != null) {
+      out.write('//');
+      if (includesCredentials) {
+        out.write(username);
+        if (password.isNotEmpty) out.write(':$password');
+        out.write('@');
       }
-      parsed = parsedBase.resolveUri(parsedInput);
-    } else {
-      throw const FormatException('Invalid URL');
+      out.write(host);
+      if (port != null) out.write(':$port');
     }
-    if (!parsed.hasScheme) throw const FormatException('Invalid URL');
-    if (parsed.host.isNotEmpty) {
-      // Reuse the URL-host parser used by address normalization so invalid
-      // hosts fail rather than being accepted by dart:core Uri alone.
-      whatwgUrlHostname(parsed.host);
+    if (host == null &&
+        opaquePath == null &&
+        path.length > 1 &&
+        path[0].isEmpty) {
+      out.write('/.');
     }
-    if (const {'http', 'https', 'ftp', 'ws', 'wss'}.contains(parsed.scheme) &&
-        parsed.host.isEmpty) {
-      throw const FormatException('Invalid URL host');
-    }
-    return parsed.toString();
-  } on FormatException catch (error) {
-    throw FormatException('Invalid URL: $input', error);
+    out.write(pathString);
+    if (query != null) out.write('?$query');
+    if (!excludeFragment && fragment != null) out.write('#$fragment');
+    return out.toString();
   }
 }
 
-/// `node:url` file URL conversion. Its platform-specific behavior is pending.
-String fileURLToPath(String url) =>
-    throw UnimplementedError('node:url URL: pending (wave 1)');
+enum _State {
+  schemeStart,
+  scheme,
+  noScheme,
+  specialRelativeOrAuthority,
+  pathOrAuthority,
+  relative,
+  relativeSlash,
+  specialAuthoritySlashes,
+  specialAuthorityIgnoreSlashes,
+  authority,
+  host,
+  hostname,
+  port,
+  file,
+  fileSlash,
+  fileHost,
+  pathStart,
+  path,
+  opaquePath,
+  query,
+  fragment,
+}
+
+const _eof = -1;
+
+bool _isAsciiAlpha(int c) =>
+    (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a);
+bool _isAsciiDigit(int c) => c >= 0x30 && c <= 0x39;
+bool _isAsciiAlphanumeric(int c) => _isAsciiAlpha(c) || _isAsciiDigit(c);
+
+bool _isWindowsDriveLetter(String s) {
+  final r = s.runes.toList();
+  return r.length == 2 && _isAsciiAlpha(r[0]) && (r[1] == 0x3a || r[1] == 0x7c);
+}
+
+bool _isNormalizedWindowsDriveLetter(String s) =>
+    _isWindowsDriveLetter(s) && s.codeUnitAt(1) == 0x3a;
+
+bool _startsWithWindowsDriveLetter(List<int> runes, int at) {
+  if (runes.length - at < 2) return false;
+  if (!_isAsciiAlpha(runes[at]) ||
+      (runes[at + 1] != 0x3a && runes[at + 1] != 0x7c)) {
+    return false;
+  }
+  if (runes.length - at == 2) return true;
+  final c = runes[at + 2];
+  return c == 0x2f || c == 0x5c || c == 0x3f || c == 0x23;
+}
+
+bool _isC0ControlEncode(int c) => c < 0x20 || c > 0x7e;
+bool _isFragmentEncode(int c) =>
+    _isC0ControlEncode(c) ||
+    c == 0x20 ||
+    c == 0x22 ||
+    c == 0x3c ||
+    c == 0x3e ||
+    c == 0x60;
+bool _isQueryEncode(int c) =>
+    _isC0ControlEncode(c) ||
+    c == 0x20 ||
+    c == 0x22 ||
+    c == 0x23 ||
+    c == 0x3c ||
+    c == 0x3e;
+bool _isSpecialQueryEncode(int c) => _isQueryEncode(c) || c == 0x27;
+bool _isPathEncode(int c) =>
+    _isQueryEncode(c) || c == 0x3f || c == 0x60 || c == 0x7b || c == 0x7d;
+bool _isUserinfoEncode(int c) =>
+    _isPathEncode(c) ||
+    c == 0x2f ||
+    c == 0x3a ||
+    c == 0x3b ||
+    c == 0x3d ||
+    c == 0x40 ||
+    (c >= 0x5b && c <= 0x5e) ||
+    c == 0x7c;
+
+String _percentEncodeRune(int rune, bool Function(int) inSet) {
+  if (!inSet(rune)) return String.fromCharCode(rune);
+  final out = StringBuffer();
+  for (final byte in utf8.encode(String.fromCharCode(rune))) {
+    out.write('%${byte.toRadixString(16).toUpperCase().padLeft(2, '0')}');
+  }
+  return out.toString();
+}
+
+String _percentEncodeString(String input, bool Function(int) inSet) {
+  final out = StringBuffer();
+  for (final rune in input.runes) {
+    out.write(_percentEncodeRune(rune, inSet));
+  }
+  return out.toString();
+}
+
+/// The basic URL parser. Returns null on failure (or, with a state override,
+/// when the override leaves the URL unchanged).
+class _UrlParser {
+  _UrlParser(String input, {this.base, _UrlRecord? url, _State? override})
+    : _override = override,
+      _target = url {
+    var text = input;
+    if (url == null) {
+      text = text.replaceFirst(RegExp(r'^[\u0000-\u0020]+'), '');
+      text = text.replaceFirst(RegExp(r'[\u0000-\u0020]+$'), '');
+    }
+    text = text.replaceAll(RegExp(r'[\t\n\r]'), '');
+    _input = text.runes.toList();
+  }
+
+  final _UrlRecord? base;
+  final _State? _override;
+  final _UrlRecord? _target;
+  late final List<int> _input;
+
+  _UrlRecord? parse() {
+    final url = _target ?? _UrlRecord();
+    final override = _override;
+    var state = override ?? _State.schemeStart;
+    final buffer = StringBuffer();
+    var atSignSeen = false;
+    var insideBrackets = false;
+    var passwordTokenSeen = false;
+    var pointer = 0;
+
+    int c() => pointer < _input.length ? _input[pointer] : _eof;
+    int remaining(int n) =>
+        pointer + n < _input.length ? _input[pointer + n] : _eof;
+    String buf() => buffer.toString();
+
+    for (; ; pointer++) {
+      final ch = c();
+      switch (state) {
+        case _State.schemeStart:
+          if (ch != _eof && _isAsciiAlpha(ch)) {
+            buffer.writeCharCode(ch | 0x20);
+            state = _State.scheme;
+          } else if (override == null) {
+            state = _State.noScheme;
+            pointer--;
+          } else {
+            return null;
+          }
+        case _State.scheme:
+          if (ch != _eof &&
+              (_isAsciiAlphanumeric(ch) ||
+                  ch == 0x2b ||
+                  ch == 0x2d ||
+                  ch == 0x2e)) {
+            buffer.writeCharCode(_isAsciiAlpha(ch) ? ch | 0x20 : ch);
+          } else if (ch == 0x3a) {
+            final candidate = buf();
+            if (override != null) {
+              if (url.isSpecial != _isSpecialScheme(candidate)) return null;
+              if ((url.includesCredentials || url.port != null) &&
+                  candidate == 'file') {
+                return null;
+              }
+              if (url.scheme == 'file' && (url.host ?? '').isEmpty) {
+                return null;
+              }
+            }
+            url.scheme = candidate;
+            if (override != null) {
+              if (url.port == _specialPorts[url.scheme]) url.port = null;
+              return null;
+            }
+            buffer.clear();
+            if (url.scheme == 'file') {
+              state = _State.file;
+            } else if (url.isSpecial &&
+                base != null &&
+                base!.scheme == url.scheme) {
+              state = _State.specialRelativeOrAuthority;
+            } else if (url.isSpecial) {
+              state = _State.specialAuthoritySlashes;
+            } else if (remaining(1) == 0x2f) {
+              state = _State.pathOrAuthority;
+              pointer++;
+            } else {
+              url.opaquePath = '';
+              state = _State.opaquePath;
+            }
+          } else if (override == null) {
+            buffer.clear();
+            state = _State.noScheme;
+            pointer = -1;
+          } else {
+            return null;
+          }
+        case _State.noScheme:
+          final b = base;
+          if (b == null || (b.opaquePath != null && ch != 0x23)) {
+            return null;
+          } else if (b.opaquePath != null && ch == 0x23) {
+            url
+              ..scheme = b.scheme
+              ..opaquePath = b.opaquePath
+              ..query = b.query
+              ..fragment = '';
+            state = _State.fragment;
+          } else if (b.scheme != 'file') {
+            state = _State.relative;
+            pointer--;
+          } else {
+            state = _State.file;
+            pointer--;
+          }
+        case _State.specialRelativeOrAuthority:
+          if (ch == 0x2f && remaining(1) == 0x2f) {
+            state = _State.specialAuthorityIgnoreSlashes;
+            pointer++;
+          } else {
+            state = _State.relative;
+            pointer--;
+          }
+        case _State.pathOrAuthority:
+          if (ch == 0x2f) {
+            state = _State.authority;
+          } else {
+            state = _State.path;
+            pointer--;
+          }
+        case _State.relative:
+          final b = base!;
+          url.scheme = b.scheme;
+          if (ch == 0x2f) {
+            state = _State.relativeSlash;
+          } else if (url.isSpecial && ch == 0x5c) {
+            state = _State.relativeSlash;
+          } else {
+            url
+              ..username = b.username
+              ..password = b.password
+              ..host = b.host
+              ..port = b.port
+              ..path = List.of(b.path)
+              ..query = b.query;
+            if (ch == 0x3f) {
+              url.query = '';
+              state = _State.query;
+            } else if (ch == 0x23) {
+              url.fragment = '';
+              state = _State.fragment;
+            } else if (ch != _eof) {
+              url.query = null;
+              url.shortenPath();
+              state = _State.path;
+              pointer--;
+            }
+          }
+        case _State.relativeSlash:
+          if (url.isSpecial && (ch == 0x2f || ch == 0x5c)) {
+            state = _State.specialAuthorityIgnoreSlashes;
+          } else if (ch == 0x2f) {
+            state = _State.authority;
+          } else {
+            final b = base!;
+            url
+              ..username = b.username
+              ..password = b.password
+              ..host = b.host
+              ..port = b.port;
+            state = _State.path;
+            pointer--;
+          }
+        case _State.specialAuthoritySlashes:
+          if (ch == 0x2f && remaining(1) == 0x2f) {
+            state = _State.specialAuthorityIgnoreSlashes;
+            pointer++;
+          } else {
+            state = _State.specialAuthorityIgnoreSlashes;
+            pointer--;
+          }
+        case _State.specialAuthorityIgnoreSlashes:
+          if (ch != 0x2f && ch != 0x5c) {
+            state = _State.authority;
+            pointer--;
+          }
+        case _State.authority:
+          if (ch == 0x40) {
+            final text = '${atSignSeen ? '%40' : ''}${buf()}';
+            atSignSeen = true;
+            for (final rune in text.runes) {
+              if (rune == 0x3a && !passwordTokenSeen) {
+                passwordTokenSeen = true;
+                continue;
+              }
+              final encoded = _percentEncodeRune(rune, _isUserinfoEncode);
+              if (passwordTokenSeen) {
+                url.password += encoded;
+              } else {
+                url.username += encoded;
+              }
+            }
+            buffer.clear();
+          } else if (ch == _eof ||
+              ch == 0x2f ||
+              ch == 0x3f ||
+              ch == 0x23 ||
+              (url.isSpecial && ch == 0x5c)) {
+            if (atSignSeen && buffer.isEmpty) return null;
+            pointer -= buf().runes.length + 1;
+            buffer.clear();
+            state = _State.host;
+          } else {
+            buffer.writeCharCode(ch);
+          }
+        case _State.host || _State.hostname:
+          if (override != null && url.scheme == 'file') {
+            pointer--;
+            state = _State.fileHost;
+          } else if (ch == 0x3a && !insideBrackets) {
+            if (buffer.isEmpty) return null;
+            if (override == _State.hostname) return null;
+            final host = _parseHost(buf(), !url.isSpecial);
+            if (host == null) return null;
+            url.host = host;
+            buffer.clear();
+            state = _State.port;
+          } else if (ch == _eof ||
+              ch == 0x2f ||
+              ch == 0x3f ||
+              ch == 0x23 ||
+              (url.isSpecial && ch == 0x5c)) {
+            pointer--;
+            if (url.isSpecial && buffer.isEmpty) return null;
+            if (override != null &&
+                buffer.isEmpty &&
+                (url.includesCredentials || url.port != null)) {
+              return null;
+            }
+            final host = _parseHost(buf(), !url.isSpecial);
+            if (host == null) return null;
+            url.host = host;
+            buffer.clear();
+            state = _State.pathStart;
+            if (override != null) return null;
+          } else {
+            if (ch == 0x5b) insideBrackets = true;
+            if (ch == 0x5d) insideBrackets = false;
+            buffer.writeCharCode(ch);
+          }
+        case _State.port:
+          if (ch != _eof && _isAsciiDigit(ch)) {
+            buffer.writeCharCode(ch);
+          } else if (ch == _eof ||
+              ch == 0x2f ||
+              ch == 0x3f ||
+              ch == 0x23 ||
+              (url.isSpecial && ch == 0x5c) ||
+              override != null) {
+            if (buffer.isNotEmpty) {
+              final port = int.parse(buf().length > 6 ? '999999' : buf());
+              if (port > 65535) return null;
+              url.port = port == _specialPorts[url.scheme] ? null : port;
+              buffer.clear();
+              if (override != null) return null;
+            }
+            if (override != null) return null;
+            state = _State.pathStart;
+            pointer--;
+          } else {
+            return null;
+          }
+        case _State.file:
+          url
+            ..scheme = 'file'
+            ..host = '';
+          final b = base;
+          if (ch == 0x2f || ch == 0x5c) {
+            state = _State.fileSlash;
+          } else if (b != null && b.scheme == 'file') {
+            url
+              ..host = b.host
+              ..path = List.of(b.path)
+              ..query = b.query;
+            if (ch == 0x3f) {
+              url.query = '';
+              state = _State.query;
+            } else if (ch == 0x23) {
+              url.fragment = '';
+              state = _State.fragment;
+            } else if (ch != _eof) {
+              url.query = null;
+              if (!_startsWithWindowsDriveLetter(_input, pointer)) {
+                url.shortenPath();
+              } else {
+                url.path = [];
+              }
+              state = _State.path;
+              pointer--;
+            }
+          } else {
+            state = _State.path;
+            pointer--;
+          }
+        case _State.fileSlash:
+          if (ch == 0x2f || ch == 0x5c) {
+            state = _State.fileHost;
+          } else {
+            final b = base;
+            if (b != null && b.scheme == 'file') {
+              url.host = b.host;
+              if (!_startsWithWindowsDriveLetter(_input, pointer) &&
+                  b.path.isNotEmpty &&
+                  _isNormalizedWindowsDriveLetter(b.path[0])) {
+                url.path.add(b.path[0]);
+              }
+            }
+            state = _State.path;
+            pointer--;
+          }
+        case _State.fileHost:
+          if (ch == _eof ||
+              ch == 0x2f ||
+              ch == 0x5c ||
+              ch == 0x3f ||
+              ch == 0x23) {
+            pointer--;
+            if (override == null && _isWindowsDriveLetter(buf())) {
+              state = _State.path;
+            } else if (buffer.isEmpty) {
+              url.host = '';
+              if (override != null) return null;
+              state = _State.pathStart;
+            } else {
+              var host = _parseHost(buf(), !url.isSpecial);
+              if (host == null) return null;
+              if (host == 'localhost') host = '';
+              url.host = host;
+              if (override != null) return null;
+              buffer.clear();
+              state = _State.pathStart;
+            }
+          } else {
+            buffer.writeCharCode(ch);
+          }
+        case _State.pathStart:
+          if (url.isSpecial) {
+            state = _State.path;
+            if (ch != 0x2f && ch != 0x5c) pointer--;
+          } else if (override == null && ch == 0x3f) {
+            url.query = '';
+            state = _State.query;
+          } else if (override == null && ch == 0x23) {
+            url.fragment = '';
+            state = _State.fragment;
+          } else if (ch != _eof) {
+            state = _State.path;
+            if (ch != 0x2f) pointer--;
+          } else if (override != null && url.host == null) {
+            url.path.add('');
+          }
+        case _State.path:
+          if (ch == _eof ||
+              ch == 0x2f ||
+              (url.isSpecial && ch == 0x5c) ||
+              (override == null && (ch == 0x3f || ch == 0x23))) {
+            final segment = buf();
+            final lower = segment.toLowerCase();
+            final isDoubleDot =
+                lower == '..' ||
+                lower == '.%2e' ||
+                lower == '%2e.' ||
+                lower == '%2e%2e';
+            final isSingleDot = lower == '.' || lower == '%2e';
+            final slash = ch == 0x2f || (url.isSpecial && ch == 0x5c);
+            if (isDoubleDot) {
+              url.shortenPath();
+              if (!slash) url.path.add('');
+            } else if (isSingleDot && !slash) {
+              url.path.add('');
+            } else if (!isSingleDot) {
+              var part = segment;
+              if (url.scheme == 'file' &&
+                  url.path.isEmpty &&
+                  _isWindowsDriveLetter(part)) {
+                part = '${part[0]}:';
+              }
+              url.path.add(part);
+            }
+            buffer.clear();
+            if (ch == 0x3f) {
+              url.query = '';
+              state = _State.query;
+            }
+            if (ch == 0x23) {
+              url.fragment = '';
+              state = _State.fragment;
+            }
+          } else {
+            buffer.write(_percentEncodeRune(ch, _isPathEncode));
+          }
+        case _State.opaquePath:
+          if (ch == 0x3f) {
+            url.query = '';
+            state = _State.query;
+          } else if (ch == 0x23) {
+            url.fragment = '';
+            state = _State.fragment;
+          } else if (ch == 0x20) {
+            final next = remaining(1);
+            url.opaquePath =
+                '${url.opaquePath}${next == 0x3f || next == 0x23 ? '%20' : ' '}';
+          } else if (ch != _eof) {
+            url.opaquePath =
+                '${url.opaquePath}${_percentEncodeRune(ch, _isC0ControlEncode)}';
+          }
+        case _State.query:
+          if ((override == null && ch == 0x23) || ch == _eof) {
+            final inSet = url.isSpecial
+                ? _isSpecialQueryEncode
+                : _isQueryEncode;
+            url.query =
+                '${url.query ?? ''}${_percentEncodeString(buf(), inSet)}';
+            buffer.clear();
+            if (ch == 0x23) {
+              url.fragment = '';
+              state = _State.fragment;
+            }
+          } else {
+            buffer.writeCharCode(ch);
+          }
+        case _State.fragment:
+          if (ch != _eof) {
+            url.fragment =
+                '${url.fragment}${_percentEncodeRune(ch, _isFragmentEncode)}';
+          }
+      }
+      if (pointer >= _input.length) break;
+    }
+    return override == null ? url : null;
+  }
+}
+
+/// The host parser: a bracketed IPv6 address, an opaque host when
+/// [isOpaque], else a domain or IPv4 address. Returns null on failure.
+String? _parseHost(String input, bool isOpaque) {
+  if (input.startsWith('[')) {
+    if (!input.endsWith(']')) return null;
+    try {
+      return '[${_serializeIpv6(input.substring(1, input.length - 1))}]';
+    } on FormatException {
+      return null;
+    }
+  }
+  if (isOpaque) {
+    for (final rune in input.runes) {
+      if (rune != 0x25 && _isForbiddenOpaqueHostCodePoint(rune)) return null;
+    }
+    return _percentEncodeString(input, _isC0ControlEncode);
+  }
+  if (input.isEmpty) return null;
+  try {
+    final asciiDomain = _domainToAscii(_percentDecode(input));
+    if (asciiDomain.isEmpty) return null;
+    if (_endsInNumber(asciiDomain)) return _parseIpv4(asciiDomain);
+    return asciiDomain;
+  } on FormatException {
+    return null;
+  }
+}
+
+bool _isForbiddenOpaqueHostCodePoint(int rune) =>
+    rune == 0x00 ||
+    rune == 0x09 ||
+    rune == 0x0a ||
+    rune == 0x0d ||
+    rune == 0x20 ||
+    rune == 0x23 ||
+    rune == 0x2f ||
+    rune == 0x3a ||
+    rune == 0x3c ||
+    rune == 0x3e ||
+    rune == 0x3f ||
+    rune == 0x40 ||
+    rune == 0x5b ||
+    rune == 0x5c ||
+    rune == 0x5d ||
+    rune == 0x5e ||
+    rune == 0x7c;
+
+/// `node:url` fileURLToPath.
+///
+/// As Node: [url] is a URL string or [URL]; a non-file URL, an encoded `/`
+/// (or `\\` on Windows), a host on POSIX, or a Windows path without a drive
+/// letter throws [ArgumentError] (Node's TypeError).
+String fileURLToPath(Object url, {bool? windows}) {
+  final parsed = url is URL ? url : URL(url as String);
+  if (parsed.protocol != 'file:') {
+    throw ArgumentError.value(url, 'url', 'The URL must be of scheme file');
+  }
+  final isWindows = windows ?? Platform.isWindows;
+  final pathname = parsed.pathname;
+  for (var n = 0; n + 2 < pathname.length; n++) {
+    if (pathname[n] != '%') continue;
+    final third = pathname.codeUnitAt(n + 2) | 0x20;
+    if ((pathname[n + 1] == '2' && third == 0x66) ||
+        (isWindows && pathname[n + 1] == '5' && third == 0x63)) {
+      throw ArgumentError.value(
+        url,
+        'url',
+        'File URL path must not include encoded ${isWindows ? '\\ or /' : '/'} characters',
+      );
+    }
+  }
+  if (isWindows) {
+    final path = Uri.decodeComponent(pathname.replaceAll('/', '\\'));
+    if (parsed.hostname.isNotEmpty) return '\\\\${parsed.hostname}$path';
+    final letter = path.length > 1 ? path.codeUnitAt(1) | 0x20 : 0;
+    if (letter < 0x61 || letter > 0x7a || path.length < 3 || path[2] != ':') {
+      throw ArgumentError.value(url, 'url', 'File URL path must be absolute');
+    }
+    return path.substring(1);
+  }
+  if (parsed.hostname.isNotEmpty) {
+    throw ArgumentError.value(
+      url,
+      'url',
+      'File URL host must be "localhost" or empty on ${Platform.operatingSystem}',
+    );
+  }
+  return Uri.decodeComponent(pathname);
+}
 
 /// Return the `hostname` of `new URL('http://$host/').hostname` for the
 /// supported special-URL host forms. Throws [FormatException] when the input
