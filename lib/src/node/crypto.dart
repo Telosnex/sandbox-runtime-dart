@@ -3,6 +3,7 @@
 // encoding is a Node Buffer, which is a Uint8List here.
 
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as crypto;
@@ -59,6 +60,21 @@ class Hmac {
 Hash createHash(String algorithm) => Hash(algorithm);
 
 Hmac createHmac(String algorithm, Object key) => Hmac(algorithm, key);
+
+Uint8List randomBytes(int size) {
+  final random = Random.secure();
+  return Uint8List.fromList(
+    List<int>.generate(size, (_) => random.nextInt(256)),
+  );
+}
+
+String randomUUID() {
+  final bytes = randomBytes(16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  final hex = _encode(bytes, 'hex') as String;
+  return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
+}
 
 crypto.Hash _hash(String algorithm) {
   if (algorithm == 'sha256') return crypto.sha256;
