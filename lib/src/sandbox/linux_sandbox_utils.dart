@@ -870,7 +870,7 @@ void _closeBwrapArgsProfile(int fd) {
 }
 
 String _errorText(Object? error) {
-  return error is NodeException ? error.message : '$error';
+  return errorMessage(error);
 }
 
 /**
@@ -903,11 +903,17 @@ typedef LinuxSandboxProfileErrorCode = String;
  * not on PATH, a bridge socket that is gone) are plain Errors.
  */
 class LinuxSandboxProfileError extends Error {
-  LinuxSandboxProfileError(this.code, this.message, [this.cause])
-    : name = 'LinuxSandboxProfileError';
+  LinuxSandboxProfileError(this.code, this.message, [Object? cause])
+    : name = 'LinuxSandboxProfileError' {
+    if (cause != null) {
+      // Non-enumerable, as a native `cause` is. Once the compile target is
+      // ES2022 this is `super(message, { cause })`.
+      this.cause = cause;
+    }
+  }
 
   final LinuxSandboxProfileErrorCode code;
-  final Object? cause;
+  Object? cause;
   String message;
   String name;
 
@@ -1989,13 +1995,14 @@ typedef _ReadDenyPlanEntry = ({
 });
 
 // Dart: the union below is one record; when `usable` is false the lists are
-// empty and unread.
+// empty and unread. Upstream's `usable: false` member is documented:
+/**
+ * The derivation threw, or needed a canonical location it could not
+ * look at. A failure must not read as "no read-deny tmpfs", so
+ * every covering directory is vetoed instead.
+ */
 typedef _StubSkipVetoInputs = ({
   /** The derivation held; the arrays below describe this wrap. */
-  ///
-  /// When false: the derivation threw, or needed a canonical location it
-  /// could not look at. A failure must not read as "no read-deny tmpfs", so
-  /// every covering directory is vetoed instead.
   bool usable,
 
   /**
