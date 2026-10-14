@@ -509,6 +509,11 @@ Declarations:
   declared in the first file that needs it (`PartialSandboxRuntimeConfig`
   in sandbox_manager.dart).
 - `export function*` returning `Steps<T>`: as Generators above.
+- Optional positional parameters before a final options object: Dart cannot
+  mix optional positional and named parameters, so they become named too
+  (`readDenyGlob(..., {unlistableDirs, ...opts})`,
+  `getWindowsSandboxCaCert({status, srtWin})`). With no options object,
+  optional positionals stay positional (`[T? x]`).
 
 Test spies. Upstream tests replace a module function with
 `spyOn(module, 'name').mockImplementation(...)`. The Dart port does it by
