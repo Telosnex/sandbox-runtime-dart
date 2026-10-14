@@ -17,6 +17,7 @@ import 'package:ffi/ffi.dart';
 import 'buffer.dart';
 import 'errno.dart';
 import 'events.dart';
+import 'net.dart' as net;
 import 'process.dart' as process;
 
 // --- libc bindings --------------------------------------------------------
@@ -266,14 +267,26 @@ _Launched _launch(
     throw UnsupportedError('child_process detached is not supported');
   }
   final specs = _stdioSpecs(options['stdio']);
-  if (specs.length > 3) {
-    throw UnsupportedError('child_process stdio beyond fd 2');
-  }
   final cwd = options['cwd'] as String?;
   final env = _envFor(options);
   final arena = Arena();
   final childEnds = <int>[];
-  final parentEnds = <int>[-1, -1, -1];
+  final parentEnds = List<int>.filled(specs.length, -1);
+  // Sources are copied above every target slot, so a dup2 into a slot cannot
+  // clobber a source that a later slot still needs.
+  var low = specs.length;
+  for (final spec in specs) {
+    if (spec is int && spec >= low) low = spec + 1;
+  }
+  // F_DUPFD_CLOEXEC: 67 on macOS, 1030 on Linux.
+  final dupCloexec = io.Platform.isMacOS ? 67 : 1030;
+  int dupHigh(int fd) {
+    final copy = n.fcntl(fd, dupCloexec, low);
+    if (copy < 0) throw _LaunchError(codeForErrno(n.errno));
+    childEnds.add(copy);
+    return copy;
+  }
+
   try {
     final actions = arena<Uint8>(512).cast<Void>();
     final attr = arena<Uint8>(512).cast<Void>();
@@ -281,37 +294,46 @@ _Launched _launch(
     n.faInit(actions);
     n.attrInit(attr);
     try {
-      for (var i = 0; i < 3; i++) {
+      for (var i = 0; i < specs.length; i++) {
         final spec = specs[i] ?? 'pipe';
         if (spec == 'pipe' || spec == 'overlapped') {
           final fds = arena<Int32>(2);
-          if (n.pipe(fds) != 0) throw _LaunchError(codeForErrno(n.errno));
+          if (i < 3) {
+            if (n.pipe(fds) != 0) throw _LaunchError(codeForErrno(n.errno));
+          } else {
+            final socketpair = _libc!
+                .lookupFunction<
+                  Int32 Function(Int32, Int32, Int32, Pointer<Int32>),
+                  int Function(int, int, int, Pointer<Int32>)
+                >('socketpair');
+            if (socketpair(1, 1, 0, fds) != 0) {
+              throw _LaunchError(codeForErrno(n.errno));
+            }
+          }
           final childEnd = i == 0 ? fds[0] : fds[1];
           final parentEnd = i == 0 ? fds[1] : fds[0];
           childEnds.add(childEnd);
           parentEnds[i] = parentEnd;
           // FD_CLOEXEC on the parent's end: no other child may inherit it.
           n.fcntl(parentEnd, 2, 1);
-          n.faDup2(actions, childEnd, i);
-          n.faClose(actions, parentEnd);
+          n.fcntl(childEnd, 2, 1);
+          n.faDup2(actions, dupHigh(childEnd), i);
         } else if (spec == 'ignore') {
           n.faOpen(
             actions,
             i,
             '/dev/null'.toNativeUtf8(allocator: arena),
-            i == 0 ? 0 : 1,
+            i == 0 ? 0 : (i < 3 ? 1 : 2),
             0,
           );
         } else if (spec == 'inherit') {
           // The child keeps the parent's descriptor i.
+          if (i >= 3) n.faDup2(actions, dupHigh(i), i);
         } else if (spec is int) {
-          n.faDup2(actions, spec, i);
+          n.faDup2(actions, dupHigh(spec), i);
         } else {
           throw ArgumentError.value(spec, 'stdio[$i]');
         }
-      }
-      for (final end in childEnds) {
-        if (end > 2) n.faClose(actions, end);
       }
       if (cwd != null) {
         final chdir = n.faChdir;
@@ -367,7 +389,7 @@ _Launched _launch(
           throw _LaunchError(codeForErrno(n.errno));
         }
         statusRead = st[0];
-        final dup = n.fcntl(st[1], 0, 3);
+        final dup = n.fcntl(st[1], 0, low);
         final dupErr = n.errno;
         n.close(st[1]);
         if (dup < 0) {
@@ -735,8 +757,7 @@ SpawnSyncResult spawnSync(
   final fds = launched.fds;
   final outputs = <List<int>?>[
     null,
-    fds[1] >= 0 ? <int>[] : null,
-    fds[2] >= 0 ? <int>[] : null,
+    for (var i = 1; i < fds.length; i++) fds[i] >= 0 ? <int>[] : null,
   ];
   var inputOffset = 0;
   if (fds[0] >= 0 && inputBytes.isEmpty) {
@@ -748,12 +769,12 @@ SpawnSyncResult spawnSync(
       : null;
   NodeError? error;
   var killed = false;
-  final pollfds = calloc<Int32>(6);
+  final pollfds = calloc<Int32>(fds.length * 2);
   final chunk = calloc<Uint8>(65536);
   try {
     while (fds.any((fd) => fd >= 0)) {
       final active = <int>[];
-      for (var i = 0; i < 3; i++) {
+      for (var i = 0; i < fds.length; i++) {
         if (fds[i] < 0) continue;
         pollfds[active.length * 2] = fds[i];
         // events (short) then revents (short) in the second int.
@@ -835,7 +856,13 @@ SpawnSyncResult spawnSync(
   final (code, signal) = raw == null ? (null, null) : _decodeStatus(raw);
   return SpawnSyncResult(
     pid: launched.pid,
-    output: [null, stdout, stderr],
+    output: [
+      null,
+      stdout,
+      stderr,
+      for (var i = 3; i < outputs.length; i++)
+        _decodeOutput(outputs[i], encoding),
+    ],
     stdout: stdout,
     stderr: stderr,
     status: code,
@@ -934,6 +961,19 @@ class ChildStdin {
   void close() => end();
 }
 
+/// The parent end of a 'pipe' stdio slot beyond 2: a socketpair end that is
+/// a [net.NodeSocket] (a Duplex) and a [ChildStdin] (`write`, `end`).
+class _ExtraStdio extends net.NodeSocket implements ChildStdin {
+  _ExtraStdio._(this._native, int fd) : _fd = fd, super(fd: fd);
+  @override
+  final _Libc _native;
+  @override
+  int _fd;
+
+  @override
+  void close() => end();
+}
+
 // --- spawn ------------------------------------------------------------------------
 
 /// Node's `ChildProcess`: an EventEmitter with 'error', 'spawn', 'exit'
@@ -949,6 +989,11 @@ class ChildProcess extends EventEmitter {
   ChildStdin? stdin;
   Stream<List<int>>? stdout;
   Stream<List<int>>? stderr;
+
+  /// Node's `child.stdio`: stdin, stdout, stderr, then one entry per extra
+  /// spawn stdio slot. Null where the slot is not 'pipe'; a [ChildStdin] for
+  /// 'pipe' slots beyond 2, which is also a [net.NodeSocket].
+  List<Object?> stdio = [null, null, null];
   io.Process? _dartIo;
 
   /// Node's `child.kill(signal)`: true when the signal was delivered.
@@ -1020,6 +1065,20 @@ ChildProcess spawn(
 
   child.stdout = reader(fds[1]);
   child.stderr = reader(fds[2]);
+  child.stdio = [child.stdin, child.stdout, child.stderr];
+  for (var i = 3; i < fds.length; i++) {
+    if (fds[i] < 0) {
+      child.stdio.add(null);
+      continue;
+    }
+    final socket = _ExtraStdio._(native, fds[i]);
+    final done = Completer<void>();
+    streams.add(done.future);
+    socket.on('close', (Object? _) {
+      if (!done.isCompleted) done.complete();
+    });
+    child.stdio.add(socket);
+  }
   Timer.run(() => child.emit('spawn'));
   final watcher = _ExitWatcher(native, launched.pid, launched.statusFd);
   Timer.periodic(const Duration(milliseconds: 10), (timer) {
@@ -1095,6 +1154,28 @@ String execSync(String command, List<String> arguments, {Duration? timeout}) {
     )..status = result.status;
   }
   return result.stdout as String;
+}
+
+/// Node's `execFileSync(file, args, options)`: stdout as a [Buffer], or a
+/// String with `encoding`; throws when the command fails or exits non-zero.
+Object execFileSync(
+  String file, [
+  List<String> args = const [],
+  Map<String, Object?> options = const {},
+]) {
+  final result = spawnSync(file, args, {
+    'stdio': ['pipe', 'pipe', 'inherit'],
+    ...options,
+  });
+  final error = result.error;
+  if (error != null) throw error;
+  if (result.status != 0) {
+    throw NodeError(
+      'Command failed: $file ${args.join(' ')}',
+      code: 'ERR_CHILD_PROCESS',
+    )..status = result.status;
+  }
+  return result.stdout!;
 }
 
 /// Asynchronously run a command and return stdout, or null on an exec error.

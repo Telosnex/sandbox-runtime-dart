@@ -892,6 +892,46 @@ void unlinkSync(String path) {
   }
 }
 
+/// Node's `fs.writeSync(fd, data)`: one write(2) of a String (UTF-8, or
+/// [encoding]) or bytes; returns the number of bytes written.
+int writeSync(int fd, Object data, [int? position, String? encoding]) {
+  if (position != null) {
+    throw UnsupportedError('writeSync with a position is not supported');
+  }
+  final bytes = data is List<int>
+      ? data
+      : Buffer.from(data.toString(), encoding ?? 'utf8').toUint8List();
+  final libc = _requireLibc('writeSync');
+  final write = libc.lookupFunction<_WriteN, _WriteD>('write');
+  final buffer = calloc<Uint8>(bytes.isEmpty ? 1 : bytes.length);
+  try {
+    buffer.asTypedList(bytes.length).setAll(0, bytes);
+    while (true) {
+      final count = write(fd, buffer, bytes.length);
+      if (count >= 0) return count;
+      if (codeForErrno(_errno()) == 'EINTR') continue;
+      throw _errnoError('write');
+    }
+  } finally {
+    calloc.free(buffer);
+  }
+}
+
+/// Node's `fs.copyFileSync(src, dest, mode)`. `mode` 1 is COPYFILE_EXCL:
+/// fail with EEXIST when [dest] exists.
+void copyFileSync(String src, String dest, [int mode = 0]) {
+  if (mode & 1 != 0 &&
+      FileSystemEntity.typeSync(dest, followLinks: false) !=
+          FileSystemEntityType.notFound) {
+    throw nodeError('EEXIST', 'copyfile', src);
+  }
+  try {
+    File(src).copySync(dest);
+  } on FileSystemException catch (error) {
+    throw nodeError(_codeFromIoError(error), 'copyfile', src);
+  }
+}
+
 void rmdirSync(String path) {
   if (_libc != null) return _pathCall('rmdir', 'rmdir', path);
   try {
