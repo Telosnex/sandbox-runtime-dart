@@ -1,7 +1,9 @@
 // Ported from sandbox-runtime test/sandbox/request-rewriting.test.ts @ 24eb39e.
 // Dart: a Promise settles once; every `if (!x.isCompleted)` guard below stands for that.
 // Dart: the file cannot load until https.Server accepts an SNICallback that answers (null, undefined) (probeServerNameSupport runs at load).
-@Tags(['pending'])
+@Tags(
+  ['pending'],
+) // Dart: 7 fail: tls_terminate_proxy.dart:980 '_Exception' not subtype of 'Error' cast; set-cookie header is String not List (response headers); requireHostMatch 421 cases; serverName 'localhost' vs null
 library;
 
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments, prefer_interpolation_to_compose_strings, prefer_function_declarations_over_variables, curly_braces_in_flow_control_structures, library_private_types_in_public_api

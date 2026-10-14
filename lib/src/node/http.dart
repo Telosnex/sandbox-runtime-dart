@@ -22,6 +22,15 @@ class NodeHttpError extends NodeError {
   String toString() => 'Error: $message';
 }
 
+/// Node's `RangeError [ERR_HTTP_INVALID_STATUS_CODE]`.
+class NodeRangeError extends RangeError {
+  NodeRangeError(String message, {required this.code})
+    : super.value(0, null, message);
+  final String code;
+  @override
+  String toString() => 'RangeError [$code]: $message';
+}
+
 /// Node's `IncomingHttpHeaders`: header values by lowercase name; a
 /// repeated header is a list.
 typedef IncomingHttpHeaders = Map<String, Object?>;
@@ -267,6 +276,12 @@ class ServerResponse extends events.EventEmitter {
     Object? headers,
   ]) {
     if (headersSent) throw StateError('writeHead called after headers sent');
+    if (status < 100 || status > 999) {
+      throw NodeRangeError(
+        'Invalid status code: $status',
+        code: 'ERR_HTTP_INVALID_STATUS_CODE',
+      );
+    }
     statusCode = status;
     Object? actualHeaders = headers;
     if (headersOrMessage is String) {
@@ -887,6 +902,9 @@ class ClientRequest extends events.EventEmitter {
     if (responseListener != null) on('response', responseListener);
     if (options is Map && options['agent'] is Agent) {
       _agent = options['agent'] as Agent;
+    } else if (_options['agent'] == false) {
+      // Node: `agent: false` makes a one-off Agent (no keep-alive).
+      _agent = Agent();
     } else {
       _agent = _options['agent'] is Agent
           ? _options['agent'] as Agent

@@ -45,6 +45,20 @@ class Buffer with ListMixin<int> {
       _writeUInt(this, value, offset, 4, false);
 
   Buffer._(this._bytes);
+
+  /// Node's `buf.subarray(start, end)`: a view sharing memory, with negative
+  /// indices counted from the end and both clamped to the length.
+  Buffer subarray([int start = 0, int? end]) {
+    int clamp(int i) {
+      final n = i < 0 ? length + i : i;
+      return n < 0 ? 0 : (n > length ? length : n);
+    }
+
+    final s = clamp(start);
+    final e = clamp(end ?? length);
+    return Buffer._(Uint8List.sublistView(_bytes, s, e < s ? s : e));
+  }
+
   final Uint8List _bytes;
 
   /// Wraps [bytes] without copying.

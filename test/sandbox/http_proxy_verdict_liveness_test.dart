@@ -1,6 +1,8 @@
 // Ported from sandbox-runtime test/sandbox/http-proxy-verdict-liveness.test.ts @ 24eb39e.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments
-@Tags(['pending'])
+@Tags(
+  ['pending'],
+) // Dart: FIN-mid-decision test sees [null,null,null] errors (expected empty); destroyed-client test times out 30s
 library;
 
 import 'dart:async';

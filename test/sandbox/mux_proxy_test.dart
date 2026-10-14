@@ -1,5 +1,4 @@
 // Ported from sandbox-runtime test/sandbox/mux-proxy.test.ts @ 24eb39e.
-@Tags(['pending'])
 library;
 
 // ignore_for_file: slash_for_doc_comments
