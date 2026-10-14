@@ -178,8 +178,7 @@ Socket fdSocket(int fd, {bool readable = true, bool writable = true}) =>
 /// dart:io does not expose it; this finds it by asking each descriptor.
 int? listeningFd(String address, int port) {
   final c = _Libc();
-  final limit = c.getdtablesize();
-  for (var fd = 3; fd < limit; fd++) {
+  for (final fd in _openFds()) {
     // macOS rejects getsockopt(SO_ACCEPTCONN) (ENOPROTOOPT); there the
     // unconnected-stream check below stands in for it.
     final accepting = _sockOpt(c, fd, Platform.isMacOS ? 2 : 30);
@@ -215,8 +214,7 @@ bool shutdownConnection(
   int remotePort,
 ) {
   final c = _Libc();
-  final limit = c.getdtablesize();
-  for (var fd = 3; fd < limit; fd++) {
+  for (final fd in _openFds()) {
     if (_sockOpt(c, fd, Platform.isMacOS ? 0x1008 : 3) != 1) continue;
     try {
       final me = _name(c, fd, false);
@@ -610,3 +608,18 @@ class _FdServerSocket extends Stream<Socket> implements ServerSocket {
 /// True for a [Socket] made by [fdSocket] or accepted from [fdServerSocket]:
 /// dart:io's TLS cannot take it over, as it is not one of dart:io's own.
 bool isFdSocket(Socket s) => s is _FdSocket;
+
+/// Open descriptors of this process, from /proc/self/fd or /dev/fd.
+List<int> _openFds() {
+  try {
+    final d = Directory(Platform.isMacOS ? '/dev/fd' : '/proc/self/fd');
+    return [
+      for (final e in d.listSync())
+        if (int.tryParse(e.uri.pathSegments.where((x) => x.isNotEmpty).last)
+            case final n? when n >= 3)
+          n,
+    ]..sort();
+  } catch (_) {
+    return [for (var i = 3; i < 1024; i++) i];
+  }
+}

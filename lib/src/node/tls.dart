@@ -119,7 +119,12 @@ class TLSSocket extends net.NodeSocket {
           context,
           bufferedData: isFdSocket(raw) ? null : buffered,
           supportedProtocols: protocols,
-          requestClientCertificate: requestCert,
+          // Dart: dart:io aborts the handshake on an untrusted client
+          // certificate and has no server-side bad-certificate callback, so
+          // with rejectUnauthorized:false none is requested: the handshake
+          // completes with authorized false (Node's result for an untrusted
+          // certificate).
+          requestClientCertificate: requestCert && rejectUnauthorized,
           requireClientCertificate: requestCert && rejectUnauthorized,
         );
       } on HandshakeException catch (error) {
@@ -470,7 +475,19 @@ const _knownExtensions = {
 /// Whether [der] may act as an issuer: basicConstraints CA:TRUE when present,
 /// keyUsage keyCertSign when present, and within its validity dates.
 bool _anchorUsable(asn1lib.ASN1Sequence tbs, DateTime now) {
-  final f = _tbsFields(tbs);
+  final ({
+    List<int> issuer,
+    List<int> subject,
+    List<int> spki,
+    DateTime notBefore,
+    DateTime notAfter,
+  })
+  f;
+  try {
+    f = _tbsFields(tbs);
+  } catch (_) {
+    return false;
+  }
   if (now.isBefore(f.notBefore) || now.isAfter(f.notAfter)) return false;
   for (final ext in _extensions(tbs)) {
     final oid = _extOid(ext);
@@ -696,6 +713,48 @@ bool _sameBytes(List<int> left, List<int> right) =>
 /// go to the duplex.
 /// A loopback dart:io socket standing for [raw], a descriptor socket that
 /// dart:io's TLS cannot take over: bytes are pumped both ways.
+Future<(Socket, Socket)> _loopbackPair() async {
+  final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+  try {
+    final done = Completer<Socket>();
+    late final Socket client;
+    var clientReady = false;
+    final pending = <Socket>[];
+    void check(Socket c) {
+      if (done.isCompleted) return c.destroy();
+      if (clientReady && c.remotePort == client.port) {
+        done.complete(c);
+      } else if (clientReady) {
+        c.destroy();
+      } else {
+        pending.add(c);
+      }
+    }
+
+    final sub = server.listen(
+      check,
+      onError: (Object e) {
+        if (!done.isCompleted) done.completeError(e);
+      },
+    );
+    try {
+      client = await Socket.connect(InternetAddress.loopbackIPv4, server.port);
+      clientReady = true;
+      for (final c in pending) {
+        check(c);
+      }
+      final far = await done.future.timeout(const Duration(seconds: 10));
+      await sub.cancel();
+      return (client, far);
+    } catch (_) {
+      await sub.cancel();
+      rethrow;
+    }
+  } finally {
+    unawaited(server.close());
+  }
+}
+
 Future<Socket> _bridgeSocket(
   Socket raw,
   Uint8List buffered,
@@ -706,14 +765,7 @@ Future<Socket> _bridgeSocket(
   )
   pumpUnder,
 ) async {
-  final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-  final accepted = server.first;
-  final client = await Socket.connect(
-    InternetAddress.loopbackIPv4,
-    server.port,
-  );
-  final far = await accepted;
-  unawaited(server.close());
+  final (client, far) = await _loopbackPair();
   far.setOption(SocketOption.tcpNoDelay, true);
   if (buffered.isNotEmpty) far.add(buffered);
   pumpUnder(far.add, () => unawaited(far.close()), (Object _) => far.destroy());
@@ -723,24 +775,32 @@ Future<Socket> _bridgeSocket(
       raw.add(data);
       // Backpressure: read no more of the loopback until raw has taken it.
       rawSub.pause();
-      raw.flush().then<void>((_) => rawSub.resume(), onError: (Object _) {});
+      raw.flush().then<void>(
+        (_) => rawSub.resume(),
+        onError: (Object _) {
+          raw.destroy();
+          far.destroy();
+        },
+      );
     },
-    onDone: () => unawaited(raw.close()),
-    onError: (Object _) => raw.destroy(),
+    onDone: () => raw.close().then<void>(
+      (_) {},
+      onError: (Object _) {
+        raw.destroy();
+        far.destroy();
+      },
+    ),
+    onError: (Object _) {
+      raw.destroy();
+      far.destroy();
+    },
     cancelOnError: true,
   );
   return client;
 }
 
 Future<Socket> _bridgeDuplex(stream.Duplex duplex) async {
-  final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-  final accepted = server.first;
-  final client = await Socket.connect(
-    InternetAddress.loopbackIPv4,
-    server.port,
-  );
-  final far = await accepted;
-  unawaited(server.close());
+  final (client, far) = await _loopbackPair();
   far.setOption(SocketOption.tcpNoDelay, true);
   var inflight = Future<void>.value();
   duplex.on('data', (Object? chunk) {
@@ -749,7 +809,10 @@ Future<Socket> _bridgeDuplex(stream.Duplex duplex) async {
     duplex.pause();
     inflight = far.flush().then<void>(
       (_) => duplex.resume(),
-      onError: (Object _) {},
+      onError: (Object _) {
+        far.destroy();
+        duplex.destroy();
+      },
     );
   });
   duplex.on('end', () {
@@ -775,7 +838,10 @@ Future<Socket> _bridgeDuplex(stream.Duplex duplex) async {
     onDone: () {
       if (!duplex.destroyed) duplex.end();
     },
-    onError: (Object _) {},
+    onError: (Object _) {
+      far.destroy();
+      if (!duplex.destroyed) duplex.destroy();
+    },
     cancelOnError: true,
   );
   return client;
@@ -1010,7 +1076,9 @@ String _serverNameIn(Uint8List r) {
       i += 4;
       if (type == 0 && len >= 5 && i + len <= r.length) {
         final n = (r[i + 3] << 8) | r[i + 4];
-        return latin1.decode(r.sublist(i + 5, i + 5 + n)).toLowerCase();
+        if (r[i + 2] != 0 || n == 0 || 3 + n > len) return '';
+        final name = latin1.decode(r.sublist(i + 5, i + 5 + n)).toLowerCase();
+        return RegExp(r'^[a-z0-9.\-]+$').hasMatch(name) ? name : '';
       }
       i += len;
     }
@@ -1018,6 +1086,24 @@ String _serverNameIn(Uint8List r) {
   return '';
 }
 
-DateTime _asn1Time(asn1lib.ASN1Object o) => o is asn1lib.ASN1GeneralizedTime
-    ? o.dateTimeValue
-    : (o as asn1lib.ASN1UtcTime).dateTimeValue;
+DateTime _asn1Time(asn1lib.ASN1Object o) {
+  final str = latin1.decode(o.valueBytes());
+  final gen = o is asn1lib.ASN1GeneralizedTime;
+  if (!gen && o is! asn1lib.ASN1UtcTime) {
+    throw const FormatException('bad certificate time');
+  }
+  final m = RegExp(
+    gen
+        ? r'^(\d{4})(\d\d)(\d\d)(\d\d)(\d\d)(\d\d)Z$'
+        : r'^(\d\d)(\d\d)(\d\d)(\d\d)(\d\d)(\d\d)Z$',
+  ).firstMatch(str);
+  if (m == null) throw const FormatException('bad certificate time');
+  var y = int.parse(m[1]!);
+  if (!gen) y += y >= 50 ? 1900 : 2000;
+  final v = [for (var k = 2; k <= 6; k++) int.parse(m[k]!)];
+  final t = DateTime.utc(y, v[0], v[1], v[2], v[3], v[4]);
+  if (t.month != v[0] || t.day != v[1] || v[2] > 23 || v[3] > 59 || v[4] > 59) {
+    throw const FormatException('bad certificate time');
+  }
+  return t;
+}

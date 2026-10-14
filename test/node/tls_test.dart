@@ -294,6 +294,41 @@ void main() {
         await events.once(server, 'close').timeout(_wait);
       });
 
+      test('requestCert + rejectUnauthorized:false accepts an untrusted '
+          'client certificate with authorized false', () async {
+        final (:certPem, :keyPem) = _certificate('srv.example.test');
+        final client = _certificate('client.example.test');
+        final server = node_tls.createServer({
+          'cert': certPem,
+          'key': keyPem,
+          'requestCert': true,
+          'rejectUnauthorized': false,
+        });
+        final seen = Completer<node_tls.TLSSocket>();
+        server.on('secureConnection', (node_tls.TLSSocket s) {
+          s.on('error', (Object _) {});
+          if (!seen.isCompleted) seen.complete(s);
+        });
+        server.listen(0, '127.0.0.1');
+        await events.once(server, 'listening');
+        final port = (server.address() as net.NodeAddress).port;
+        final ctx = SecurityContext(withTrustedRoots: false)
+          ..setTrustedCertificatesBytes(utf8.encode(certPem))
+          ..useCertificateChainBytes(utf8.encode(client.certPem))
+          ..usePrivateKeyBytes(utf8.encode(client.keyPem));
+        final socket = await SecureSocket.connect(
+          '127.0.0.1',
+          port,
+          context: ctx,
+          onBadCertificate: (_) => true,
+        );
+        final s = await seen.future.timeout(_wait);
+        expect(s.authorized, isFalse);
+        expect(s.authorizationError, isNotNull);
+        socket.destroy();
+        server.close();
+      });
+
       test(
         'an SNICallback answering (null, undefined) uses the default',
         () async {
