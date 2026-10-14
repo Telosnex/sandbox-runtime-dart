@@ -180,7 +180,7 @@ int? listeningFd(String address, int port) {
   final c = _Libc();
   final limit = c.getdtablesize();
   for (var fd = 3; fd < limit; fd++) {
-    if (_sockOpt(c, fd, Platform.isMacOS ? 2 : 30) != 1) continue; // ACCEPTCONN
+    if (_sockOpt(c, fd, Platform.isMacOS ? 2 : 30) <= 0) continue; // ACCEPTCONN
     if (_sockOpt(c, fd, Platform.isMacOS ? 0x1008 : 3) != 1)
       continue; // SOCK_STREAM
     try {
