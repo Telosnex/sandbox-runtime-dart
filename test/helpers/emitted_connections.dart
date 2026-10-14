@@ -18,22 +18,31 @@ final SERVES_EMITTED_CONNECTIONS = servesEmittedConnections();
  * TLS: skipped where this runtime cannot (Bun before 1.4), where such a
  * proxy refuses to start. The reason is logged once below.
  */
-final describeWithTls = (String description, void Function() body) => group(
-  description,
-  body,
-  skip: SERVES_EMITTED_CONNECTIONS ? false : 'TLS termination unavailable',
-);
-final testWithTls = (String description, void Function() body) => test(
-  description,
-  body,
-  skip: SERVES_EMITTED_CONNECTIONS ? false : 'TLS termination unavailable',
-);
+final describeWithTls = (String description, void Function() body) {
+  _warned;
+  return group(
+    description,
+    body,
+    skip: SERVES_EMITTED_CONNECTIONS ? false : 'TLS termination unavailable',
+  );
+};
+final testWithTls = (String description, void Function() body) {
+  _warned;
+  return test(
+    description,
+    body,
+    skip: SERVES_EMITTED_CONNECTIONS ? false : 'TLS termination unavailable',
+  );
+};
 
-_warnUnsupported();
-void _warnUnsupported() {
+// Dart has no top-level statements: the warning runs once, on first use of
+// describeWithTls or testWithTls.
+final bool _warned = _warnUnsupported();
+bool _warnUnsupported() {
   if (!SERVES_EMITTED_CONNECTIONS) {
     console.warn(
       'TLS termination tests are skipped: tlsTerminate needs Node, or Bun 1.4 or later, and this is Bun null',
     );
   }
+  return true;
 }

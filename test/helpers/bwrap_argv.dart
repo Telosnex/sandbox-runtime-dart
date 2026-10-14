@@ -19,6 +19,13 @@ const MOUNT_ARITY = <String, int>{
   '--proc': 1,
 };
 
+/**
+ * A whole mount, in the two shapes bwrap is given here: a destination-only
+ * `--tmpfs`, or a flag with a source and a destination. Spelling them out is
+ * what keeps an absence assertion honest — a run of any length would let a
+ * typo'd flag, or a transposed source and destination, match nothing and
+ * report 0 for free.
+ */
 typedef MountWords = List<String>;
 
 /**

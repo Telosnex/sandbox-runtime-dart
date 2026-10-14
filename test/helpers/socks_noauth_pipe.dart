@@ -20,6 +20,7 @@ Future<void> main(List<String> args) async {
   sock.add([5, 1, 0]);
   var stage = 'method';
   var buf = <int>[];
+  StreamSubscription<List<int>>? toSock;
   sock.listen(
     (chunk) {
       if (stage == 'pipe') {
@@ -49,15 +50,33 @@ Future<void> main(List<String> args) async {
         final rest = buf.sublist(10);
         stage = 'pipe';
         if (rest.isNotEmpty) stdout.add(rest);
-        stdin.listen(sock.add);
+        toSock = stdin.listen(sock.add);
       }
     },
-    onDone: () async {
-      stdout.close();
-      await stdin.drain<void>();
-      exit(0);
+    /**
+     * The proxy refuses by writing banner + DISCONNECT and closing straight
+     * away, but ssh only reads that DISCONNECT after it has written its own
+     * identification/KEXINIT into our stdin. Exiting as soon as the socket
+     * closes therefore races ssh's write: when ssh loses (busy CI runner) it
+     * gets EPIPE and dies with "Broken pipe" instead of reporting the reason.
+     * So on socket close, signal EOF to ssh once everything forwarded has been
+     * flushed, then keep draining stdin and exit only when ssh closes it — with
+     * a fallback timer so a client that never closes cannot wedge the test.
+     */
+    onDone: () {
+      stdout.close().catchError((_) => exit(0));
+      Timer(const Duration(milliseconds: 5000), () => exit(0));
+      // Dart's stdin is single-subscription: the forwarding subscription is
+      // redirected to discard instead of unpiped and re-listened.
+      final sub = toSock;
+      if (sub == null) {
+        stdin.listen((_) {}, onDone: () => exit(0), onError: (_) => exit(0));
+      } else {
+        sub.onData((_) {});
+        sub.onDone(() => exit(0));
+        sub.onError((_) => exit(0));
+      }
     },
     onError: (_) => exit(1),
   );
-  stdin.listen(sock.add);
 }
