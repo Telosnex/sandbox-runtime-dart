@@ -16,6 +16,7 @@ import 'dart:typed_data';
 import 'dns.dart' as dns;
 import 'errno.dart';
 import 'events.dart';
+import 'stream.dart' as stream;
 
 /// Node's net.connect DNS callback contract. `options` describes the requested
 /// family/order and callback receives NodeLookupError plus a LookupResult.
@@ -193,7 +194,7 @@ bool _matches(List<int> address, List<int> network, int prefix) {
 /// Node-like byte duplex over dart:io Socket. This is intentionally limited
 /// to the event and stream operations consumed by the sandbox proxies.
 /// Node `net.Socket`.
-class NodeSocket extends EventEmitter {
+class NodeSocket extends EventEmitter implements stream.Writable {
   /// A socket with no connection yet. `net.connect` and `tls.connect` create
   /// one and then call [startConnect].
   NodeSocket.pending({this.allowHalfOpen = false}) : _connecting = true;
@@ -424,13 +425,18 @@ class NodeSocket extends EventEmitter {
 
   bool get connecting => _connecting;
   bool get pending => _socket == null;
+  @override
   bool get destroyed => _destroyed;
   bool get readable => !_readEnded && !_destroyed;
+  @override
   bool get writable => !_writeEnded && !_destroyed;
+  @override
   bool get writableEnded => _writeEnded;
+  @override
   bool get writableFinished => _writeEnded && _pendingBytes == 0;
   bool get readableEnded => _readEnded;
   bool get closed => _closed;
+  @override
   int get writableLength => _pendingBytes;
 
   /// Node `readable.readableLength`: bytes received and not yet read.
@@ -632,6 +638,7 @@ class NodeSocket extends EventEmitter {
   /// Write a byte/string chunk. The boolean mirrors Node's high-water mark
   /// contract; callers must wait for `drain` before resuming after false.
   /// A string is written as Latin-1 bytes.
+  @override
   bool write(Object data, [Function? callback]) {
     _checkNotHandedOver();
     if (_destroyed) {
@@ -724,6 +731,7 @@ class NodeSocket extends EventEmitter {
   }
 
   /// Flush [data] then half-close the write direction while retaining reads.
+  @override
   NodeSocket end([Object? data, Function? callback]) {
     _checkNotHandedOver();
     if (data != null) write(data);
@@ -752,6 +760,7 @@ class NodeSocket extends EventEmitter {
 
   /// Close the descriptor at once. With [error], 'error' is emitted before
   /// 'close'. A connection still being opened is abandoned.
+  @override
   NodeSocket destroy([Object? error]) {
     if (_destroyed) return this;
     _destroyed = true;
@@ -937,7 +946,7 @@ class NodeSocket extends EventEmitter {
   }
 
   /// Pipe bytes with destination backpressure and Node's default end policy.
-  NodeSocket pipe(NodeSocket destination, {bool end = true}) {
+  T pipe<T extends stream.Writable>(T destination, {bool end = true}) {
     var blocked = false;
     void onData(Object? value) {
       final bytes = value! as List<int>;

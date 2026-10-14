@@ -9,6 +9,7 @@ import 'dart:typed_data';
 
 import 'events.dart' as events;
 import 'net.dart' as net;
+import 'stream.dart' as stream;
 import 'tls.dart' as node_tls;
 
 const int defaultMaxHeaderSize = 16 * 1024;
@@ -230,7 +231,7 @@ class IncomingMessage {
     _emit('close');
   }
 
-  IncomingMessage pipe(Object destination, {bool end = true}) {
+  T pipe<T extends stream.Writable>(T destination, {bool end = true}) {
     if (destination is ServerResponse) {
       body.listen(
         (bytes) {
@@ -266,7 +267,7 @@ class IncomingMessage {
     } else {
       throw ArgumentError('Unsupported IncomingMessage.pipe destination');
     }
-    return this;
+    return destination;
   }
 
   IncomingMessage pause() {
@@ -289,7 +290,7 @@ class IncomingMessage {
 }
 
 /// Node ServerResponse subset with byte-preserving Latin-1 head serialization.
-class ServerResponse {
+class ServerResponse extends events.EventEmitter implements stream.Writable {
   ServerResponse._(this.socket, this._request);
 
   final net.NodeSocket socket;
@@ -301,8 +302,11 @@ class ServerResponse {
   int statusCode = 200;
   String? statusMessage;
   bool headersSent = false;
+  @override
   bool writableEnded = false;
+  @override
   bool writableFinished = false;
+  @override
   bool destroyed = false;
   bool _chunked = false;
   bool _noBody = false;
@@ -311,12 +315,18 @@ class ServerResponse {
 
   Future<void> get done => _done.future;
   bool get finished => writableFinished;
+  @override
+  bool get writable => !writableEnded && !destroyed;
+  @override
+  int get writableLength => socket.writableLength;
 
+  @override
   ServerResponse on(String event, Function listener) {
     (_listeners[event] ??= []).add(listener);
     return this;
   }
 
+  @override
   ServerResponse once(String event, Function listener) {
     late Function wrapped;
     wrapped = ([Object? value]) {
@@ -326,11 +336,13 @@ class ServerResponse {
     return on(event, wrapped);
   }
 
+  @override
   ServerResponse off(String event, Function listener) {
     _listeners[event]?.remove(listener);
     return this;
   }
 
+  @override
   ServerResponse removeListener(String event, Function listener) =>
       off(event, listener);
   void _emit(String event, [Object? value]) {
@@ -383,6 +395,7 @@ class ServerResponse {
     return this;
   }
 
+  @override
   bool write(Object data, [Function? callback]) {
     if (_ended || destroyed) {
       final error = StateError('write after end');
@@ -413,6 +426,7 @@ class ServerResponse {
     return this;
   }
 
+  @override
   ServerResponse end([Object? data, Function? callback]) {
     if (_ended) return this;
     if (data != null) write(data);
@@ -461,6 +475,7 @@ class ServerResponse {
     return this;
   }
 
+  @override
   ServerResponse destroy([Object? error]) {
     if (destroyed) return this;
     destroyed = true;
@@ -806,7 +821,7 @@ class _AgentLease {
 final Agent globalAgent = Agent(keepAlive: true, maxSockets: 1);
 
 /// Node ClientRequest subset. Writes are queued until a socket is assigned.
-class ClientRequest {
+class ClientRequest extends events.EventEmitter implements stream.Writable {
   ClientRequest(Object options, [Function? responseListener])
     : _options = _requestOptions(options) {
     if (responseListener != null) on('response', responseListener);
@@ -826,6 +841,7 @@ class ClientRequest {
   net.NodeSocket? socket;
   _AgentLease? _lease;
   bool reusedSocket = false;
+  @override
   bool destroyed = false;
   bool _ended = false;
   bool _started = false;
@@ -836,6 +852,7 @@ class ClientRequest {
   int? _expectedContentLength;
   IncomingMessage? response;
 
+  @override
   ClientRequest on(String event, Function listener) {
     (_listeners[event] ??= []).add(listener);
     if (event == 'response' && response != null)
@@ -843,6 +860,7 @@ class ClientRequest {
     return this;
   }
 
+  @override
   ClientRequest once(String event, Function listener) {
     late Function wrapper;
     wrapper = ([Object? value]) {
@@ -852,19 +870,33 @@ class ClientRequest {
     return on(event, wrapper);
   }
 
+  @override
   ClientRequest off(String event, Function listener) {
     _listeners[event]?.remove(listener);
     return this;
   }
 
+  @override
   ClientRequest removeListener(String event, Function listener) =>
       off(event, listener);
+
+  @override
+  bool get writable => !_ended && !destroyed;
+  @override
+  bool get writableEnded => _ended;
+  @override
+  bool get writableFinished => _requestFinished;
+  @override
+  int get writableLength =>
+      socket?.writableLength ?? _body.fold<int>(0, (n, b) => n + b.length);
+
   void _emit(String event, [Object? value]) {
     for (final listener in List<Function>.of(_listeners[event] ?? const [])) {
       Function.apply(listener, value == null ? const [] : [value]);
     }
   }
 
+  @override
   bool write(Object data, [Function? callback]) {
     if (_ended || destroyed) {
       final error = StateError('write after end');
@@ -887,6 +919,7 @@ class ClientRequest {
         net.NodeSocket.highWaterMark;
   }
 
+  @override
   ClientRequest end([Object? data, Function? callback]) {
     if (data != null) write(data);
     _ended = true;
@@ -1111,6 +1144,7 @@ class ClientRequest {
   }
 
   void abort() => destroy(const SocketException('aborted'));
+  @override
   ClientRequest destroy([Object? error]) {
     if (destroyed) return this;
     destroyed = true;

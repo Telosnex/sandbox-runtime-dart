@@ -7,6 +7,25 @@ String? _platformOverride;
 Map<String, String>? _envOverride;
 String? _cwdOverride;
 
+typedef _GetuidNative = Uint32 Function();
+typedef _GetuidDart = int Function();
+
+int Function()? _loadGetuid() {
+  if (Platform.isWindows) return null;
+  try {
+    return DynamicLibrary.process().lookupFunction<_GetuidNative, _GetuidDart>(
+      'getuid',
+    );
+  } on ArgumentError {
+    return null;
+  }
+}
+
+/// Node's `process.getuid`. A nullable variable so a test can replace it as
+/// upstream does with `spyOn(process, 'getuid')`; Node does not expose it on
+/// Windows.
+int Function()? getuid = _loadGetuid();
+
 /// The Node `process.platform` spelling for the current Dart host.
 String get platform =>
     _platformOverride ??

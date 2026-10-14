@@ -11,7 +11,7 @@ import 'dart:io';
  * @param bin - The name of the executable to find
  * @returns The full path to the executable, or null if not found
  */
-String? whichSync(String bin) {
+String? _whichSync(String bin) {
   try {
     // Run the `which` command synchronously.
     final result = Process.runSync(
@@ -32,3 +32,7 @@ String? whichSync(String bin) {
 
   return null;
 }
+
+/// Node's `whichSync`. A variable so a test can replace it, as upstream's
+/// tests do with `spyOn(which, 'whichSync')`.
+String? Function(String bin) whichSync = _whichSync;

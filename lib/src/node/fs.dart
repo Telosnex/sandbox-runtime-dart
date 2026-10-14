@@ -90,10 +90,14 @@ Stats lstatSync(String path) {
 }
 
 /// Reproduce `fs.statSync(path)`.
-Stats statSync(String path) {
+Stats _statSync(String path) {
   _observe('statSync', path);
   return _stat(path, 'stat', followLinks: true);
 }
+
+/// Node's `fs.statSync`. A variable so a test can replace it, as upstream's
+/// tests do with `spyOn(fs, 'statSync')`.
+Stats Function(String path) statSync = _statSync;
 
 /// Reproduce `fs.existsSync(path)`: true when `stat` succeeds, so a dangling
 /// symbolic link does not exist.
@@ -107,7 +111,7 @@ bool existsSync(String path) {
 }
 
 /// Reproduce `fs.readdirSync(path, {withFileTypes: true})`.
-List<Dirent> readdirSync(String path, {bool withFileTypes = true}) {
+List<Dirent> _readdirSync(String path, {bool withFileTypes = true}) {
   if (!withFileTypes) {
     throw UnimplementedError('readdirSync without withFileTypes');
   }
@@ -126,6 +130,11 @@ List<Dirent> readdirSync(String path, {bool withFileTypes = true}) {
     );
   }
 }
+
+/// Node's `fs.readdirSync`. A variable so a test can replace it, as upstream's
+/// tests do with `spyOn(fs, 'readdirSync')`.
+List<Dirent> Function(String path, {bool withFileTypes}) readdirSync =
+    _readdirSync;
 
 Stats _stat(String path, String syscall, {required bool followLinks}) {
   final libc = _libc;
@@ -220,7 +229,7 @@ String readlinkSync(String path) {
 }
 
 /// Reproduce `fs.realpathSync(path)` using libc realpath on POSIX hosts.
-String realpathSync(String path) {
+String _realpathSync(String path) {
   _observe('realpathSync', path);
   // Node folds dot segments in the supplied path before touching the file
   // system (`link/..` means the directory holding link, even if link is bad).
@@ -253,6 +262,10 @@ String realpathSync(String path) {
     throw nodeError(_codeFromIoError(error), 'realpath', path);
   }
 }
+
+/// Node's `fs.realpathSync`. A variable so a test can replace it, as upstream's
+/// tests do with `spyOn(fs, 'realpathSync')`.
+String Function(String path) realpathSync = _realpathSync;
 
 String _codeFromIoError(FileSystemException error) {
   final errno = error.osError?.errorCode;
