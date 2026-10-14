@@ -514,6 +514,7 @@ class NodeHttpServer extends net.NodeServer {
     _connections.add(socket);
     _idleConnections.add(socket);
     socket.allowHalfOpen = true;
+    socket.lingerOnDestroy = true;
     socket.once('close', () {
       _connections.remove(socket);
       _idleConnections.remove(socket);

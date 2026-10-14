@@ -465,6 +465,8 @@ class NodeSocket extends stream.Duplex {
       // The connection is the TLS socket's now; as in Node, destroying the
       // socket under it destroys it too.
       wrapper.destroy();
+    } else if (lingerOnDestroy && error == null && _bytesDispatched > 0) {
+      _lingerClose();
     } else {
       _socket?.destroy();
       _subscription?.cancel();
@@ -480,6 +482,37 @@ class NodeSocket extends stream.Duplex {
     applyListener(callback, [error]);
     final hadError = error != null;
     scheduleMicrotask(() => _emitClose(hadError));
+  }
+
+  /// Set by an HTTP server on its connections. destroy() then sends what was
+  /// written and a FIN, and discards what the peer still sends, until the peer
+  /// closes (or a second passes). A close with unread bytes would send a RST,
+  /// which can cost the peer the reply it has not read yet.
+  bool lingerOnDestroy = false;
+
+  void _lingerClose() {
+    final socket = _socket;
+    final subscription = _subscription;
+    _subscription = null;
+    if (socket == null) return;
+    final timer = Timer(const Duration(seconds: 1), socket.destroy);
+    void done() {
+      timer.cancel();
+      socket.destroy();
+    }
+
+    if (subscription != null) {
+      subscription
+        ..onData((_) {})
+        ..onDone(done)
+        ..onError((Object _) => done())
+        ..resume();
+    }
+    try {
+      socket.close().then<void>((_) {}, onError: (Object _) => done());
+    } on StateError {
+      done();
+    }
   }
 
   void _emitClose(bool hadError) {
