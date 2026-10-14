@@ -102,7 +102,9 @@ serve({
       }
       c.write('CONNECT $target HTTP/1.1\r\nHost: $target\r\n\r\n');
     });
-    c.on('error', (Object e) => completer.completeError(e));
+    c.on('error', (Object e) {
+      if (!completer.isCompleted) completer.completeError(e);
+    });
     if (path == 'plain') return completer.future;
     var head = '';
     void onData(Object? x) {
@@ -115,8 +117,13 @@ serve({
         'checkServerIdentity': (Object? a, Object? b) => null,
         'ALPNProtocols': ['http/1.1'],
       });
-      t.on('error', (Object e) => completer.completeError(e));
-      t.once('secureConnect', () => completer.complete(t));
+      // Dart: a Promise settles once; a Completer throws on the second.
+      t.on('error', (Object e) {
+        if (!completer.isCompleted) completer.completeError(e);
+      });
+      t.once('secureConnect', () {
+        if (!completer.isCompleted) completer.complete(t);
+      });
     }
 
     c.on('data', onData);
