@@ -14,6 +14,30 @@ import 'package:path/path.dart' as path_utils;
 import 'errno.dart';
 
 final DynamicLibrary? _libc = _loadLibc();
+
+class _Constants {
+  const _Constants();
+  int get O_RDONLY => 0;
+  int get O_RDWR => 2;
+  int get O_DIRECTORY => Platform.isMacOS ? 0x100000 : 0x10000;
+  int get R_OK => 4;
+  int get X_OK => 1;
+  int get O_CREAT => 0x40;
+  int get O_TRUNC => 0x200;
+  int get O_WRONLY => 1;
+  int get O_CLOEXEC => Platform.isMacOS ? 0x1000000 : 0x80000;
+  int get O_NOFOLLOW => Platform.isMacOS ? 0x100 : 0x20000;
+}
+
+const constants = _Constants();
+typedef _OpenN = Int32 Function(Pointer<Uint8>, Int32, Int32);
+typedef _OpenD = int Function(Pointer<Uint8>, int, int);
+typedef _CloseN = Int32 Function(Int32);
+typedef _CloseD = int Function(int);
+typedef _FchmodN = Int32 Function(Int32, Int32);
+typedef _FchmodD = int Function(int, int);
+typedef _WriteN = IntPtr Function(Int32, Pointer<Uint8>, IntPtr);
+typedef _WriteD = int Function(int, Pointer<Uint8>, int);
 typedef _LstatNative = Int32 Function(Pointer<Uint8>, Pointer<Void>);
 typedef _LstatDart = int Function(Pointer<Uint8>, Pointer<Void>);
 typedef _ReadlinkNative =
@@ -287,5 +311,113 @@ String _codeFromIoError(FileSystemException error) {
       return 'ENOTDIR';
     default:
       return 'UNKNOWN';
+  }
+}
+
+Object readFileSync(String path, [Object? options]) {
+  final bytes = File(path).readAsBytesSync();
+  final encoding = options is String
+      ? options
+      : options is Map
+      ? options['encoding'] as String?
+      : null;
+  return encoding == null ? bytes : utf8.decode(bytes, allowMalformed: true);
+}
+
+void writeFileSync(
+  Object target,
+  Object contents, [
+  Map<String, Object?> options = const {},
+]) {
+  final bytes = contents is List<int>
+      ? contents
+      : utf8.encode(contents.toString());
+  final path = target.toString();
+  if (target is int) {
+    final libc = _libc;
+    if (libc == null)
+      throw UnimplementedError('writeFileSync with fd on Windows');
+    final data = calloc<Uint8>(bytes.length);
+    try {
+      data.asTypedList(bytes.length).setAll(0, bytes);
+      final count = libc.lookupFunction<_WriteN, _WriteD>('write')(
+        target,
+        data,
+        bytes.length,
+      );
+      if (count != bytes.length) throw nodeError('EIO', 'write', '$target');
+    } finally {
+      calloc.free(data);
+    }
+    return;
+  }
+  File(path).writeAsBytesSync(bytes);
+  final mode = options['mode'];
+  if (mode is int && (Platform.isLinux || Platform.isMacOS)) {
+    Process.runSync('chmod', [mode.toRadixString(8), path]);
+  }
+}
+
+String mkdtempSync(String prefix) =>
+    Directory.systemTemp.createTempSync(prefix).path;
+
+void unlinkSync(String path) => File(path).deleteSync();
+void rmdirSync(String path) => Directory(path).deleteSync();
+void chmodSync(String path, int mode) {
+  if (Platform.isWindows) throw UnimplementedError('chmodSync on Windows');
+  final result = Process.runSync('chmod', [mode.toRadixString(8), path]);
+  if (result.exitCode != 0) throw nodeError('EACCES', 'chmod', path);
+}
+
+void accessSync(String path, [int mode = 0]) {
+  final stat = FileStat.statSync(path);
+  if (stat.type == FileSystemEntityType.notFound)
+    throw nodeError('ENOENT', 'access', path);
+  if ((mode & constants.X_OK) != 0 &&
+      Platform.isLinux &&
+      (stat.mode & 0x49) == 0)
+    throw nodeError('EACCES', 'access', path);
+}
+
+int openSync(String path, int flags, [int mode = 438]) {
+  final libc = _libc;
+  if (libc == null) throw UnimplementedError('openSync on Windows');
+  final open = libc.lookupFunction<_OpenN, _OpenD>('open');
+  final nativePath = path.toNativeUtf8(allocator: calloc);
+  try {
+    final fd = open(nativePath.cast(), flags, mode);
+    if (fd < 0) throw nodeError('ENOENT', 'open', path);
+    return fd;
+  } finally {
+    calloc.free(nativePath);
+  }
+}
+
+void closeSync(int fd) {
+  final libc = _libc;
+  if (libc == null) throw UnimplementedError('closeSync on Windows');
+  if (libc.lookupFunction<_CloseN, _CloseD>('close')(fd) != 0) {
+    throw nodeError('EBADF', 'close', '$fd');
+  }
+}
+
+void fchmodSync(int fd, int mode) {
+  final libc = _libc;
+  if (libc == null) throw UnimplementedError('fchmodSync on Windows');
+  if (libc.lookupFunction<_FchmodN, _FchmodD>('fchmod')(fd, mode) != 0) {
+    throw nodeError('EBADF', 'fchmod', '$fd');
+  }
+}
+
+void rmSync(String path, [Map<String, Object?> options = const {}]) {
+  final entity = FileSystemEntity.typeSync(path, followLinks: false);
+  if (entity == FileSystemEntityType.notFound) {
+    if (options['force'] == true) return;
+    throw nodeError('ENOENT', 'lstat', path);
+  }
+  if (entity == FileSystemEntityType.directory) {
+    Directory(path).deleteSync(recursive: options['recursive'] == true);
+  } else {
+    Link(path).deleteSync();
   }
 }
