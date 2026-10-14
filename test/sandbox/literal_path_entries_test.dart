@@ -864,11 +864,8 @@ void main() {
         });
       }
 
-      // Dart: fs.readdirSync(path) without withFileTypes throws UnimplementedError (linux_sandbox_utils.dart readDenyEntries).
       test(
         'takes a denyRead that leads to the root for the root',
-        tags: ['pending'],
-        skip: 'pending: fs shim readdirSync without withFileTypes',
         () async {
           final allowWithinDeny = ['/usr', '/etc', '/bin', '/lib', '/lib64'];
           final up = '/..' * project.split('/').length;

@@ -277,9 +277,7 @@ void main() {
           );
         }
       },
-      skip: USR_MERGED_ROOT_LINKS.isEmpty ? 'not usr-merged' : false,
-      // Dart: fs.readdirSync('/', withFileTypes: false) throws UnimplementedError (linux_sandbox_utils.dart:2284)
-      tags: ['pending'],
+      skip: USR_MERGED_ROOT_LINKS.isEmpty ? 'not usr-merged' : null,
     );
 
     test(
@@ -357,8 +355,6 @@ void main() {
         expect(existsSync(join(PROJ, 'ok.txt')), true);
       },
       skip: hasBwrap ? false : 'bwrap cannot namespace here',
-      // Dart: on the VM apply-seccomp fails to write /proc/self/setgroups in a nested userns (environment)
-      tags: ['pending'],
     );
 
     test(

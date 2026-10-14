@@ -258,9 +258,6 @@ void main() {
           expect(globPatternBaseDir(pattern), base);
           expect(globBaseDirIsRoot(base), false);
         },
-        tags: (pattern == 'C:/a//x*' || pattern == 'H://x*')
-            ? ['pending']
-            : null,
       );
     }
   });

@@ -2985,9 +2985,6 @@ void main() {
       for (final (why, tail) in LINK_PATTERNS)
         test(
           'covers the file behind a directory link when $why',
-          tags: const ['**/key.txt', '**/cfg/key.txt'].contains(tail)
-              ? null
-              : ['pending'],
           () {
             expect(expandReadDenyGlobLinux(join(BASE, tail), []), [REALKEY]);
           },
@@ -3069,9 +3066,6 @@ void main() {
       for (final (why, tail) in LINK_PATTERNS)
         test(
           'serves the file through neither spelling when $why',
-          tags: const ['**/key.txt', '**/cfg/key.txt'].contains(tail)
-              ? null
-              : ['pending'],
           skip: CAN_RUN ? null : 'bwrap cannot create namespaces',
           () async {
             final wrapped = await wrapCommandWithSandboxLinux(
