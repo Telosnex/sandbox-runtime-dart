@@ -717,8 +717,14 @@ Future<Socket> _bridgeSocket(
   far.setOption(SocketOption.tcpNoDelay, true);
   if (buffered.isNotEmpty) far.add(buffered);
   pumpUnder(far.add, () => unawaited(far.close()), (Object _) => far.destroy());
-  far.listen(
-    raw.add,
+  late final StreamSubscription<Uint8List> rawSub;
+  rawSub = far.listen(
+    (data) {
+      raw.add(data);
+      // Backpressure: read no more of the loopback until raw has taken it.
+      rawSub.pause();
+      raw.flush().then<void>((_) => rawSub.resume(), onError: (Object _) {});
+    },
     onDone: () => unawaited(raw.close()),
     onError: (Object _) => raw.destroy(),
     cancelOnError: true,
@@ -736,19 +742,26 @@ Future<Socket> _bridgeDuplex(stream.Duplex duplex) async {
   final far = await accepted;
   unawaited(server.close());
   far.setOption(SocketOption.tcpNoDelay, true);
+  var inflight = Future<void>.value();
   duplex.on('data', (Object? chunk) {
     far.add(chunk is String ? utf8.encode(chunk) : chunk as List<int>);
+    // Backpressure: hold the duplex until dart:io has taken the bytes.
+    duplex.pause();
+    inflight = far.flush().then<void>(
+      (_) => duplex.resume(),
+      onError: (Object _) {},
+    );
   });
-  duplex.on('end', () => unawaited(far.close()));
+  duplex.on('end', () {
+    inflight.then((_) => far.close());
+  });
   duplex.on('error', (Object? _) => far.destroy());
   // A graceful close: destroying `far` would reset the loopback connection
   // and cost the TLS layer the bytes (the last reply) it has not read yet.
   duplex.on('close', () {
-    final t = Timer(const Duration(seconds: 1), far.destroy);
-    far.close().then<void>(
-      (_) => t.cancel(),
-      onError: (Object _) => far.destroy(),
-    );
+    inflight
+        .then((_) => far.close())
+        .then<void>((_) {}, onError: (Object _) => far.destroy());
   });
   late final StreamSubscription<Uint8List> farSub;
   farSub = far.listen(
