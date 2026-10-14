@@ -3,52 +3,61 @@
 Upstream: https://github.com/anthropics/sandbox-runtime, checked out at
 `~/dev/sandbox-runtime`. Port baseline: v0.0.79, commit `24eb39e`.
 
-## State (2026-10-13, after the /root audit)
+## State (2026-10-13, after the test fidelity pass)
 
-`main` builds and passes from a clean clone on macOS (496 pass, 39 skip) and
-on the Ubuntu ARM64 VM (424 pass, 101 skip, most of them macOS-only). No agent
-is running, and there is no other worktree or branch.
+`main` builds and passes from a clean clone on macOS (524 pass, 38 skip) and
+on the Ubuntu ARM64 VM (444 pass, 111 skip, most of them macOS-only or
+pending ports). No agent is running, and there is no other worktree or branch.
 
-### Audit findings still open
+### Test fidelity pass (done)
 
-Each is a Rule 1 gap in a committed file. Fix them before or with the next
-batch:
+Every ported test file now has all upstream titles in order and every
+upstream comment (`/tmp/audit/titles.py`, `/tmp/audit/comments.py`; see
+below). What changed beyond comments:
 
-- **Test files restructured or thinned.** These still have every upstream
-  title, but not upstream's shape or comments:
-  - `test/config_validation_test.dart`: rewritten around `_config` and
-    `_expectResult` helpers; about 80 upstream comment lines are gone.
-  - `test/sandbox/macos_glob_deny_reemit_test.dart`: 55 comment lines gone.
-  - `test/sandbox/resolved_address_guard_test.dart`: 30 comment lines gone,
-    and its 16 proxy tests are empty `() {}` bodies. Rule 1a needs the
-    upstream body kept, as a comment where it cannot compile.
-  - `test/sandbox/mux_proxy_test.dart`: all 9 bodies empty, with no comments.
-  - `test/sandbox/glob_walk_property_test.dart`: 15 comment lines gone,
-    including the file's opening explanation.
-  - Smaller gaps: `path_canonicalization_test` (5), `macos_literal_deny_brackets_test`
-    (3), `ripgrep_test` (2). The `which` tests drop only Bun-specific
-    comments, which Rule 1 allows.
-- **`test/sandbox/java_proxy_agent_test.dart`** lacks upstream's
-  `agent inside a JVM` group: 7 tests, including `against a challenging
-  proxy`. Port them as `group(..., skip: java == null || jarPath == null ?
-  reason : false)`. They need a JDK and the agent jar; there is no Dart port
-  of `vendor/java-proxy-agent/build.ts` yet.
-- **`test/sandbox/macos_profile_size_test.dart`** adds a test upstream does
-  not have (`matches the upstream Seatbelt profile byte-for-byte for equal
-  inputs`). It is a useful differential check, but it does not belong in a
-  one-to-one file. Move it to a differential-test directory outside the
-  upstream mapping.
-- **`emitted_connection.dart`** keeps upstream's declarations, but four
-  bodies live in `node/emitted_http.dart`. Move them back when the proxies
-  are ported (header now says PARTIAL).
-- `tool/refresh_mozilla_roots.dart` and the files in `test/node/` have no
-  upstream counterpart, so they carry no `Ported from` header. That is
+- `config_validation_test` was rebuilt from upstream statement for
+  statement. Its full assertions caught a validator bug: zod `.strict()`
+  reports one `unrecognized_keys` issue at the object's path naming every
+  unknown key; the Dart credentials/awsPairs/sigv4 parsers reported one
+  issue per key at the key's path. Fixed and checked against upstream's
+  compiled schema.
+- `path_canonicalization_test` runs `normalizeWithHome` in a child process
+  again. That caught a shim bug: `os.homedir()` threw on an empty HOME,
+  where Node returns ''.
+- `java_proxy_agent_test`: the `agent inside a JVM` group runs against a
+  real JVM (7 tests, including the challenging proxy on the node:http shim).
+  `vendor/java-proxy-agent-src` is vendored and
+  `tool/build_java_proxy_agent.dart` builds the jar.
+- `test/helpers/spawn.dart` ports upstream's `spawnAsync`.
+- `resolved_address_guard_test`, `mux_proxy_test`: pending bodies and each
+  group's setup are kept as upstream text in comments.
+- `which_node_test` runs as upstream's script, in one test.
+- The Seatbelt differential test moved to `test/differential/`.
+- Every `pending port:` skip names the `src/` path.
+
+Still open:
+
+- `emitted_connection.dart` keeps upstream's declarations, but four bodies
+  live in `node/emitted_http.dart`. Move them back when the proxies are
+  ported (header says PARTIAL).
+- Validator: zod runs a `superRefine` on a dirty object (for example, one
+  with only unknown keys), but not on an aborted one (a child failed its
+  type). The Dart validators stop at any new issue, so the credentials
+  refinement's issues are missing when an object also has unknown keys.
+  Only the issue list differs; `success` is the same.
+- `test/fixtures/srt-proxy-hello.json` is not copied yet; its test
+  (proxy-cli) is not ported.
+- `tool/refresh_mozilla_roots.dart`, `test/node/`, `test/differential/`
+  have no upstream counterpart and carry no `Ported from` header. That is
   intended.
+- `aws_sigv4_test` has one extra test: upstream's describe-level
+  `expect(vectors.length).toBe(22)`, moved into a test as the convention
+  says.
 
-The audit scripts are in `/tmp/audit` (not kept). To repeat the check:
-compare each file's `it`/`test`/`describe` titles in order, and check that
-every upstream comment line of 12 or more characters appears in the Dart
-file after normalizing `{@link X}` to `[X]` and `**\/` to `**/`.
+To repeat the audit: `python3 /tmp/audit/comments.py` (every upstream
+comment line of 12+ characters must appear after normalizing `{@link X}`
+and `**\/`) and `python3 /tmp/audit/titles.py all`. The scripts are not in
+the repo; copy them into `tool/audit/` if they should survive a reboot.
 
 ### Linux VM
 
@@ -78,6 +87,15 @@ file after normalizing `{@link X}` to `[X]` and `**\/` to `**/`.
   port).
 - An agent that reports no progress for 30 minutes is stuck: check file
   modification times, then interrupt it.
+- Never `git commit --amend`, `reset`, `rebase` or `stash` in a shared
+  checkout: an agent's amend once folded its file into another agent's
+  commit (history was split back into one commit per file afterwards).
+- Check an agent's report against `comments.py`/`titles.py` and its diff:
+  in the fidelity pass, half the agents reported done with work missing,
+  and one replaced an upstream comment with an invented one.
+- Mechanical test ports go faster with a translator: `/tmp/cv/ts2dart.py`
+  (object keys, `expect` matchers, `test.each`/`test.if`, `for...of`) did
+  most of config-validation; hand fixes went in `/tmp/cv/fixups.py`.
 - Author: James O'Leary <jpohhhh@gmail.com>.
 
 ### Remaining source (about 19,000 of 27,700 upstream lines)
@@ -411,7 +429,7 @@ and replaces paired EventEmitter one-shot callbacks with the
 | `src/sandbox/listen-in-range.ts` | `lib/src/sandbox/listen_in_range.dart` | — | Ported; no matching upstream test file; Stream adapter is in `node/events.dart` |
 | `src/utils/debug.ts` | `lib/src/utils/debug.dart` | — | Ported as a downstream dependency; no matching upstream test file |
 | `src/utils/platform.ts` | `lib/src/utils/platform.dart` | `test/utils/platform_test.dart` | Ported |
-| `src/utils/which.ts` | `lib/src/utils/which.dart` | `test/utils/which_test.dart`, `test/utils/which_node_test.dart` | Ported; 7 pass, 2 skipped (Bun-only); Node fallback script kept separate; Dart's synchronous process API has no spawn timeout |
+| `src/utils/which.ts` | `lib/src/utils/which.dart` | `test/utils/which_test.dart`, `test/utils/which_node_test.dart` | Ported; 4 pass, 2 skipped (Bun-only); Node fallback script kept separate, as one test; Dart's synchronous process API has no spawn timeout |
 | `src/utils/ripgrep.ts` | `lib/src/utils/ripgrep.dart` | `test/utils/ripgrep_test.dart` | Ported; real `rg` process; six tests pass on this host; POSIX argv0 uses Bash `exec -a`; Windows argv0 case skips because Dart cannot override argv[0] |
 | `src/sandbox/sandbox-schemas.ts` | `lib/src/sandbox/sandbox_schemas.dart` | — | Ported; no matching standalone test file; six other sandbox tests import it (listed below) |
 | `src/sandbox/credential-extract.ts` | `lib/src/sandbox/credential_extract.dart` | — | Ported; no matching standalone test file; direct extraction tests in `credential-mask-files.test.ts` remain queued; exact capture offsets use the instrumented RegExp shim |
@@ -425,7 +443,7 @@ and replaces paired EventEmitter one-shot callbacks with the
 | `src/sandbox/sandbox-utils.ts` | `lib/src/sandbox/sandbox_utils.dart` | `test/sandbox/{sandbox_env_tmpdir_test,glob_walk_property_test}.dart` | Ported; 6 direct tests pass; no one-to-one utility suite exists upstream; Node shims `os.dart`, `buffer.dart`, `fs.dart` |
 | `src/sandbox/path-entries.ts` | `lib/src/sandbox/path_entries.dart` | — | Ported; `literal-path-entries.test.ts` waits on sandbox-manager and Linux/macOS wrapper modules |
 | `src/sandbox/macos-sandbox-utils.ts` | `lib/src/sandbox/macos_sandbox_utils.dart` | `test/sandbox/{macos_allow_local_binding,macos_apple_events,macos_deny_grouping,macos_glob_deny_reemit,macos_literal_deny_brackets,macos_profile_size,macos_pty,macos_seatbelt,path_canonicalization,tls_terminate_trust_env,symlink_boundary}_test.dart` | Ported; 129 tests pass across the macOS suites, plus 2 credential-mask cases skipped pending `credential-mask-files.ts`; generated wrapper/profile compared byte-for-byte with upstream after normalizing only the random log suffix. Apple Events end-to-end cases depend on the host GUI probe. |
-| `src/sandbox/java-proxy-agent.ts` | `lib/src/sandbox/java_proxy_agent.dart` | `test/sandbox/java_proxy_agent_test.dart` | Ported; 11 direct tests pass. The sandbox-manager integration case is pending `sandbox-manager.ts` and only registered when a built agent jar exists. |
+| `src/sandbox/java-proxy-agent.ts` | `lib/src/sandbox/java_proxy_agent.dart` | `test/sandbox/java_proxy_agent_test.dart` | Ported; 17 pass with a JDK and the jar (`dart run tool/build_java_proxy_agent.dart`), including the 7 JVM tests; the sandboxed-child case is pending `sandbox-manager.ts`. |
 | `src/sandbox/generate-seccomp-filter.ts` | `lib/src/sandbox/generate_seccomp_filter.dart` | `test/sandbox/seccomp_filter_test.dart` | Ported; 3 binary tests pass on the Linux VM, 9 more keep upstream bodies pending `linux-sandbox-utils.ts`. `vendor/seccomp-src` copied unchanged; `tool/build_seccomp.dart` builds `apply-seccomp`, which refuses `socket(AF_UNIX)` on the VM. An AOT embedder passes `seccompBinaryPath` |
 | `test/helpers/platform.ts` | `test/helpers/platform.dart` | — | Ported |
 | `src/sandbox/sandbox-violation-store.ts` | `lib/src/sandbox/sandbox_violation_store.dart` | — | Ported; no one-to-one upstream test file; related assertions are in `command-text-registry.test.ts` |
