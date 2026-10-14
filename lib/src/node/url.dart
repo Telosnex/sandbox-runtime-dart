@@ -813,7 +813,7 @@ bool _isForbiddenOpaqueHostCodePoint(int rune) =>
     rune == 0x5e ||
     rune == 0x7c;
 
-/// `node:url` file URL conversion. Its platform-specific behavior is pending.
+/// `node:url` fileURLToPath.
 ///
 /// As Node: [url] is a URL string or [URL]; a non-file URL, an encoded `/`
 /// (or `\\` on Windows), a host on POSIX, or a Windows path without a drive
