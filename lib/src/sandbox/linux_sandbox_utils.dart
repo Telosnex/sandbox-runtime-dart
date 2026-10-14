@@ -641,7 +641,7 @@ bool processHasBoundingCapability(int cap) {
     var failure = 'has no CapBnd or CapInh line';
     try {
       bits = boundingCapabilitiesFromStatus(
-        fs.readFileSync('/proc/self/status', 'utf8'),
+        fs.readFileSync('/proc/self/status', 'utf8') as String,
       );
       _boundingCapabilities = bits;
     } catch (e) {
@@ -740,7 +740,7 @@ int _maxArgStrlen() {
     const AT_PAGESZ = 6;
     var pageSize = 4096;
     try {
-      final Buffer auxv = fs.readFileSync('/proc/self/auxv');
+      final auxv = fs.readFileSync('/proc/self/auxv') as Buffer;
       final wordBytes = RegExp(r'64|s390x').hasMatch(process.arch) ? 8 : 4;
       // Buffer reads at most 6 bytes as a number; no value needed here is wider.
       final low = wordBytes < 6 ? wordBytes : 6;
@@ -1309,7 +1309,9 @@ String? _probeBwrapVersion(String bwrap) {
     },
   );
   final version = probe.error == null && probe.status == 0
-      ? (RegExp(r'\d+(?:\.\d+)*').firstMatch(probe.stdout ?? '')?[0])
+      ? (RegExp(
+          r'\d+(?:\.\d+)*',
+        ).firstMatch((probe.stdout as String?) ?? '')?[0])
       : null;
   _bwrapVersions[bwrap] = version;
   return version;
@@ -1409,7 +1411,7 @@ String? _probeUid0UserNamespace(String bwrap) {
   );
   final refusal = probe.error == null && probe.status == 0
       ? null
-      : ((probe.stderr ?? '')
+      : (((probe.stderr as String?) ?? '')
                 .split('\n')
                 .map((line) => line.trim())
                 .where((line) => line.isNotEmpty)

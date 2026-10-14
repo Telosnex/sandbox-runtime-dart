@@ -3,6 +3,12 @@
 import 'package:sandbox_runtime/src/node/fs.dart' as fs;
 import 'package:sandbox_runtime/src/node/process.dart' as process;
 import 'package:sandbox_runtime/src/sandbox/generate_seccomp_filter.dart';
+import 'package:sandbox_runtime/src/sandbox/linux_sandbox_utils.dart';
+import 'package:sandbox_runtime/src/sandbox/sandbox_config.dart'
+    show SeccompConfig;
+import 'package:sandbox_runtime/src/sandbox/sandbox_schemas.dart'
+    show FsWriteRestrictionConfig;
+import 'package:sandbox_runtime/src/utils/which.dart' show whichSync;
 import 'package:test/test.dart';
 
 import '../helpers/platform.dart';
@@ -12,14 +18,12 @@ void main() {
     test(
       'checkLinuxDependencies reports no errors with bwrap + socat + apply-seccomp',
       () {
-        // Pending the linux-sandbox-utils.ts port, the upstream body is:
-        // const depCheck = checkLinuxDependencies()
-        // expect(depCheck).toHaveProperty('warnings')
-        // expect(depCheck.errors).toEqual([])
-        // expect(whichSync('bwrap')).not.toBeNull()
-        // expect(whichSync('socat')).not.toBeNull()
+        final depCheck = checkLinuxDependencies();
+        expect(depCheck.warnings, isA<List<String>>());
+        expect(depCheck.errors, isEmpty);
+        expect(whichSync('bwrap'), isNotNull);
+        expect(whichSync('socat'), isNotNull);
       },
-      skip: 'pending port: src/sandbox/linux-sandbox-utils.ts',
     );
   });
 
@@ -68,80 +72,118 @@ void main() {
       // Every test below wraps a command with bwrap. Without the dependencies
       // they would each pass having wrapped nothing, which is the failure
       // this block exists to catch.
-      // Pending the linux-sandbox-utils.ts port, the upstream body is:
-      // expect(checkLinuxDependencies().errors).toEqual([])
+      expect(checkLinuxDependencies().errors, isEmpty);
     });
 
     test('wraps filesystem-restricted commands with bwrap', () async {
-      // Pending the linux-sandbox-utils.ts port, the upstream body is:
-      // const wrappedCommand = await wrapCommandWithSandboxLinux({
-      //   command: 'ls /',
-      //   needsNetworkRestriction: false,
-      //   writeConfig: { allowOnly: ['/tmp'], denyWithinAllow: [] },
-      // })
-      //
-      // expect(wrappedCommand).toBeTruthy()
-      // expect(wrappedCommand).toContain('bwrap')
-    }, skip: 'pending port: src/sandbox/linux-sandbox-utils.ts');
+      final wrappedCommand = await wrapCommandWithSandboxLinux(
+        LinuxSandboxParams(
+          command: 'ls /',
+          needsNetworkRestriction: false,
+          writeConfig: FsWriteRestrictionConfig(
+            allowOnly: ['/tmp'],
+            denyWithinAllow: [],
+          ),
+        ),
+      );
+
+      expect(wrappedCommand, isNotEmpty);
+      expect(wrappedCommand, contains('bwrap'));
+    });
 
     test('threads a custom apply-seccomp path through seccompConfig', () async {
-      // Pending the linux-sandbox-utils.ts port, the upstream body is:
-      // const real = getApplySeccompBinaryPath()
-      // expect(real).toBeTruthy()
-      // if (real === null) throw new Error('apply-seccomp path did not resolve')
-      //
-      // const wrappedCommand = await wrapCommandWithSandboxLinux({
-      //   command: 'echo test',
-      //   needsNetworkRestriction: false,
-      //   writeConfig: { allowOnly: ['/tmp'], denyWithinAllow: [] },
-      //   seccompConfig: { applyPath: real },
-      // })
-      //
-      // expect(wrappedCommand).toContain(real)
-    }, skip: 'pending port: src/sandbox/linux-sandbox-utils.ts');
+      final real = getApplySeccompBinaryPath();
+      expect(real, isNotNull);
+      if (real == null) throw StateError('apply-seccomp path did not resolve');
 
-    test('argv0 mode: builds ARGV0 prefix and uses applyPath verbatim', () async {
-      // Pending the linux-sandbox-utils.ts port, the upstream body is:
-      // const wrappedCommand = await wrapCommandWithSandboxLinux({
-      //   command: 'echo test',
-      //   needsNetworkRestriction: false,
-      //   writeConfig: { allowOnly: ['/tmp'], denyWithinAllow: [] },
-      //   seccompConfig: { argv0: 'apply-seccomp', applyPath: '/proc/self/fd/3' },
-      // })
-      //
-      // expect(wrappedCommand).toContain('ARGV0=apply-seccomp /proc/self/fd/3 ')
-      // expect(wrappedCommand).not.toContain('vendor/seccomp')
-    }, skip: 'pending port: src/sandbox/linux-sandbox-utils.ts');
+      final wrappedCommand = await wrapCommandWithSandboxLinux(
+        LinuxSandboxParams(
+          command: 'echo test',
+          needsNetworkRestriction: false,
+          writeConfig: FsWriteRestrictionConfig(
+            allowOnly: ['/tmp'],
+            denyWithinAllow: [],
+          ),
+          seccompConfig: SeccompConfig(applyPath: real),
+        ),
+      );
+
+      expect(wrappedCommand, contains(real));
+    });
+
+    test(
+      'argv0 mode: builds ARGV0 prefix and uses applyPath verbatim',
+      () async {
+        final wrappedCommand = await wrapCommandWithSandboxLinux(
+          LinuxSandboxParams(
+            command: 'echo test',
+            needsNetworkRestriction: false,
+            writeConfig: FsWriteRestrictionConfig(
+              allowOnly: ['/tmp'],
+              denyWithinAllow: [],
+            ),
+            seccompConfig: SeccompConfig(
+              argv0: 'apply-seccomp',
+              applyPath: '/proc/self/fd/3',
+            ),
+          ),
+        );
+
+        expect(
+          wrappedCommand,
+          contains('ARGV0=apply-seccomp /proc/self/fd/3 '),
+        );
+        expect(wrappedCommand, isNot(contains('vendor/seccomp')));
+      },
+    );
 
     test('argv0 mode: shell-quotes argv0 and applyPath', () async {
-      // Pending the linux-sandbox-utils.ts port, the upstream body is:
-      // const wrappedCommand = await wrapCommandWithSandboxLinux({
-      //   command: 'echo test',
-      //   needsNetworkRestriction: false,
-      //   writeConfig: { allowOnly: ['/tmp'], denyWithinAllow: [] },
-      //   seccompConfig: { argv0: 'x; rm -rf /', applyPath: '/path with space' },
-      // })
-      //
-      // // Assert the values flow into the prefix, not the quoter's exact
-      // // serialization: the inner prefix is later quoted AGAIN into the outer
-      // // bwrap argv string, which re-escapes the inner quotes. The child's
-      // // argv is what matters and is covered by the round-trip tests in
-      // // test/utils/shell-quote.test.ts.
-      // expect(wrappedCommand).toContain('ARGV0=')
-      // expect(wrappedCommand).toContain('x; rm -rf /')
-      // expect(wrappedCommand).toContain('/path with space')
-    }, skip: 'pending port: src/sandbox/linux-sandbox-utils.ts');
+      final wrappedCommand = await wrapCommandWithSandboxLinux(
+        LinuxSandboxParams(
+          command: 'echo test',
+          needsNetworkRestriction: false,
+          writeConfig: FsWriteRestrictionConfig(
+            allowOnly: ['/tmp'],
+            denyWithinAllow: [],
+          ),
+          seccompConfig: SeccompConfig(
+            argv0: 'x; rm -rf /',
+            applyPath: '/path with space',
+          ),
+        ),
+      );
+
+      // Assert the values flow into the prefix, not the quoter's exact
+      // serialization: the inner prefix is later quoted AGAIN into the outer
+      // bwrap argv string, which re-escapes the inner quotes. The child's
+      // argv is what matters and is covered by the round-trip tests in
+      // test/utils/shell-quote.test.ts.
+      expect(wrappedCommand, contains('ARGV0='));
+      expect(wrappedCommand, contains('x; rm -rf /'));
+      expect(wrappedCommand, contains('/path with space'));
+    });
 
     test('argv0 mode: rejects argv0 without applyPath', () async {
-      // Pending the linux-sandbox-utils.ts port, the upstream body is:
-      // expect(
-      //   wrapCommandWithSandboxLinux({
-      //     command: 'echo test',
-      //     needsNetworkRestriction: false,
-      //     writeConfig: { allowOnly: ['/tmp'], denyWithinAllow: [] },
-      //     seccompConfig: { argv0: 'apply-seccomp' },
-      //   }),
-      // ).rejects.toThrow('seccompConfig.argv0 requires seccompConfig.applyPath')
-    }, skip: 'pending port: src/sandbox/linux-sandbox-utils.ts');
+      await expectLater(
+        wrapCommandWithSandboxLinux(
+          LinuxSandboxParams(
+            command: 'echo test',
+            needsNetworkRestriction: false,
+            writeConfig: FsWriteRestrictionConfig(
+              allowOnly: ['/tmp'],
+              denyWithinAllow: [],
+            ),
+            seccompConfig: SeccompConfig(argv0: 'apply-seccomp'),
+          ),
+        ),
+        throwsA(
+          predicate(
+            (e) => '$e'.contains(
+              'seccompConfig.argv0 requires seccompConfig.applyPath',
+            ),
+          ),
+        ),
+      );
+    });
   });
 }
