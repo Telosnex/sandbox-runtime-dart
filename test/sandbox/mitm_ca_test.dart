@@ -42,31 +42,22 @@ void main() {
       rmSync(scratch, {'recursive': true, 'force': true});
     });
 
-    test(
-      'returns parsed cert+key from a real CA',
-      // Dart: node/forge.dart has no DistinguishedName.getField (shim gap).
-      tags: ['pending'],
-      () {
-        final ca = createMitmCA(caCertPath: certPath, caKeyPath: keyPath);
-        expect(ca.certPath, certPath);
-        expect(ca.keyPath, keyPath);
-        expect(ca.certPem, certPem);
-        expect(ca.keyPem, keyPem);
-        expect(ca.certPem, contains('-----BEGIN CERTIFICATE-----'));
-        // openssl req -nodes emits PKCS8 ("PRIVATE KEY"); the loader's regex also
-        // accepts PKCS1 "RSA PRIVATE KEY" / "EC PRIVATE KEY".
-        expect(
-          ca.keyPem,
-          matches(RegExp(r'-----BEGIN (RSA |EC )?PRIVATE KEY-----')),
-        );
-        // Dart: forge.dart has no DistinguishedName.getField.
-        expect(
-          ((ca.cert.subject as dynamic).getField('CN').value) as String,
-          contains('srt-test-ca'),
-        );
-        expect(ca.key.n, isNotNull); // RSA modulus present
-      },
-    );
+    test('returns parsed cert+key from a real CA', () {
+      final ca = createMitmCA(caCertPath: certPath, caKeyPath: keyPath);
+      expect(ca.certPath, certPath);
+      expect(ca.keyPath, keyPath);
+      expect(ca.certPem, certPem);
+      expect(ca.keyPem, keyPem);
+      expect(ca.certPem, contains('-----BEGIN CERTIFICATE-----'));
+      // openssl req -nodes emits PKCS8 ("PRIVATE KEY"); the loader's regex also
+      // accepts PKCS1 "RSA PRIVATE KEY" / "EC PRIVATE KEY".
+      expect(
+        ca.keyPem,
+        matches(RegExp(r'-----BEGIN (RSA |EC )?PRIVATE KEY-----')),
+      );
+      expect(ca.cert.subject.getField('CN')!.value, contains('srt-test-ca'));
+      expect(ca.key.n, isNotNull); // RSA modulus present
+    });
 
     test('is a pure factory: each call returns a new instance', () {
       final a = createMitmCA(caCertPath: certPath, caKeyPath: keyPath);
@@ -75,35 +66,25 @@ void main() {
       expect(b.certPem, a.certPem);
     });
 
-    test(
-      'throws with field+path+code when cert path is missing',
-      // Dart: mitm_ca.dart _readPem reads with dart:io File, so the error has no (ENOENT) code (use fs.readFileSync).
-      tags: ['pending'],
-      () {
-        final missing = join(scratch, 'nope.crt');
-        expect(
-          () => createMitmCA(caCertPath: missing, caKeyPath: keyPath),
-          _throwsMatching(
-            r'tlsTerminate\.caCertPath: cannot read .*nope\.crt \(ENOENT\)',
-          ),
-        );
-      },
-    );
+    test('throws with field+path+code when cert path is missing', () {
+      final missing = join(scratch, 'nope.crt');
+      expect(
+        () => createMitmCA(caCertPath: missing, caKeyPath: keyPath),
+        _throwsMatching(
+          r'tlsTerminate\.caCertPath: cannot read .*nope\.crt \(ENOENT\)',
+        ),
+      );
+    });
 
-    test(
-      'throws with field+path+code when key path is missing',
-      // Dart: mitm_ca.dart _readPem reads with dart:io File, so the error has no (ENOENT) code (use fs.readFileSync).
-      tags: ['pending'],
-      () {
-        final missing = join(scratch, 'nope.key');
-        expect(
-          () => createMitmCA(caCertPath: certPath, caKeyPath: missing),
-          _throwsMatching(
-            r'tlsTerminate\.caKeyPath: cannot read .*nope\.key \(ENOENT\)',
-          ),
-        );
-      },
-    );
+    test('throws with field+path+code when key path is missing', () {
+      final missing = join(scratch, 'nope.key');
+      expect(
+        () => createMitmCA(caCertPath: certPath, caKeyPath: missing),
+        _throwsMatching(
+          r'tlsTerminate\.caKeyPath: cannot read .*nope\.key \(ENOENT\)',
+        ),
+      );
+    });
 
     test('throws when cert file is not PEM', () {
       expect(
@@ -134,8 +115,6 @@ void main() {
   group('mitm-ca: ephemeral generation', () {
     test(
       'createMitmCA({}) generates a CA, writes PEMs to a temp dir',
-      // Dart: node/forge.dart has no DistinguishedName.getField (shim gap).
-      tags: ['pending'],
       () async {
         final ca = createMitmCA();
         try {
@@ -144,9 +123,8 @@ void main() {
           expect(readFileSync(ca.certPath, 'utf8'), ca.certPem);
           expect(readFileSync(ca.keyPath, 'utf8'), ca.keyPem);
           expect(ca.certPem, contains('-----BEGIN CERTIFICATE-----'));
-          // Dart: forge.dart has no DistinguishedName.getField.
           expect(
-            (ca.cert.subject as dynamic).getField('CN').value,
+            ca.cert.subject.getField('CN')!.value,
             'sandbox-runtime ephemeral CA',
           );
           expect(ca.key.n, isNotNull);
@@ -228,8 +206,6 @@ void main() {
 
     test(
       'signCertificateNative is byte-identical to node-forge cert.sign()',
-      // Dart: node/forge.dart has no Certificate.verify (shim gap).
-      tags: ['pending'],
       () async {
         // RSASSA-PKCS1-v1_5 is deterministic, so signing the same TBSCertificate
         // with the same key via native crypto and via node-forge's pure-JS RSA
@@ -252,8 +228,7 @@ void main() {
           ref.setSubject(ca.cert.subject.attributes);
           ref.setIssuer(ca.cert.issuer.attributes);
           ref.setExtensions(ca.cert.extensions);
-          // Dart: forge.dart's certificate has no sign(key, md).
-          (ref as dynamic).sign(ca.key, md.sha256.create());
+          ref.sign(ca.key, md.sha256.create());
 
           expect(
             latin1.encode(ca.cert.signature),
@@ -264,8 +239,7 @@ void main() {
           signCertificateNative(ref, ca.keyPem);
           expect(ca.certPem, pki.certificateToPem(ref));
           // And node-forge's own verifier accepts the native-signed cert.
-          // Dart: forge.dart's certificate has no verify(issuer).
-          expect((ref as dynamic).verify(ca.cert), true);
+          expect(ref.verify(ca.cert), true);
         } finally {
           await disposeMitmCA(ca);
         }
@@ -288,62 +262,47 @@ void main() {
     // One shared pair — RSA-2048 keygen dominates the cost.
     final g = generateCa(cn: 'srt-test-generateCa', validityDays: 7);
 
-    test(
-      'generateCa: cn + validityDays are honoured; pair validates',
-      // Dart: node/forge.dart has no DistinguishedName.getField (shim gap).
-      tags: ['pending'],
-      () {
-        final cert = forge.pki.certificateFromPem(g.certPem);
-        // Dart: forge.dart has no DistinguishedName.getField.
+    test('generateCa: cn + validityDays are honoured; pair validates', () {
+      final cert = forge.pki.certificateFromPem(g.certPem);
+      expect(cert.subject.getField('CN')!.value, 'srt-test-generateCa');
+      // notAfter within [6, 8] days from now (allow for slow CI + DST).
+      final days =
+          (cert.validity.notAfter.millisecondsSinceEpoch -
+              DateTime.now().millisecondsSinceEpoch) /
+          (24 * 60 * 60 * 1000);
+      expect(days, greaterThan(5));
+      expect(days, lessThan(9));
+      final v = validateCaPair(g.certPem, g.keyPem);
+      expect(v.ok, true);
+      if (v.ok) {
+        v as CaPairValidationSuccess;
         expect(
-          (cert.subject as dynamic).getField('CN').value,
-          'srt-test-generateCa',
+          v.notAfter.millisecondsSinceEpoch,
+          cert.validity.notAfter.millisecondsSinceEpoch,
         );
-        // notAfter within [6, 8] days from now (allow for slow CI + DST).
-        final days =
-            (cert.validity.notAfter.millisecondsSinceEpoch -
-                DateTime.now().millisecondsSinceEpoch) /
-            (24 * 60 * 60 * 1000);
-        expect(days, greaterThan(5));
-        expect(days, lessThan(9));
-        final v = validateCaPair(g.certPem, g.keyPem);
-        expect(v.ok, true);
-        if (v.ok) {
-          v as CaPairValidationSuccess;
-          expect(
-            v.notAfter.millisecondsSinceEpoch,
-            cert.validity.notAfter.millisecondsSinceEpoch,
-          );
-          // 40 uppercase-hex chars, no separators — matches srt-win's
-          // `CertDer::thumb()` and PowerShell's `Cert:\…\Thumbprint`.
-          expect(v.thumbprint, matches(RegExp(r'^[0-9A-F]{40}$')));
-          expect(v.thumbprint, certThumbprint(g.certPem));
-        }
-      },
-    );
+        // 40 uppercase-hex chars, no separators — matches srt-win's
+        // `CertDer::thumb()` and PowerShell's `Cert:\…\Thumbprint`.
+        expect(v.thumbprint, matches(RegExp(r'^[0-9A-F]{40}$')));
+        expect(v.thumbprint, certThumbprint(g.certPem));
+      }
+    });
 
-    test(
-      'generateCa: defaults match the ephemeral CA (cn + 825d)',
-      // Dart: node/forge.dart has no DistinguishedName.getField (shim gap).
-      tags: ['pending'],
-      () {
-        // The defaults are also what the ephemeral in-process CA uses, so
-        // this row pins that generateEphemeralCA's refactor to call
-        // generateCa() didn't change its output shape.
-        final d = generateCa();
-        final cert = forge.pki.certificateFromPem(d.certPem);
-        // Dart: forge.dart has no DistinguishedName.getField.
-        expect(
-          (cert.subject as dynamic).getField('CN').value,
-          'sandbox-runtime ephemeral CA',
-        );
-        final days =
-            (cert.validity.notAfter.millisecondsSinceEpoch -
-                DateTime.now().millisecondsSinceEpoch) /
-            (24 * 60 * 60 * 1000);
-        expect(days.round(), 825);
-      },
-    );
+    test('generateCa: defaults match the ephemeral CA (cn + 825d)', () {
+      // The defaults are also what the ephemeral in-process CA uses, so
+      // this row pins that generateEphemeralCA's refactor to call
+      // generateCa() didn't change its output shape.
+      final d = generateCa();
+      final cert = forge.pki.certificateFromPem(d.certPem);
+      expect(
+        cert.subject.getField('CN')!.value,
+        'sandbox-runtime ephemeral CA',
+      );
+      final days =
+          (cert.validity.notAfter.millisecondsSinceEpoch -
+              DateTime.now().millisecondsSinceEpoch) /
+          (24 * 60 * 60 * 1000);
+      expect(days.round(), 825);
+    });
 
     test('validateCaPair: mismatched key → ok:false', () {
       // Fixture cert with the freshly-generated key: moduli differ.
@@ -417,16 +376,13 @@ void main() {
 
     test(
       'parses as a v2 CRL: issuer==CA subject, no revoked certs, AKI matches CA SKI',
-      // Dart: node/forge.dart asn1 has no fromDer (shim gap).
-      tags: ['pending'],
       () {
         // node-forge has no CRL parser either, so validate the DER structurally
         // via asn1.fromDer. The `openssl crl` test below is the interop check.
         final asn1 = forge.asn1;
         final pki = forge.pki;
         final util = forge.util;
-        // Dart: forge.dart's asn1 has no fromDer.
-        final crl = (asn1 as dynamic).fromDer(latin1.decode(ca.crlDer));
+        final crl = asn1.fromDer(latin1.decode(ca.crlDer));
         // CertificateList ::= SEQUENCE { tbsCertList, signatureAlgorithm, signature }
         final [tbs, _, sig] = crl.value as List<dynamic>;
         expect(sig.type, asn1.Type.BITSTRING);
