@@ -19,6 +19,7 @@ import 'dart:typed_data';
 import 'emitted_connection.dart' show endRequestAfterResponse;
 import '../node/abort.dart' as abort;
 import '../node/buffer.dart' show Buffer;
+import '../node/errno.dart' show errorMessage;
 import '../node/fetch.dart' as fetch;
 import '../node/http.dart' as http;
 import '../node/net.dart' show isIP;
@@ -316,7 +317,7 @@ Future<({stream.Readable body, RequestDecision decision})?> decideAndRespond(
     );
   } catch (err) {
     // Malformed URL/headers from the client — deny rather than crash.
-    final reason = 'malformed request: ${_errorMessage(err)}';
+    final reason = 'malformed request: ${errorMessage(err)}';
     onDeny?.call(method, url, reason);
     _deny(
       res,
@@ -346,7 +347,7 @@ Future<({stream.Readable body, RequestDecision decision})?> decideAndRespond(
   } catch (err) {
     decision = RequestDecision(
       action: 'deny',
-      reason: 'sandbox policy check failed: ${_errorMessage(err)}',
+      reason: 'sandbox policy check failed: ${errorMessage(err)}',
     );
   }
   final malformed = _malformedDecisionReason(decision);
@@ -692,7 +693,7 @@ bool _isThenable(Object? value) {
 
 void _logResponseFailure(Object? err) {
   logForDebugging(
-    '[request-filter] onResponse failed: ${_errorMessage(err) ?? '$err'}',
+    '[request-filter] onResponse failed: ${errorMessage(err) ?? '$err'}',
     level: 'error',
   );
 }
@@ -863,7 +864,7 @@ void respondUpstreamError(
   if (isResolvedAddressDenied(err)) {
     respondDenied(
       res,
-      _errorMessage(err)!,
+      errorMessage(err)!,
       denyHeader != null
           ? (name: denyHeader, value: 'address_not_allowed')
           : null,
@@ -889,14 +890,4 @@ fetch.Headers _incomingHeaders(http.IncomingMessage req) {
     }
   }
   return h;
-}
-
-// Dart errors have no common `message`: reads it as TS `(err as Error).message` does.
-String? _errorMessage(Object? err) {
-  try {
-    final Object? message = (err as dynamic).message;
-    return message?.toString();
-  } on NoSuchMethodError {
-    return null;
-  }
 }
