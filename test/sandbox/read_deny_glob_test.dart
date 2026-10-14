@@ -42,7 +42,7 @@ void symlinkSync(String target, String linkPath) =>
 void main() {
   group(
     'expandReadDenyGlobLinux (collapse)',
-    skip: !isWindows ? false : 'Windows not supported by this port',
+    skip: !isWindows ? null : 'Windows not supported by this port',
     () {
       late String ROOT;
 
@@ -95,7 +95,7 @@ void main() {
 
       test(
         'denies a directory it cannot list as a whole',
-        skip: process.getuid?.call() != 0 ? false : 'running as root',
+        skip: process.getuid?.call() != 0 ? null : 'running as root',
         () {
           // Searchable but not listable (what a sandboxed command with write
           // access to the tree can leave for the next wrap): the matches beneath
@@ -120,7 +120,7 @@ void main() {
 
       test(
         'leaves alone an unlistable directory the pattern cannot match beneath',
-        skip: process.getuid?.call() != 0 ? false : 'running as root',
+        skip: process.getuid?.call() != 0 ? null : 'running as root',
         () {
           // certs/*.pem matches at one depth: certs/pgdata (a volume owned by
           // another user, say) holds no match whatever it contains, and as a
@@ -216,7 +216,7 @@ void main() {
 
   group(
     'expandReadDenyGlobLinux (beneath an anchor)',
-    skip: !isWindows ? false : 'Windows not supported by this port',
+    skip: !isWindows ? null : 'Windows not supported by this port',
     () {
       late String ROOT;
       late String PROJECT;
@@ -271,7 +271,7 @@ void main() {
 
   group(
     'expandReadDenyGlobLinux (symlinks)',
-    skip: !isWindows ? false : 'Windows not supported by this port',
+    skip: !isWindows ? null : 'Windows not supported by this port',
     () {
       late String ROOT;
       late String OUTSIDE;
@@ -747,7 +747,7 @@ void main() {
       test(
         'keeps a link as spelled, with where its short name leads, when no real path answers',
         skip: isLinux && process.getuid?.call() != 0
-            ? false
+            ? null
             : 'requires Linux and a non-root user',
         () {
           // Nothing is made to fail. The working directory lies behind one that
@@ -977,7 +977,7 @@ void main() {
 
   group(
     'expandReadDenyGlobLinux (bwrap wiring through a symlink)',
-    skip: isLinux ? false : 'requires Linux',
+    skip: isLinux ? null : 'requires Linux',
     () {
       // The pnpm layout again, driven through the real Linux wrapper: no tmpfs
       // may land on a symlink (bubblewrap 0.12 refuses to start), and the
@@ -987,7 +987,8 @@ void main() {
       late String real;
       late String link;
       final savedCwd = process.cwd();
-      final hasBwrap = bwrapCanNamespace();
+      // Dart: a skipped group's body still runs, and the probe needs bwrap.
+      final hasBwrap = isLinux && bwrapCanNamespace();
 
       /**
      * Run a wrapped command and hold it to having started. A sandbox that
@@ -1090,7 +1091,7 @@ void main() {
 
         test(
           'serves the package empty but for the carve-out, in both spellings (allowRead in $spelling spelling)',
-          skip: hasBwrap ? false : 'bwrap cannot create namespaces',
+          skip: hasBwrap ? null : 'bwrap cannot create namespaces',
           () async {
             final stdout = runBooted(
               await wrap(
@@ -1325,7 +1326,7 @@ void main() {
 
       test(
         'serves that carve-out and nothing else of the denied directory',
-        skip: hasBwrap ? false : 'bwrap cannot create namespaces',
+        skip: hasBwrap ? null : 'bwrap cannot create namespaces',
         () async {
           final stdout = runBooted(
             await wrapCarveOutThroughOutsideLink(
@@ -1386,7 +1387,7 @@ void main() {
 
         test(
           'serves nothing of that denied directory under either name',
-          skip: hasBwrap ? false : 'bwrap cannot create namespaces',
+          skip: hasBwrap ? null : 'bwrap cannot create namespaces',
           () async {
             final home = join(ROOT, 'g1', 'home');
             final proj = join(ROOT, 'g1', 'proj');
@@ -1440,7 +1441,7 @@ void main() {
 
         test(
           'serves that file through neither name',
-          skip: hasBwrap ? false : 'bwrap cannot create namespaces',
+          skip: hasBwrap ? null : 'bwrap cannot create namespaces',
           () async {
             final aws = join(ROOT, 'g2', 'aws');
             final proj = join(ROOT, 'g2', 'proj');
@@ -1506,7 +1507,7 @@ void main() {
 
         test(
           'serves the example file and not what the planted link points at',
-          skip: hasBwrap ? false : 'bwrap cannot create namespaces',
+          skip: hasBwrap ? null : 'bwrap cannot create namespaces',
           () async {
             final proj = join(ROOT, 'g3', 'proj');
             final stdout = runBooted(
@@ -1579,7 +1580,7 @@ void main() {
 
           test(
             'serves nothing of that tree under either name, with $orderName',
-            skip: hasBwrap ? false : 'bwrap cannot create namespaces',
+            skip: hasBwrap ? null : 'bwrap cannot create namespaces',
             () async {
               final denied = join(ROOT, 's1', 'D');
               final outside = join(ROOT, 's1', 'e');
@@ -1638,7 +1639,7 @@ void main() {
 
         test(
           'reads through that link as on the host, and still denies what it leads into',
-          skip: hasBwrap ? false : 'bwrap cannot create namespaces',
+          skip: hasBwrap ? null : 'bwrap cannot create namespaces',
           () async {
             final denied = join(ROOT, 's3', 'D');
             final target = join(ROOT, 's3', 't');
@@ -1703,7 +1704,7 @@ void main() {
 
         test(
           'serves that path through neither spelling, with $order',
-          skip: hasBwrap ? false : 'bwrap cannot create namespaces',
+          skip: hasBwrap ? null : 'bwrap cannot create namespaces',
           () async {
             final caseRoot = join(ROOT, 's7');
             final stdout = runBooted(
@@ -1768,7 +1769,7 @@ void main() {
 
         test(
           'hides those secrets from the write root, with $order',
-          skip: hasBwrap ? false : 'bwrap cannot create namespaces',
+          skip: hasBwrap ? null : 'bwrap cannot create namespaces',
           () async {
             final writeRoot = join(ROOT, 's5', 'x');
             final stdout = runBooted(
@@ -1833,7 +1834,7 @@ void main() {
 
       test(
         'writes to that path through neither name, and reads its denied file through neither',
-        skip: hasBwrap ? false : 'bwrap cannot create namespaces',
+        skip: hasBwrap ? null : 'bwrap cannot create namespaces',
         () async {
           final denied = join(ROOT, 's6', 'D');
           final writable = join(ROOT, 's6', 'T', 'sub', 'w');
@@ -1894,7 +1895,7 @@ void main() {
 
       test(
         'refuses the write that bind protects',
-        skip: hasBwrap ? false : 'bwrap cannot create namespaces',
+        skip: hasBwrap ? null : 'bwrap cannot create namespaces',
         () async {
           final hooks = join(ROOT, 's8', 'root', 'elsewhere', 'hooks');
           final stdout = runBooted(
@@ -1985,7 +1986,7 @@ void main() {
 
       test(
         'restores nothing beneath a directory the glob expansion could not list',
-        skip: process.getuid?.call() != 0 ? false : 'running as root',
+        skip: process.getuid?.call() != 0 ? null : 'running as root',
         () async {
           try {
             final cwd = join(ROOT, 's11', 'cwd');
@@ -2004,7 +2005,7 @@ void main() {
       test(
         'serves none of the files beneath it',
         skip: process.getuid?.call() != 0 && hasBwrap
-            ? false
+            ? null
             : 'running as root, or bwrap cannot create namespaces',
         () async {
           try {
@@ -2025,7 +2026,7 @@ void main() {
 
       test(
         'keeps the carve-outs of a literal deny of a directory it cannot list',
-        skip: process.getuid?.call() != 0 ? false : 'running as root',
+        skip: process.getuid?.call() != 0 ? null : 'running as root',
         () async {
           // The same directory, denied literally: nothing was enumerated under
           // it, so nothing is missing from the deny either, and the allowed
@@ -2095,7 +2096,7 @@ void main() {
 
       test(
         'hides the nearest directory it can inspect when an entry cannot be looked at',
-        skip: process.getuid?.call() != 0 ? false : 'running as root',
+        skip: process.getuid?.call() != 0 ? null : 'running as root',
         () async {
           final pkg = join(ROOT, 's12', 'proj', 'pkg');
           try {
@@ -2115,7 +2116,7 @@ void main() {
       test(
         'serves neither entry once the command puts the mode back',
         skip: process.getuid?.call() != 0 && hasBwrap
-            ? false
+            ? null
             : 'running as root, or bwrap cannot create namespaces',
         () async {
           final pkg = join(ROOT, 's12', 'proj', 'pkg');
@@ -2203,7 +2204,7 @@ void main() {
 
       test(
         'serves that link nothing, even once the command can look at the target again',
-        skip: hasBwrap ? false : 'bwrap cannot create namespaces',
+        skip: hasBwrap ? null : 'bwrap cannot create namespaces',
         () async {
           final (:wrapped, :certs, :link) = await wrapUninspectableLinkTarget(
             'echo BOOTED; cat ${join(ROOT, 's16', 'certs', 'k')} || echo HIDDEN; ls ${join(ROOT, 's16', 'certs')}',
@@ -2303,7 +2304,7 @@ void main() {
 
       test(
         'starts, with that directory hidden',
-        skip: hasBwrap ? false : 'bwrap cannot create namespaces',
+        skip: hasBwrap ? null : 'bwrap cannot create namespaces',
         () async {
           final img = join(ROOT, 's13', 'proj', 'img');
           final stdout = runBooted(
@@ -2378,7 +2379,7 @@ void main() {
 
       test(
         'starts such a checkout, with the directory hidden and the absent deny path uncreatable',
-        skip: hasBwrap ? false : 'bwrap cannot create namespaces',
+        skip: hasBwrap ? null : 'bwrap cannot create namespaces',
         () async {
           final proj = join(ROOT, 's14', 'work', 'proj');
           final stdout = runBooted(
@@ -2430,7 +2431,7 @@ void main() {
 
       test(
         'serves that target masked under its own name',
-        skip: hasBwrap ? false : 'bwrap cannot create namespaces',
+        skip: hasBwrap ? null : 'bwrap cannot create namespaces',
         () async {
           final secrets = join(ROOT, 's9', 'secrets');
           final stdout = runBooted(
@@ -2500,128 +2501,155 @@ void main() {
     },
   );
 
-  group(
-    'expandReadDenyGlobLinux (filesystem)',
-    skip: isLinux ? false : 'requires Linux',
-    () {
-      late String ROOT;
-      const PKGS = ['a', 'b', 'c'];
+  group('expandReadDenyGlobLinux (filesystem)', skip: isLinux ? null : 'requires Linux', () {
+    late String ROOT;
+    const PKGS = ['a', 'b', 'c'];
 
-      setUpAll(() {
-        ROOT = realpathSync(mkdtempSync(join(tmpdir(), 'deny-glob-collapse-')));
-        // pkg/{a,b,c}/build/{1..5}.out plus a nested dir and a source file each
-        for (final pkg in PKGS) {
-          final build = join(ROOT, 'pkg', pkg, 'build');
-          mkdirSync(join(build, 'nested'), {'recursive': true});
-          for (var i = 1; i <= 5; i++) {
-            writeFileSync(join(build, '$i.out'), '');
-          }
-          writeFileSync(join(build, 'nested', 'deep.out'), '');
-          writeFileSync(join(ROOT, 'pkg', pkg, 'index.ts'), '');
+    setUpAll(() {
+      ROOT = realpathSync(mkdtempSync(join(tmpdir(), 'deny-glob-collapse-')));
+      // pkg/{a,b,c}/build/{1..5}.out plus a nested dir and a source file each
+      for (final pkg in PKGS) {
+        final build = join(ROOT, 'pkg', pkg, 'build');
+        mkdirSync(join(build, 'nested'), {'recursive': true});
+        for (var i = 1; i <= 5; i++) {
+          writeFileSync(join(build, '$i.out'), '');
         }
-        // A FILE named build must not be swept up by the directory form.
-        writeFileSync(join(ROOT, 'pkg', 'build'), '');
-        // Something for an allowRead carve-out to re-expose.
-        mkdirSync(join(ROOT, 'pkg', 'a', 'build', 'public'));
-        writeFileSync(join(ROOT, 'pkg', 'a', 'build', 'public', 'ok.txt'), '');
-      });
+        writeFileSync(join(build, 'nested', 'deep.out'), '');
+        writeFileSync(join(ROOT, 'pkg', pkg, 'index.ts'), '');
+      }
+      // A FILE named build must not be swept up by the directory form.
+      writeFileSync(join(ROOT, 'pkg', 'build'), '');
+      // Something for an allowRead carve-out to re-expose.
+      mkdirSync(join(ROOT, 'pkg', 'a', 'build', 'public'));
+      writeFileSync(join(ROOT, 'pkg', 'a', 'build', 'public', 'ok.txt'), '');
+    });
 
-      tearDownAll(() {
-        rmSync(ROOT, {'recursive': true, 'force': true});
-      });
+    tearDownAll(() {
+      rmSync(ROOT, {'recursive': true, 'force': true});
+    });
 
-      test('collapses <root>/**/build/** to one mount per build directory', () {
+    test('collapses <root>/**/build/** to one mount per build directory', () {
+      final pattern = join(ROOT, '**/build/**');
+      expect(expandGlobPattern(pattern).length, greaterThanOrEqualTo(15));
+
+      final mounts = expandReadDenyGlobLinux(pattern, []);
+
+      expect(
+        mounts,
+        PKGS.map((pkg) => join(ROOT, 'pkg', pkg, 'build')).toList(),
+      );
+    });
+
+    test(
+      'keeps per-entry mounts under an allowRead carve-out inside a collapsed dir',
+      () {
         final pattern = join(ROOT, '**/build/**');
-        expect(expandGlobPattern(pattern).length, greaterThanOrEqualTo(15));
+        final carveOut = join(ROOT, 'pkg', 'a', 'build', 'public');
 
-        final mounts = expandReadDenyGlobLinux(pattern, []);
+        final mounts = expandReadDenyGlobLinux(pattern, [carveOut]);
 
+        for (final pkg in PKGS) {
+          expect(mounts, contains(join(ROOT, 'pkg', pkg, 'build')));
+        }
         expect(
           mounts,
-          PKGS.map((pkg) => join(ROOT, 'pkg', pkg, 'build')).toList(),
+          isNot(contains(join(ROOT, 'pkg', 'a', 'build', '1.out'))),
         );
-      });
+        expect(
+          mounts,
+          isNot(contains(join(ROOT, 'pkg', 'b', 'build', 'nested'))),
+        );
+        // What the carve-out binds back keeps its own masks.
+        expect(mounts, contains(carveOut));
+        expect(mounts, contains(join(carveOut, 'ok.txt')));
+      },
+    );
 
-      test(
-        'keeps per-entry mounts under an allowRead carve-out inside a collapsed dir',
-        () {
-          final pattern = join(ROOT, '**/build/**');
-          final carveOut = join(ROOT, 'pkg', 'a', 'build', 'public');
+    test(
+      'normalizes an allowRead carve-out spelling before collapsing against it',
+      () async {
+        // The trailing slash is stripped before the collapse compares, so the
+        // carve-out still keeps the file's own mask beneath the build tmpfs.
+        final carveOut = join(ROOT, 'pkg', 'a', 'build', 'public');
+        try {
+          final wrapped = await SandboxManager.wrapWithSandbox(
+            'echo hello',
+            null,
+            PartialSandboxRuntimeConfig(
+              filesystem: FilesystemConfig(
+                denyRead: [FilesystemPathSpelling(join(ROOT, '**/build/**'))],
+                allowRead: [FilesystemPathSpelling(carveOut + '/')],
+                allowWrite: [],
+                denyWrite: [],
+              ),
+            ),
+          );
 
-          final mounts = expandReadDenyGlobLinux(pattern, [carveOut]);
-
-          for (final pkg in PKGS) {
-            expect(mounts, contains(join(ROOT, 'pkg', pkg, 'build')));
-          }
           expect(
-            mounts,
-            isNot(contains(join(ROOT, 'pkg', 'a', 'build', '1.out'))),
+            countMounts(wrapped, ['--tmpfs', join(ROOT, 'pkg', 'a', 'build')]),
+            greaterThan(0),
           );
           expect(
-            mounts,
-            isNot(contains(join(ROOT, 'pkg', 'b', 'build', 'nested'))),
+            wrapped,
+            contains('--ro-bind /dev/null ${join(carveOut, 'ok.txt')}'),
           );
-          // What the carve-out binds back keeps its own masks.
-          expect(mounts, contains(carveOut));
-          expect(mounts, contains(join(carveOut, 'ok.txt')));
-        },
+          expect(
+            wrapped,
+            isNot(
+              contains(
+                '--ro-bind /dev/null ${join(ROOT, 'pkg', 'b', 'build')}/',
+              ),
+            ),
+          );
+        } finally {
+          await SandboxManager.reset();
+        }
+      },
+    );
+
+    test('seeds the ancestor pins from a collapsed directory', () async {
+      // Every tmpfs the collapse adds is an ordinary read-deny unit, so the
+      // directories between it and the allowed write root are pinned: the
+      // package directory above a collapsed build/ cannot be renamed aside to
+      // strip the deny off it.
+      final pkgDir = join(ROOT, 'pkg', 'a');
+      final build = join(pkgDir, 'build');
+      final wrapped = await wrapCommandWithSandboxLinux(
+        LinuxSandboxParams(
+          command: 'echo hello',
+          needsNetworkRestriction: false,
+          readConfig: FsReadRestrictionConfig(
+            denyOnly: expandReadDenyGlobLinux(join(ROOT, '**/build/**'), []),
+            allowWithinDeny: [],
+          ),
+          writeConfig: FsWriteRestrictionConfig(
+            allowOnly: [ROOT],
+            denyWithinAllow: [],
+          ),
+        ),
       );
 
-      test(
-        'normalizes an allowRead carve-out spelling before collapsing against it',
-        () async {
-          // The trailing slash is stripped before the collapse compares, so the
-          // carve-out still keeps the file's own mask beneath the build tmpfs.
-          final carveOut = join(ROOT, 'pkg', 'a', 'build', 'public');
-          try {
-            final wrapped = await SandboxManager.wrapWithSandbox(
-              'echo hello',
-              null,
-              PartialSandboxRuntimeConfig(
-                filesystem: FilesystemConfig(
-                  denyRead: [FilesystemPathSpelling(join(ROOT, '**/build/**'))],
-                  allowRead: [FilesystemPathSpelling(carveOut + '/')],
-                  allowWrite: [],
-                  denyWrite: [],
-                ),
-              ),
-            );
-
-            expect(
-              countMounts(wrapped, [
-                '--tmpfs',
-                join(ROOT, 'pkg', 'a', 'build'),
-              ]),
-              greaterThan(0),
-            );
-            expect(
-              wrapped,
-              contains('--ro-bind /dev/null ${join(carveOut, 'ok.txt')}'),
-            );
-            expect(
-              wrapped,
-              isNot(
-                contains(
-                  '--ro-bind /dev/null ${join(ROOT, 'pkg', 'b', 'build')}/',
-                ),
-              ),
-            );
-          } finally {
-            await SandboxManager.reset();
-          }
-        },
+      final pin = '--ro-bind $pkgDir $pkgDir';
+      expect(wrapped, contains(pin));
+      // Beneath the write root's own bind, and so beneath the tmpfs too.
+      expect(
+        wrapped.indexOf(pin),
+        lessThan(wrapped.indexOf('--bind $ROOT $ROOT')),
       );
+      expect(countMounts(wrapped, ['--tmpfs', build]), greaterThan(0));
+    });
 
-      test('seeds the ancestor pins from a collapsed directory', () async {
-        // Every tmpfs the collapse adds is an ordinary read-deny unit, so the
-        // directories between it and the allowed write root are pinned: the
-        // package directory above a collapsed build/ cannot be renamed aside to
-        // strip the deny off it.
-        final pkgDir = join(ROOT, 'pkg', 'a');
-        final build = join(pkgDir, 'build');
+    test(
+      'refuses to rename the package directory above a collapsed build directory',
+      skip: isLinux && bwrapCanNamespace()
+          ? null
+          : 'bwrap cannot create namespaces',
+      () async {
+        final pkgDir = join(ROOT, 'pkg', 'b');
         final wrapped = await wrapCommandWithSandboxLinux(
           LinuxSandboxParams(
-            command: 'echo hello',
+            command:
+                "sh -c 'echo BOOTED; mv $pkgDir $pkgDir-moved 2>&1; echo DONE'",
             needsNetworkRestriction: false,
             readConfig: FsReadRestrictionConfig(
               denyOnly: expandReadDenyGlobLinux(join(ROOT, '**/build/**'), []),
@@ -2633,255 +2661,217 @@ void main() {
             ),
           ),
         );
+        final result = spawnSync(wrapped, [], {
+          'shell': true,
+          'encoding': 'utf8',
+          'timeout': 15000,
+        });
 
-        final pin = '--ro-bind $pkgDir $pkgDir';
-        expect(wrapped, contains(pin));
-        // Beneath the write root's own bind, and so beneath the tmpfs too.
+        expect((result.stderr ?? '') as String, isNot(contains('bwrap:')));
+        expect(result.stdout as String, contains('BOOTED'));
+        expect(result.stdout as String, contains('DONE'));
         expect(
-          wrapped.indexOf(pin),
-          lessThan(wrapped.indexOf('--bind $ROOT $ROOT')),
+          result.stdout as String,
+          matches(RegExp('busy', caseSensitive: false)),
         );
-        expect(countMounts(wrapped, ['--tmpfs', build]), greaterThan(0));
-      });
+        expect(existsSync('$pkgDir-moved'), false);
+      },
+    );
 
-      test(
-        'refuses to rename the package directory above a collapsed build directory',
-        skip: bwrapCanNamespace() ? false : 'bwrap cannot create namespaces',
-        () async {
-          final pkgDir = join(ROOT, 'pkg', 'b');
-          final wrapped = await wrapCommandWithSandboxLinux(
-            LinuxSandboxParams(
-              command:
-                  "sh -c 'echo BOOTED; mv $pkgDir $pkgDir-moved 2>&1; echo DONE'",
-              needsNetworkRestriction: false,
-              readConfig: FsReadRestrictionConfig(
-                denyOnly: expandReadDenyGlobLinux(
-                  join(ROOT, '**/build/**'),
-                  [],
-                ),
-                allowWithinDeny: [],
-              ),
-              writeConfig: FsWriteRestrictionConfig(
-                allowOnly: [ROOT],
-                denyWithinAllow: [],
-              ),
+    test(
+      'restores a write path read-only when a write deny inside a collapsed directory is dropped',
+      () async {
+        // The collapsed tmpfs hides the write deny's own destination, so that
+        // bind is dropped rather than re-exposing the read-denied directory
+        // around it — and the allowed write path the tmpfs restored beneath that
+        // destination comes back read-only, where the deny leaves it.
+        final build = join(ROOT, 'pkg', 'c', 'build');
+        final denied = join(build, 'nested');
+        final writable = join(denied, 'out');
+        mkdirSync(writable, {'recursive': true});
+        final wrapped = await wrapCommandWithSandboxLinux(
+          LinuxSandboxParams(
+            command: 'echo hello',
+            needsNetworkRestriction: false,
+            readConfig: FsReadRestrictionConfig(
+              denyOnly: expandReadDenyGlobLinux(join(ROOT, '**/build/**'), []),
+              allowWithinDeny: [],
             ),
-          );
-          final result = spawnSync(wrapped, [], {
-            'shell': true,
-            'encoding': 'utf8',
-            'timeout': 15000,
-          });
+            writeConfig: FsWriteRestrictionConfig(
+              allowOnly: [ROOT, writable],
+              denyWithinAllow: [denied],
+            ),
+          ),
+        );
 
-          expect((result.stderr ?? '') as String, isNot(contains('bwrap:')));
-          expect(result.stdout as String, contains('BOOTED'));
-          expect(result.stdout as String, contains('DONE'));
-          expect(
-            result.stdout as String,
-            matches(RegExp('busy', caseSensitive: false)),
-          );
-          expect(existsSync('$pkgDir-moved'), false);
-        },
-      );
+        final tmpfs = wrapped.lastIndexOf('--tmpfs $build ');
+        expect(tmpfs, greaterThan(-1));
+        // The deny's own bind is dropped (its ancestor pin, spelled the same,
+        // sits beneath the write root's bind, so only what follows the tmpfs
+        // counts).
+        expect(wrapped.indexOf('--ro-bind $denied $denied', tmpfs), -1);
+        // The tmpfs put the write path back writable; the dropped bind puts it
+        // back read-only on top, which is where the deny leaves it.
+        final writableBind = wrapped.indexOf(
+          '--bind $writable $writable',
+          tmpfs,
+        );
+        final readOnlyRestore = wrapped.lastIndexOf(
+          '--ro-bind $writable $writable',
+        );
+        expect(writableBind, greaterThan(tmpfs));
+        expect(readOnlyRestore, greaterThan(writableBind));
+      },
+    );
 
-      test(
-        'restores a write path read-only when a write deny inside a collapsed directory is dropped',
-        () async {
-          // The collapsed tmpfs hides the write deny's own destination, so that
-          // bind is dropped rather than re-exposing the read-denied directory
-          // around it — and the allowed write path the tmpfs restored beneath that
-          // destination comes back read-only, where the deny leaves it.
-          final build = join(ROOT, 'pkg', 'c', 'build');
-          final denied = join(build, 'nested');
-          final writable = join(denied, 'out');
-          mkdirSync(writable, {'recursive': true});
+    test(
+      'leaves a masked file inside a collapsed directory to its mask',
+      () async {
+        // The dropped write-deny bind restores what the tmpfs put back beneath
+        // it, but never a masked file: binding the real file read-only there
+        // would land above its mask and serve the real bytes.
+        final build = join(ROOT, 'pkg', 'a', 'build');
+        final secret = join(build, 'cred.json');
+        writeFileSync(secret, 'REAL-CREDENTIAL\n');
+        final store = mkdtempSync(join(tmpdir(), 'deny-glob-store-'));
+        final fake = join(store, 'cred.json.fake');
+        writeFileSync(fake, 'SENTINEL\n');
+        try {
           final wrapped = await wrapCommandWithSandboxLinux(
             LinuxSandboxParams(
               command: 'echo hello',
               needsNetworkRestriction: false,
               readConfig: FsReadRestrictionConfig(
-                denyOnly: expandReadDenyGlobLinux(
-                  join(ROOT, '**/build/**'),
-                  [],
-                ),
+                denyOnly: expandReadDenyGlobLinux(join(ROOT, '**/build/**'), [
+                  secret,
+                ]),
                 allowWithinDeny: [],
               ),
               writeConfig: FsWriteRestrictionConfig(
-                allowOnly: [ROOT, writable],
-                denyWithinAllow: [denied],
+                allowOnly: [ROOT, secret],
+                denyWithinAllow: [build],
+              ),
+              maskedFileBinds: [(realPath: secret, fakePath: fake)],
+              maskedFileStoreDir: store,
+            ),
+          );
+
+          expect(wrapped, contains('--ro-bind $fake $secret'));
+          expect(wrapped, isNot(contains('--ro-bind $secret $secret')));
+          final mask = wrapped.lastIndexOf('--ro-bind $fake $secret');
+          expect(wrapped.indexOf('--bind $secret $secret', mask), -1);
+        } finally {
+          rmSync(store, {'recursive': true, 'force': true});
+          rmSync(secret, {'force': true});
+        }
+      },
+    );
+
+    test(
+      'leaves a pattern without a trailing /** to collapse only among its own matches',
+      () {
+        // **/*.out matches files only: nothing to collapse under.
+        final pattern = join(ROOT, '**/*.out');
+        final mounts = expandReadDenyGlobLinux(pattern, []);
+        expect(mounts.length, expandGlobPattern(pattern).length);
+        expect(mounts.length, PKGS.length * 6);
+      },
+    );
+
+    test(
+      'reaches bwrap as directory tmpfs mounts, and a non-glob deny is untouched',
+      () async {
+        final literalFile = join(ROOT, 'pkg', 'a', 'index.ts');
+        try {
+          final wrapped = await SandboxManager.wrapWithSandbox(
+            'echo hello',
+            null,
+            PartialSandboxRuntimeConfig(
+              filesystem: FilesystemConfig(
+                denyRead: [
+                  FilesystemPathSpelling(join(ROOT, '**/build/**')),
+                  FilesystemPathSpelling(literalFile),
+                ],
+                allowWrite: [],
+                denyWrite: [],
               ),
             ),
           );
 
-          final tmpfs = wrapped.lastIndexOf('--tmpfs $build ');
-          expect(tmpfs, greaterThan(-1));
-          // The deny's own bind is dropped (its ancestor pin, spelled the same,
-          // sits beneath the write root's bind, so only what follows the tmpfs
-          // counts).
-          expect(wrapped.indexOf('--ro-bind $denied $denied', tmpfs), -1);
-          // The tmpfs put the write path back writable; the dropped bind puts it
-          // back read-only on top, which is where the deny leaves it.
-          final writableBind = wrapped.indexOf(
-            '--bind $writable $writable',
-            tmpfs,
-          );
-          final readOnlyRestore = wrapped.lastIndexOf(
-            '--ro-bind $writable $writable',
-          );
-          expect(writableBind, greaterThan(tmpfs));
-          expect(readOnlyRestore, greaterThan(writableBind));
-        },
-      );
-
-      test(
-        'leaves a masked file inside a collapsed directory to its mask',
-        () async {
-          // The dropped write-deny bind restores what the tmpfs put back beneath
-          // it, but never a masked file: binding the real file read-only there
-          // would land above its mask and serve the real bytes.
-          final build = join(ROOT, 'pkg', 'a', 'build');
-          final secret = join(build, 'cred.json');
-          writeFileSync(secret, 'REAL-CREDENTIAL\n');
-          final store = mkdtempSync(join(tmpdir(), 'deny-glob-store-'));
-          final fake = join(store, 'cred.json.fake');
-          writeFileSync(fake, 'SENTINEL\n');
-          try {
-            final wrapped = await wrapCommandWithSandboxLinux(
-              LinuxSandboxParams(
-                command: 'echo hello',
-                needsNetworkRestriction: false,
-                readConfig: FsReadRestrictionConfig(
-                  denyOnly: expandReadDenyGlobLinux(join(ROOT, '**/build/**'), [
-                    secret,
-                  ]),
-                  allowWithinDeny: [],
+          for (final pkg in PKGS) {
+            expect(
+              countMounts(wrapped, [
+                '--tmpfs',
+                join(ROOT, 'pkg', pkg, 'build'),
+              ]),
+              greaterThan(0),
+            );
+          }
+          for (final pkg in PKGS) {
+            expect(
+              wrapped,
+              isNot(
+                contains(
+                  '--ro-bind /dev/null ${join(ROOT, 'pkg', pkg, 'build')}/',
                 ),
-                writeConfig: FsWriteRestrictionConfig(
-                  allowOnly: [ROOT, secret],
-                  denyWithinAllow: [build],
-                ),
-                maskedFileBinds: [(realPath: secret, fakePath: fake)],
-                maskedFileStoreDir: store,
               ),
             );
-
-            expect(wrapped, contains('--ro-bind $fake $secret'));
-            expect(wrapped, isNot(contains('--ro-bind $secret $secret')));
-            final mask = wrapped.lastIndexOf('--ro-bind $fake $secret');
-            expect(wrapped.indexOf('--bind $secret $secret', mask), -1);
-          } finally {
-            rmSync(store, {'recursive': true, 'force': true});
-            rmSync(secret, {'force': true});
           }
-        },
-      );
+          expect(wrapped, contains('--ro-bind /dev/null $literalFile'));
+        } finally {
+          await SandboxManager.reset();
+        }
+      },
+    );
 
-      test(
-        'leaves a pattern without a trailing /** to collapse only among its own matches',
-        () {
-          // **/*.out matches files only: nothing to collapse under.
-          final pattern = join(ROOT, '**/*.out');
-          final mounts = expandReadDenyGlobLinux(pattern, []);
-          expect(mounts.length, expandGlobPattern(pattern).length);
-          expect(mounts.length, PKGS.length * 6);
-        },
-      );
-
-      test(
-        'reaches bwrap as directory tmpfs mounts, and a non-glob deny is untouched',
-        () async {
-          final literalFile = join(ROOT, 'pkg', 'a', 'index.ts');
-          try {
-            final wrapped = await SandboxManager.wrapWithSandbox(
+    test(
+      'mounts nothing for a pattern whose base is not there, beneath a write root',
+      () async {
+        // Denied, a base made between the walk and the mounts, as here, would be
+        // an empty tmpfs over a part of the write root, and what the command
+        // writes there would be lost.
+        final absent = join(ROOT, 'absent');
+        Future<String> wrap(List<String> denyRead) =>
+            SandboxManager.wrapWithSandbox(
               'echo hello',
               null,
               PartialSandboxRuntimeConfig(
                 filesystem: FilesystemConfig(
                   denyRead: [
-                    FilesystemPathSpelling(join(ROOT, '**/build/**')),
-                    FilesystemPathSpelling(literalFile),
+                    for (final p in denyRead) FilesystemPathSpelling(p),
                   ],
-                  allowWrite: [],
+                  allowWrite: [FilesystemPathSpelling(ROOT)],
                   denyWrite: [],
                 ),
               ),
             );
-
-            for (final pkg in PKGS) {
-              expect(
-                countMounts(wrapped, [
-                  '--tmpfs',
-                  join(ROOT, 'pkg', pkg, 'build'),
-                ]),
-                greaterThan(0),
-              );
-            }
-            for (final pkg in PKGS) {
-              expect(
-                wrapped,
-                isNot(
-                  contains(
-                    '--ro-bind /dev/null ${join(ROOT, 'pkg', pkg, 'build')}/',
-                  ),
-                ),
-              );
-            }
-            expect(wrapped, contains('--ro-bind /dev/null $literalFile'));
-          } finally {
-            await SandboxManager.reset();
-          }
-        },
-      );
-
-      test(
-        'mounts nothing for a pattern whose base is not there, beneath a write root',
-        () async {
-          // Denied, a base made between the walk and the mounts, as here, would be
-          // an empty tmpfs over a part of the write root, and what the command
-          // writes there would be lost.
-          final absent = join(ROOT, 'absent');
-          Future<String> wrap(List<String> denyRead) =>
-              SandboxManager.wrapWithSandbox(
-                'echo hello',
-                null,
-                PartialSandboxRuntimeConfig(
-                  filesystem: FilesystemConfig(
-                    denyRead: [
-                      for (final p in denyRead) FilesystemPathSpelling(p),
-                    ],
-                    allowWrite: [FilesystemPathSpelling(ROOT)],
-                    denyWrite: [],
-                  ),
-                ),
-              );
-          final readdirSync = fs.readdirSync;
-          void restore() => fs.readdirSync = readdirSync;
-          fs.readdirSync = (String path, {bool withFileTypes = true}) {
-            try {
-              return readdirSync(path, withFileTypes: withFileTypes);
-            } finally {
-              if (path == absent) mkdirSync(absent);
-            }
-          };
+        final readdirSync = fs.readdirSync;
+        void restore() => fs.readdirSync = readdirSync;
+        fs.readdirSync = (String path, {bool withFileTypes = true}) {
           try {
-            final wrapped = await wrap([join(absent, '**/*.out')]);
-            restore();
-
-            expect(existsSync(absent), true);
-            expect(wrapped, await wrap([]));
+            return readdirSync(path, withFileTypes: withFileTypes);
           } finally {
-            restore();
-            await SandboxManager.reset();
-            rmSync(absent, {'recursive': true, 'force': true});
+            if (path == absent) mkdirSync(absent);
           }
-        },
-      );
-    },
-  );
+        };
+        try {
+          final wrapped = await wrap([join(absent, '**/*.out')]);
+          restore();
+
+          expect(existsSync(absent), true);
+          expect(wrapped, await wrap([]));
+        } finally {
+          restore();
+          await SandboxManager.reset();
+          rmSync(absent, {'recursive': true, 'force': true});
+        }
+      },
+    );
+  });
 
   group(
     'expandReadDenyGlobLinux (coverage behind a directory link)',
-    skip: isLinux ? false : 'requires Linux',
+    skip: isLinux ? null : 'requires Linux',
     () {
       // The walk descends symlinked directories and reports each match where it
       // really lives, so a deny glob covers what it matches whichever spelling
@@ -2892,7 +2882,8 @@ void main() {
       late String LNK;
       late String ABS;
       late String REALKEY;
-      final CAN_RUN = bwrapCanNamespace();
+      // Dart: a skipped group's body still runs, and the probe needs bwrap.
+      final CAN_RUN = isLinux && bwrapCanNamespace();
 
       setUpAll(() {
         ROOT = realpathSync(mkdtempSync(join(tmpdir(), 'deny-glob-links-')));
@@ -3068,7 +3059,7 @@ void main() {
       for (final (why, tail) in LINK_PATTERNS)
         test(
           'serves the file through neither spelling when $why',
-          skip: CAN_RUN ? false : 'bwrap cannot create namespaces',
+          skip: CAN_RUN ? null : 'bwrap cannot create namespaces',
           () async {
             final wrapped = await wrapCommandWithSandboxLinux(
               LinuxSandboxParams(
