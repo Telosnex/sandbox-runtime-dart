@@ -52,12 +52,12 @@ class SentinelRegistry {
       );
 
   /**
-   * Like [register], but with a caller-minted sentinel instead of the
+   * Like {@link register}, but with a caller-minted sentinel instead of the
    * default `fake_value_<uuid4>` — used when the fake must keep the real
    * value's shape (e.g. a structurally valid JWT for `decode: "jwt"`), so
    * client-side parsers inside the sandbox don't choke on it.
    *
-   * Same idempotency contract as [register]: if `name` is already
+   * Same idempotency contract as {@link register}: if `name` is already
    * registered, the EXISTING sentinel is returned (and `sentinel` discarded)
    * so a re-register never invalidates a fake the sandboxed process has
    * already read. The caller must mint sentinels with enough entropy that
@@ -101,7 +101,7 @@ class SentinelRegistry {
   /**
    * Sentinel→real byte pairs for every credential whose `injectHosts`
    * cover `destHost` — the substitution set the body transform scans for.
-   * Same per-credential gating as [substituteInHeaders]. Buffers are
+   * Same per-credential gating as {@link substituteInHeaders}. Buffers are
    * built per call so a re-registered credential's updated real value is
    * always current.
    */

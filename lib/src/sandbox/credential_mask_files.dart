@@ -32,6 +32,8 @@ import 'credential_sentinel.dart' show SentinelRegistry;
  * from env-var names so a credential file at path `GH_TOKEN` cannot collide
  * with the env var `GH_TOKEN`.
  */
+// ignore: unused_element
+const String _FILE_KEY_PREFIX = 'file:';
 
 /** One masked file's bind mapping for the platform builder. */
 class MaskedFileBind {

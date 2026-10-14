@@ -118,6 +118,7 @@ void registerAwsPairs(
   'pending port of src/sandbox/credential-aws-pairs.ts',
 );
 
+/** Allowed values: `'deny'` | `'passthrough'`. */
 typedef Sigv4Policy = String;
 
 ({Sigv4Policy streaming, Sigv4Policy presigned, Sigv4Policy sigv4a})
@@ -188,7 +189,7 @@ typedef PlanSigv4 =
     );
 
 /**
- * Build the [PlanSigv4] hook from the session's pair registry and
+ * Build the {@link PlanSigv4} hook from the session's pair registry and
  * configured policies. `matches` is the same host matcher used for
  * sentinel substitution, so injectHosts gating is consistent across both.
  */
