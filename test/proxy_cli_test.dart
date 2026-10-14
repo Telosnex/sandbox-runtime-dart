@@ -486,9 +486,6 @@ Future<void> main() async {
           skip: !SERVES_EMITTED_CONNECTIONS || (pin && TASKSET == null)
               ? true
               : null,
-          tags: [
-            'pending',
-          ], // Dart: descriptor-form cases time out after 20s on macOS: handed listener/decider fds not served (handleFd/stdio>3 path?)
         );
       }
     }

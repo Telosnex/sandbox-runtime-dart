@@ -115,9 +115,9 @@ class TLSSocket extends net.NodeSocket {
       final SecureSocket secured;
       try {
         secured = await SecureSocket.secureServer(
-          isFdSocket(raw) ? await _bridgeSocket(raw) : raw,
+          isFdSocket(raw) ? await _bridgeSocket(raw, buffered, pumpUnder) : raw,
           context,
-          bufferedData: buffered,
+          bufferedData: isFdSocket(raw) ? null : buffered,
           supportedProtocols: protocols,
           requestClientCertificate: requestCert,
           requireClientCertificate: requestCert && rejectUnauthorized,
@@ -696,7 +696,16 @@ bool _sameBytes(List<int> left, List<int> right) =>
 /// go to the duplex.
 /// A loopback dart:io socket standing for [raw], a descriptor socket that
 /// dart:io's TLS cannot take over: bytes are pumped both ways.
-Future<Socket> _bridgeSocket(Socket raw) async {
+Future<Socket> _bridgeSocket(
+  Socket raw,
+  Uint8List buffered,
+  void Function(
+    void Function(List<int>),
+    void Function(),
+    void Function(Object),
+  )
+  pumpUnder,
+) async {
   final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
   final accepted = server.first;
   final client = await Socket.connect(
@@ -706,12 +715,8 @@ Future<Socket> _bridgeSocket(Socket raw) async {
   final far = await accepted;
   unawaited(server.close());
   far.setOption(SocketOption.tcpNoDelay, true);
-  raw.listen(
-    far.add,
-    onDone: () => unawaited(far.close()),
-    onError: (Object _) => far.destroy(),
-    cancelOnError: true,
-  );
+  if (buffered.isNotEmpty) far.add(buffered);
+  pumpUnder(far.add, () => unawaited(far.close()), (Object _) => far.destroy());
   far.listen(
     raw.add,
     onDone: () => unawaited(raw.close()),

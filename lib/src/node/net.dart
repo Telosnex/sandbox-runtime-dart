@@ -924,6 +924,21 @@ class NodeSocket extends stream.Duplex {
     return buf;
   }
 
+  /// Re-points the held-back read subscription of the socket under this one
+  /// at [onData] (for a bridge) and resumes it.
+  void pumpUnder(
+    void Function(List<int>) onData,
+    void Function() onDone,
+    void Function(Object) onError,
+  ) {
+    final sub = _under?._subscription;
+    if (sub == null) return;
+    sub.onData(onData);
+    sub.onDone(onDone);
+    sub.onError((Object e) => onError(e));
+    sub.resume();
+  }
+
   Future<void> _serverTlsOver(
     NodeSocket under,
     Future<Socket> Function(Socket raw, Uint8List buffered) secure,
