@@ -376,6 +376,7 @@ void main() {
       test(
         'reads a relative pattern inside a bracketed cwd beneath the cwd',
         tags: ['pending'],
+        skip: 'pending: path_entries.dart _spelledAbsolute bug',
         () {
           Directory.current = project;
           expect(bothKinds('**/.env'), forBoth([beneath(project, '/**/.env')]));

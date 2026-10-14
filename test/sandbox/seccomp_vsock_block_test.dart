@@ -120,6 +120,7 @@ void main() {
     test(
       'is refused when the network is not restricted',
       tags: ['pending'],
+      skip: 'pending: VM userns restriction (apply-seccomp setgroups EPERM)',
       () async {
         final wrapped = await wrapCommandWithSandboxLinux(
           LinuxSandboxParams(
@@ -189,9 +190,9 @@ void main() {
         expect(r.status, 0);
       },
       tags: ['pending'],
-      skip: bwrapCanNamespaceNetwork()
-          ? false
-          : 'bwrap cannot namespace network',
+      skip: !isLinux || !bwrapCanNamespaceNetwork()
+          ? 'bwrap cannot namespace network'
+          : 'pending: VM userns restriction (apply-seccomp setgroups EPERM)',
       timeout: const Timeout(Duration(milliseconds: 40000)),
     );
   });
