@@ -13,7 +13,7 @@ import 'dart:convert';
 
 import 'node/commander.dart' show Command;
 import 'node/console.dart' as console;
-import 'node/errno.dart' show NodeException;
+import 'node/errno.dart' show errorMessage;
 import 'node/globals.dart';
 import 'node/net.dart' show NodeAddress, isIPv4, isIPv6;
 import 'node/process.dart' as process;
@@ -186,8 +186,7 @@ Future<void> runProxyCli(List<String> argv) async {
       'srt proxy: serving ${a != null && a is! String ? '${(a as NodeAddress).address}:${a.port}' : 'fd ${(listen as ProxyListenFd).fd}'}',
     );
   } catch (e) {
-    // Dart: only a NodeException has Error's message; others print whole.
-    fail(e is NodeException ? e.message : '$e');
+    fail(errorMessage(e));
   }
 }
 

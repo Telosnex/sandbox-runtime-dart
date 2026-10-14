@@ -25,7 +25,7 @@ import 'node/os.dart' as os;
 import 'node/abort.dart' show AbortController;
 import 'node/console.dart' as console;
 import 'node/emitted_http.dart' show runsOnBun;
-import 'node/errno.dart' show NodeError, NodeException;
+import 'node/errno.dart' show NodeError, errorMessage;
 import 'node/globals.dart';
 import 'node/process.dart' as process;
 import 'node/stream.dart' as stream;
@@ -142,7 +142,7 @@ stream.Readable _openControlFd(int fd) {
         );
       }
       logForDebugging(
-        'Control fd $fd is not a stream socket (${err is NodeError ? err.message : '$err'}); reading it through fs',
+        'Control fd $fd is not a stream socket (${errorMessage(err)}); reading it through fs',
       );
     }
   }
@@ -267,7 +267,7 @@ Future<void> _main(List<String> argv) async {
                     "`srt-sandbox` user's SID, so your network is unaffected.",
           );
         } catch (e) {
-          console.error('Error: ${_messageOf(e)}');
+          console.error('Error: ${errorMessage(e)}');
           process.exit(1);
         }
       });
@@ -295,7 +295,7 @@ Future<void> _main(List<String> argv) async {
           }
           console.log('WFP filters and `srt-sandbox` account removed.');
         } catch (e) {
-          console.error('Error: ${_messageOf(e)}');
+          console.error('Error: ${errorMessage(e)}');
           process.exit(1);
         }
       });
@@ -450,7 +450,7 @@ Future<void> _main(List<String> argv) async {
               // The channel did deliver. The config last applied stays in
               // force, so the command keeps running under it.
               console.error(
-                'Error reading control fd $controlFd: ${_messageOf(err)}. The control channel is closed; no further updates will be applied.',
+                'Error reading control fd $controlFd: ${errorMessage(err)}. The control channel is closed; no further updates will be applied.',
               );
               return;
             }
@@ -458,13 +458,13 @@ Future<void> _main(List<String> argv) async {
             // not open, found one step later. The caller is sending updates
             // into a channel srt cannot read.
             console.error(
-              'Error: control fd $controlFd failed before delivering an update: ${_messageOf(err)}. Refusing to run the command without the control channel it asks for.',
+              'Error: control fd $controlFd failed before delivering an update: ${errorMessage(err)}. Refusing to run the command without the control channel it asks for.',
             );
             controlChannelFailed = true;
             if (child == null) {
               process.exit(1);
             }
-            child!.kill('SIGTERM');
+            child.kill('SIGTERM');
             // The child's own exit is what exits srt; this covers a command
             // that ignores SIGTERM.
             setTimeout(() => child?.kill('SIGKILL'), _KILL_GRACE_MS).unref();
@@ -484,12 +484,12 @@ Future<void> _main(List<String> argv) async {
               // sandbox — quietly go nowhere.
               console.error(
                 'Error: --control-fd $controlFd is not usable: '
-                '${_messageOf(err)}. '
+                '${errorMessage(err)}. '
                 'Refusing to run the command without the control channel it asks for.',
               );
               process.exit(1);
             }
-            controlStream!.on('error', onControlError);
+            controlStream.on('error', onControlError);
           }
 
           // Until there is a child to pass an interrupt on to, it stops the
@@ -640,7 +640,7 @@ Future<void> _main(List<String> argv) async {
           });
 
           child.on('error', (Object error) {
-            console.error('Failed to execute command: ${_messageOf(error)}');
+            console.error('Failed to execute command: ${errorMessage(error)}');
             process.exit(1);
           });
 
@@ -653,18 +653,13 @@ Future<void> _main(List<String> argv) async {
             child?.kill('SIGTERM');
           });
         } catch (error) {
-          console.error('Error: ${_messageOf(error)}');
+          console.error('Error: ${errorMessage(error)}');
           process.exit(1);
         }
       });
 
   await program.parse(argv);
 }
-
-// Dart: JS `error instanceof Error ? error.message : String(error)`; only a
-// NodeException carries Error's message, so anything else prints whole.
-String _messageOf(Object error) =>
-    error is NodeException ? error.message : '$error';
 
 /// The `srt` entry (upstream runs `main()` when cli.js loads).
 Future<void> main(List<String> argv) async {
