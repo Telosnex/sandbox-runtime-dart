@@ -1,5 +1,5 @@
 // Ported from sandbox-runtime test/sandbox/proxy-env-vars.test.ts @ 24eb39e.
-// ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments
+// ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments, prefer_adjacent_string_concatenation, prefer_interpolation_to_compose_strings
 import 'dart:async';
 import 'dart:convert';
 
