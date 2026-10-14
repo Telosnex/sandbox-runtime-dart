@@ -9,6 +9,7 @@ import '../node/process.dart' as process;
 import 'package:path/path.dart' as path;
 import '../utils/real_path.dart' show realPathOf;
 import 'sandbox_utils.dart' show DANGEROUS_FILES, getDangerousDirectories;
+import '../utils/debug.dart' show logForDebugging;
 import 'sandbox_config.dart' show SeccompConfig;
 import 'sandbox_schemas.dart'
     show FsReadRestrictionConfig, FsWriteRestrictionConfig;
@@ -157,7 +158,9 @@ List<String> linuxGetCwdMandatoryDenyPaths([bool allowGitConfig = false]) =>
       final cwd = process.cwd();
       final denyPaths = <String>[
         ...DANGEROUS_FILES.map((file) => path.resolve(cwd, file)),
-        ...getDangerousDirectories().map((directory) => path.resolve(cwd, directory)),
+        ...getDangerousDirectories().map(
+          (directory) => path.resolve(cwd, directory),
+        ),
       ];
       final dotGitPath = path.resolve(cwd, '.git');
       var dotGitIsDirectory = false;
@@ -222,6 +225,9 @@ List<String> unreadableDirectories(String stderr, String cwd, int maxDepth) {
 
 const int CAP_SETFCAP = 31;
 
+BigInt? _boundingCapabilities;
+bool _capabilityReadFailureLogged = false;
+
 /**
  * Whether this process holds `cap` in its bounding or inheritable set (Linux).
  *
@@ -232,9 +238,31 @@ const int CAP_SETFCAP = 31;
  * and CapEff do not, and for any process itself reached by exec as root they
  * merely repeat the union.
  */
-bool processHasBoundingCapability(int cap) => throw UnimplementedError(
-  'pending port of src/sandbox/linux-sandbox-utils.ts',
-);
+bool processHasBoundingCapability(int cap) {
+  var bits = _boundingCapabilities;
+  if (bits == null) {
+    var failure = 'has no CapBnd or CapInh line';
+    try {
+      bits = boundingCapabilitiesFromStatus(
+        fs.readFileSync('/proc/self/status', 'utf8'),
+      );
+      _boundingCapabilities = bits;
+    } catch (error) {
+      failure = 'could not be read ($error)';
+    }
+    if (bits == null) {
+      if (!_capabilityReadFailureLogged) {
+        _capabilityReadFailureLogged = true;
+        logForDebugging(
+          '[Sandbox Linux] /proc/self/status $failure - assuming this process holds no capabilities',
+          level: 'warn',
+        );
+      }
+      return false;
+    }
+  }
+  return ((bits >> BigInt.from(cap)) & BigInt.one) == BigInt.one;
+}
 
 /**
  * The capability set an execve gives a euid-0 caller's child, parsed out of a
