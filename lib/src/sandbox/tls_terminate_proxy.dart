@@ -17,7 +17,6 @@ library;
 
 import 'dart:async';
 import 'dart:convert' show latin1;
-import 'dart:io' show X509Certificate;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -870,7 +869,7 @@ _UpstreamLeg _createUpstreamLeg(TerminateTarget target) {
     // check does not depend on how a runtime derives it from the Host header
     // (some verify against `Host` verbatim, so a non-default port would
     // never match a SAN); `servername` still carries the name for SNI.
-    checkServerIdentity: (String _host, X509Certificate? cert) =>
+    checkServerIdentity: (String _host, Object? cert) =>
         tls.checkServerIdentity(target.hostname, cert),
     ca: target.upstreamCA,
   );
