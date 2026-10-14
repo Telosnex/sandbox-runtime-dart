@@ -359,7 +359,7 @@ void accessSync(String path, [int mode = 0]) {
     throw nodeError('EACCES', 'access', path);
 }
 
-int openSync(String path, int flags, [int mode = 0o666]) {
+int openSync(String path, int flags, [int mode = 438]) {
   final libc = _libc;
   if (libc == null) throw UnimplementedError('openSync on Windows');
   final open = libc.lookupFunction<_OpenN, _OpenD>('open');
