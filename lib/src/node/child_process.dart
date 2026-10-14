@@ -376,6 +376,18 @@ _Launched _launch(
       var spawnArgv = argv;
       var statusRead = -1, statusWrite = -1;
       final helper = _spawnHelper();
+      if (helper == null && io.Platform.isLinux) {
+        // Only the stdio slots reach the child, as in Node: the VM's own
+        // descriptors are not all close-on-exec.
+        try {
+          _libc!.lookupFunction<
+            Int32 Function(Pointer<Void>, Int32),
+            int Function(Pointer<Void>, int)
+          >('posix_spawn_file_actions_addclosefrom_np')(actions, specs.length);
+        } on ArgumentError {
+          // glibc < 2.34
+        }
+      }
       if (helper != null) {
         final st = arena<Int32>(2);
         final pipe2 = _libc!
@@ -399,7 +411,7 @@ _Launched _launch(
         statusWrite = dup;
         final hargs = [
           helper,
-          '$statusWrite',
+          '$statusWrite:${specs.length}',
           file,
           ...List.generate(args.length + 1, (i) => argv[i].toDartString()),
         ];
