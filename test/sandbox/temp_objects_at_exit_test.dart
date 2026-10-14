@@ -178,7 +178,7 @@ Future<void> main() async {
 
       /// An initialize() that is rejected after it has made its CA.
       String rejected(String args) =>
-          'await SandboxManager.initialize($args).then((_) => process.exit(3), onError: (Object _) {});';
+          'await SandboxManager.initialize($args).then<void>((_) => process.exit(3), onError: (Object _) {});';
       final NO_BWRAP = rejected(
         "{...config, 'bwrapPath': '/nonexistent/bwrap'}",
       );
