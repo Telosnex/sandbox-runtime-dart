@@ -502,8 +502,6 @@ void main() {
 
       test(
         'terminating proxy cannot reach an mTLS upstream (502): it has no client cert to present',
-        // Dart: node/tls.dart (https.createServer) ignores requestCert/rejectUnauthorized, so the upstream never demands a client cert.
-        tags: ['pending'],
         () async {
           final proxy = createHttpProxyServer(
             _HttpOptions(
@@ -641,8 +639,6 @@ void main() {
 
       test(
         'shouldTerminateTLS=false without a client cert still fails: the upstream really demands mTLS',
-        // Dart: node/tls.dart (https.createServer) ignores requestCert/rejectUnauthorized, so the upstream never demands a client cert.
-        tags: ['pending'],
         () async {
           // Negative control for the test above — proves the 200 there can only
           // come from curl's client cert being presented and verified end-to-end.
@@ -680,8 +676,6 @@ void main() {
 
       test(
         'shouldTerminateTLS=true keeps terminating (explicit default)',
-        // Dart: node/tls.dart (https.createServer) ignores requestCert/rejectUnauthorized, so the upstream never demands a client cert.
-        tags: ['pending'],
         () async {
           final proxy = createHttpProxyServer(
             _HttpOptions(

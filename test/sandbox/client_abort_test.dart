@@ -717,8 +717,6 @@ void main() {
 
     test(
       'oversized header block gets 431 (Node) or a silent close (Bun), never a crash',
-      // Dart: node/http.dart answers an oversized header block with 400, not 431.
-      tags: ['pending'],
       () async {
         uncaught.length = 0;
         var resp = '';
@@ -975,8 +973,6 @@ void main() {
   // teed-body wiring are otherwise unreachable by the plain-HTTP tests).
   group(
     'client aborts through the TLS-terminating path',
-    // Dart: testWithTls takes no tags; the first test leaks a SocketException (not a NodeError) from the aborted client body into tls_terminate_proxy.dart's `err as Error`.
-    tags: ['pending'],
     () {
       // Every case runs a TLS-terminating proxy: skipped where none can run.
       final test = testWithTls;
