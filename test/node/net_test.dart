@@ -33,6 +33,30 @@ Future<int> _closedPort() async {
 }
 
 void main() {
+  group('net Server extras', () {
+    test(
+      'getConnections counts open connections; handleFd is a descriptor',
+      () async {
+        final server = net.createServer();
+        final accepted = Completer<net.NodeSocket>();
+        server.on('connection', (net.NodeSocket s) => accepted.complete(s));
+        final port = await _listen(server);
+        expect(server.handleFd, isNotNull);
+        final client = net.connect({'host': '127.0.0.1', 'port': port});
+        await accepted.future.timeout(_wait);
+        final counted = Completer<List<Object?>>();
+        server.getConnections(
+          (Object? err, int n) => counted.complete([err, n]),
+        );
+        expect(await counted.future.timeout(_wait), [null, 1]);
+        client.destroy();
+        (await accepted.future).destroy();
+        await _close(server);
+        expect(server.handleFd, isNull);
+      },
+    );
+  });
+
   group('net Socket', () {
     test('a socket nobody reads stops reading past highWaterMark', () async {
       const sent = 16 << 20;

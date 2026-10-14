@@ -43,6 +43,36 @@ Future<Uint8List> _rawExchange(int port, List<int> request) async {
 
 void main() {
   group('raw HTTP/1.1 shim', () {
+    test('request option createConnection supplies the socket', () async {
+      final server = http.createServer();
+      server.on(
+        'request',
+        (http.IncomingMessage request, http.ServerResponse response) =>
+            response.end('ok'),
+      );
+      final (port, close) = await _listen(server);
+      var called = 0;
+      final done = Completer<String>();
+      http.request(
+        {
+          'host': '127.0.0.1',
+          'port': port,
+          'createConnection': (Object options) {
+            called++;
+            return net.connect({'host': '127.0.0.1', 'port': port});
+          },
+        },
+        (http.IncomingMessage r) {
+          final body = StringBuffer();
+          r.on('data', (Object? d) => body.write(utf8.decode(d as List<int>)));
+          r.on('end', () => done.complete(body.toString()));
+        },
+      ).end();
+      expect(await done.future.timeout(const Duration(seconds: 5)), 'ok');
+      expect(called, 1);
+      await close();
+    });
+
     test(
       'ClientRequest auth sends Basic, maxSockets allows parallel sockets',
       () async {

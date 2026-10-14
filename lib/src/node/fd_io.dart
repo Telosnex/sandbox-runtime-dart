@@ -163,6 +163,27 @@ void _readEntry(List<Object> args) async {
 Socket fdSocket(int fd, {bool readable = true, bool writable = true}) =>
     _FdSocket(fd, readable, writable);
 
+/// The descriptor of this process's listening socket bound to [address] and
+/// [port] (for a Unix-domain socket, [address] is the path), or null.
+/// dart:io does not expose it; this finds it by asking each descriptor.
+int? listeningFd(String address, int port) {
+  final c = _Libc();
+  for (var fd = 3; fd < 4096; fd++) {
+    try {
+      final name = _name(c, fd, false);
+      if (name.$2 != port || name.$1.address != address) continue;
+    } catch (_) {
+      continue;
+    }
+    try {
+      _name(c, fd, true);
+    } catch (_) {
+      return fd;
+    }
+  }
+  return null;
+}
+
 /// A listening stream descriptor as a dart:io [ServerSocket].
 ServerSocket fdServerSocket(int fd) => _FdServerSocket(fd);
 

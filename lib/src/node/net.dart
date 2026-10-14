@@ -927,6 +927,7 @@ class NodeServer extends EventEmitter {
   String? _unixPath;
   int? _port;
   String? _host;
+  int? _listenFd;
 
   bool get listening => _listening;
   bool get unrefed => _unrefed;
@@ -1005,6 +1006,7 @@ class NodeServer extends EventEmitter {
       if (fd != null) {
         // Node: listen on an already-open listening descriptor.
         final tcp = fdServerSocket(fd);
+        _listenFd = fd;
         _tcp = tcp;
         if (tcp.address.type == InternetAddressType.unix) {
           _unixPath = tcp.address.address;
@@ -1083,6 +1085,22 @@ class NodeServer extends EventEmitter {
     emit('listening');
   }
 
+  /// Node's `server._handle.fd`: the listening descriptor, or null when the
+  /// server is not listening or the descriptor cannot be found.
+  int? get handleFd {
+    if (!_listening) return null;
+    if (_listenFd != null) return _listenFd;
+    if (_unixPath != null) return listeningFd(_unixPath!, 0);
+    return listeningFd(_tcp!.address.address, _tcp!.port);
+  }
+
+  /// Node `server.getConnections(callback)`.
+  NodeServer getConnections(Function callback) {
+    final count = _connections.length;
+    scheduleMicrotask(() => applyListener(callback, [null, count]));
+    return this;
+  }
+
   /// Node `server.address()`: the path for a Unix-domain listener.
   Object? address() => !_listening
       ? null
@@ -1112,6 +1130,7 @@ class NodeServer extends EventEmitter {
       final unixPath = _unixPath;
       _tcp = null;
       _unixPath = null;
+      _listenFd = null;
       unawaited(
         tcp.close().then((_) async {
           // libuv unlinks a Unix-domain listener's path on close.

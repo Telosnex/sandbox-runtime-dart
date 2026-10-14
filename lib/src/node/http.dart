@@ -1005,7 +1005,25 @@ class ClientRequest extends events.EventEmitter {
         final lookup = _options['lookup'] as net.LookupFunction?;
         final net.NodeSocket created;
         final String ready;
-        if (_agent.socketPath != null || _options['socketPath'] != null) {
+        final createConnection = _options['createConnection'];
+        if (createConnection is Function) {
+          final made = Function.apply(createConnection, [
+            {
+              'host': host,
+              'hostname': host,
+              'port': port,
+              'path': socketPath,
+              'servername': servername,
+              'lookup': lookup,
+            },
+          ]);
+          if (made is! net.NodeSocket) {
+            throw ArgumentError('createConnection must return a socket');
+          }
+          created = made;
+          ready = secure ? 'secureConnect' : 'connect';
+        } else if (_agent.socketPath != null ||
+            _options['socketPath'] != null) {
           created = net.connect({
             'path': _agent.socketPath ?? _options['socketPath'] as String,
           });
@@ -1030,7 +1048,11 @@ class ClientRequest extends events.EventEmitter {
           ready = 'connect';
         }
         created.allowHalfOpen = true;
-        await events.once(created, ready);
+        if (createConnection is! Function ||
+            created.connecting ||
+            (created is node_tls.TLSSocket && !created.secureEstablished)) {
+          await events.once(created, ready);
+        }
         return created;
       });
       _lease = lease;
