@@ -216,4 +216,163 @@ Future<void> main() async {
       });
     });
   }
+
+  // ---------------------------------------------------------------------------
+  // End-to-end against a real JVM (needs a JDK >= 11 for the single-file
+  // source launcher). Skipped when none is available; CI installs one.
+  //
+  // `openjdk version "21.0.1"` / `java version "1.8.0_392"`
+  final java = _findJava();
+  final probe = path.join(
+    Directory.current.path,
+    'test',
+    'fixtures',
+    'java-proxy-agent',
+    'ProxyProbe.java',
+  );
+  group(
+    'agent inside a JVM',
+    skip: java == null || jarPath == null
+        ? 'JDK >= 11 and built agent jar required'
+        : false,
+    () {
+      // Same shape generateProxyEnvVars emits: percent-encoded username
+      // (base64 command suffix), hex token.
+      Map<String, String> proxyEnv(int proxyPort) => {
+        ...Platform.environment,
+        'JAVA_TOOL_OPTIONS': '-javaagent:$jarPath',
+        'HTTPS_PROXY':
+            'http://srt.YWJj%2Bx%3D%3D:deadbeef@localhost:$proxyPort',
+        'HTTP_PROXY': 'http://srt.YWJj%2Bx%3D%3D:deadbeef@localhost:$proxyPort',
+        'NO_PROXY':
+            'localhost,127.0.0.1,::1,169.254.0.0/16,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16',
+      };
+
+      test(
+        'translates the proxy env vars into system properties + Authenticator',
+        () async {
+          final r = await Process.run(java!, [
+            probe,
+            'props',
+            'localhost',
+            '3128',
+          ], environment: proxyEnv(3128));
+          final stdout = r.stdout.toString();
+          final stderr = r.stderr.toString();
+          expect(r.exitCode, 0);
+          expect(stderr, contains('Picked up JAVA_TOOL_OPTIONS'));
+          expect(stdout, contains('https.proxyHost=localhost'));
+          expect(stdout, contains('https.proxyPort=3128'));
+          expect(stdout, contains('http.proxyHost=localhost'));
+          expect(
+            stdout,
+            contains('jdk.http.auth.tunneling.disabledSchemes=\n'),
+          );
+          // Percent-decoded username, raw token; both requestor overloads answer;
+          // any other endpoint gets nothing.
+          expect(stdout, contains('auth.proxy=srt.YWJj+x==:deadbeef'));
+          expect(stdout, contains('auth.server=srt.YWJj+x=='));
+          expect(stdout, contains('auth.other=null'));
+          // NO_PROXY → nonProxyHosts: proxy for the world, direct for loopback and
+          // private ranges (172.16/12 expands to 172.16.* … 172.31.*).
+          expect(stdout, matches(RegExp(r'http\.nonProxyHosts=.*172\.31\.\*')));
+          expect(
+            stdout,
+            matches(RegExp(r'select\.https=\[HTTP @ localhost.*:3128\]')),
+          );
+          expect(stdout, contains('select.localhost=[DIRECT]'));
+          expect(stdout, contains('select.private=[DIRECT]'));
+        },
+      );
+
+      test('leaves explicitly set proxy properties alone', () async {
+        final env = proxyEnv(3128);
+        env['JAVA_TOOL_OPTIONS'] =
+            '-Dhttps.proxyHost=other -Dhttps.proxyPort=9 ${env['JAVA_TOOL_OPTIONS']}';
+        final r = await Process.run(java!, [
+          probe,
+          'props',
+          'localhost',
+          '3128',
+        ], environment: env);
+        expect(r.exitCode, 0);
+        expect(r.stdout.toString(), contains('https.proxyHost=other'));
+        expect(r.stdout.toString(), contains('https.proxyPort=9'));
+      });
+
+      test('does nothing without proxy env vars', () async {
+        final env = {
+          ...Platform.environment,
+          'JAVA_TOOL_OPTIONS': '-javaagent:$jarPath',
+        };
+        for (final k in [
+          'HTTPS_PROXY',
+          'https_proxy',
+          'HTTP_PROXY',
+          'http_proxy',
+          'NO_PROXY',
+          'no_proxy',
+        ]) {
+          env.remove(k);
+        }
+        final r = await Process.run(java!, [
+          probe,
+          'props',
+          'localhost',
+          '3128',
+        ], environment: env);
+        expect(r.exitCode, 0);
+        expect(r.stdout.toString(), contains('https.proxyHost=null'));
+        expect(r.stdout.toString(), contains('auth.proxy=null'));
+        expect(r.stdout.toString(), contains('select.https=[DIRECT]'));
+      });
+
+      // A real in-process HTTP proxy is not available through dart:io's HTTP
+      // server API, so preserve the upstream cases until that adapter is ported.
+      group('against a challenging proxy', skip: 'pending port: node:http', () {
+        test('answers a 407 on a plain-HTTP request with the credential', () {
+          // await startProxy()
+          // seen.length = 0
+          // const r = await runProbe(['connect', 'http://example.invalid/'], proxyEnv(proxyPort))
+          // expect(r.status).toBe(0)
+          // expect(r.stdout).toContain('code=200')
+          // expect(seen.map(s => s.method)).toEqual(['GET', 'GET'])
+          // expect(seen[0].auth).toBeUndefined()
+          // expect(seen[1].auth).toBe(expectedAuth)
+        });
+        test(
+          'answers a 407 on CONNECT with Basic (tunneling scheme re-enabled)',
+          () {
+            // seen.length = 0
+            // const r = await runProbe(['connect', 'https://example.invalid/'], proxyEnv(proxyPort))
+            // expect(r.status).toBe(0)
+            // const connects = seen.filter(s => s.method === 'CONNECT')
+            // expect(connects.length).toBeGreaterThanOrEqual(2)
+            // expect(connects[0].url).toBe('example.invalid:443')
+            // expect(connects[0].auth).toBeUndefined()
+            // expect(connects[1].auth).toBe(expectedAuth)
+          },
+        );
+      });
+    },
+  );
+}
+
+String? _findJava() {
+  final candidates = [
+    if (Platform.environment['JAVA_HOME'] != null)
+      path.join(Platform.environment['JAVA_HOME']!, 'bin', 'java'),
+    'java',
+  ];
+  for (final java in candidates) {
+    final r = Process.runSync(java, ['-version'], runInShell: true);
+    if (r.exitCode != 0) continue;
+    final m = RegExp(
+      r'version "(\d+)(?:\.(\d+))?',
+    ).firstMatch('${r.stderr}${r.stdout}');
+    if (m == null) continue;
+    final major = m[1] == '1' ? int.parse(m[2]!) : int.parse(m[1]!);
+    if (major >= 11) return java;
+  }
+  return null;
 }
