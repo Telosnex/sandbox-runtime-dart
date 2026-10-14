@@ -547,10 +547,19 @@ class NodeHttpServer extends net.NodeServer {
   Future<void> _serve(net.NodeSocket socket) async {
     final reader = _ByteReader(socket);
     final pendingResponses = <Future<void>>[];
+    final pendingPairs = <(IncomingMessage, ServerResponse)>[];
     while (!_closed && !socket.destroyed) {
       try {
         final head = await _readHead(reader, maxHeaderSize, request: true);
         if (head == null) {
+          // Node socketOnEnd (httpAllowHalfOpen false): abortIncoming for
+          // requests still awaiting a response, then end the socket.
+          for (final (req, res) in pendingPairs) {
+            if (!res.writableEnded && !req.destroyed) {
+              req.destroy(NodeError('aborted', code: 'ECONNRESET'));
+            }
+          }
+          if (socket.destroyed) return;
           await Future.wait(pendingResponses);
           if (!socket.destroyed) socket.end();
           return;
@@ -612,6 +621,7 @@ class NodeHttpServer extends net.NodeServer {
         final request = parser.incoming! as IncomingMessage;
         final response = ServerResponse._(socket, request);
         pendingResponses.add(response.done);
+        pendingPairs.add((request, response));
         final connectionTokens = request.headers['connection']
             ?.toString()
             .toLowerCase()
