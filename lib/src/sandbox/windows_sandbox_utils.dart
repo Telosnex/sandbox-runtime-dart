@@ -1,6 +1,6 @@
 // STUB: pending port of src/sandbox/windows-sandbox-utils.ts @ 24eb39e.
 // Windows is not supported by this port (PORT_WORKLOG.md); this stays a stub.
-// ignore_for_file: constant_identifier_names, slash_for_doc_comments
+// ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments
 
 import 'sandbox_config.dart' show FilesystemPathEntry, SrtWinConfig;
 import 'linux_sandbox_utils.dart' show SandboxDependencyCheck;
@@ -551,8 +551,8 @@ Future<WindowsSandboxUserStatus> getWindowsSandboxUserStatusAsync({
  *   {@link getWindowsSandboxUserStatus} result to avoid a second
  *   `srt-win user status` spawn.
  */
-({String pem, String thumb})? getWindowsSandboxCaCert(
-  WindowsSandboxUserStatus? status, {
+({String pem, String thumb})? getWindowsSandboxCaCert({
+  WindowsSandboxUserStatus? status,
   SrtWinSpawn? srtWin,
 }) => throw UnsupportedError('Windows is not supported by this port');
 
