@@ -1,6 +1,3 @@
-@Tags(['pending'])
-library;
-
 // Ported from sandbox-runtime test/sandbox/resolved-address-guard.test.ts @ 24eb39e.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments
 import 'dart:async';
@@ -1002,6 +999,8 @@ void main() {
           'POST /submit host=devbox.example.com:$upstreamPort body=$body',
         ]);
       },
+      // Dart: pending a chunked-body re-framing fix (PORT_WORKLOG).
+      tags: ['pending'],
     );
 
     test('plain HTTP: an embedder-configured range is refused too', () async {
