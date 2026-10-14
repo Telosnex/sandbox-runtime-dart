@@ -6,7 +6,8 @@ import 'dart:typed_data';
 import 'package:sandbox_runtime/src/node/buffer.dart';
 import 'package:sandbox_runtime/src/node/events.dart' show once;
 import 'package:sandbox_runtime/src/node/globals.dart'
-    show Timeout as NodeTimeout, clearInterval, setInterval, setTimeout;
+    show clearInterval, setInterval, setTimeout;
+import 'package:sandbox_runtime/src/node/globals.dart' as globals show Timeout;
 import 'package:sandbox_runtime/src/node/net.dart';
 import 'package:sandbox_runtime/src/sandbox/http_proxy.dart';
 import 'package:sandbox_runtime/src/sandbox/mitm_ca.dart';
@@ -135,7 +136,7 @@ void main() {
       await Future.any<Object?>([
         () {
           final r = Completer<void>();
-          late final NodeTimeout i;
+          late final globals.Timeout i;
           i = setInterval(() {
             if (buf.contains('FakeUpstream') && received.isNotEmpty) {
               clearInterval(i);
