@@ -90,8 +90,8 @@ Server createServer([Object? options, Function? requestListener]) {
 
 class Agent extends http.Agent {
   Agent({
-    bool keepAlive = true,
-    int maxSockets = 1,
+    bool keepAlive = false,
+    int maxSockets = 0x7fffffff,
     String? socketPath,
     tls.SecureContext? securityContext,
     Object? ca,
@@ -107,7 +107,7 @@ class Agent extends http.Agent {
        );
 }
 
-final Agent globalAgent = Agent(keepAlive: true, maxSockets: 1);
+final Agent globalAgent = Agent(keepAlive: true);
 
 /// Node's `https.request(url[, options][, callback])` and
 /// `https.request(options[, callback])`: [input] is a URL string, [url.URL],
