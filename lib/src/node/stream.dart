@@ -120,7 +120,7 @@ class _ReadableState {
   final bool emitClose, autoDestroy;
   final List<Object> buffer = [];
   int length = 0;
-  final List<Writable> pipes = [];
+  final List<EventEmitter> pipes = [];
   bool? flowing;
   bool ended = false,
       endEmitted = false,
@@ -140,8 +140,8 @@ class _ReadableState {
       multiAwaitDrain = false;
   bool? paused;
   Object? errored;
-  Writable? awaitDrainWriter;
-  final Set<Writable> awaitDrainWriters = {};
+  EventEmitter? awaitDrainWriter;
+  final Set<EventEmitter> awaitDrainWriters = {};
   _Decoder? decoder;
   String? encoding;
 }
@@ -937,6 +937,17 @@ class Readable extends NodeStream {
     return this;
   }
 
+  /// A `once('readable')` listener is dropped inside [emit], which must
+  /// update the flow state as Node's removeListener hook does.
+  @override
+  bool emit(String event, [Object? a, Object? b, Object? c, Object? d]) {
+    final result = super.emit(event, a, b, c, d);
+    if (event == 'readable' && _r != null && listenerCount('readable') == 0) {
+      _nextTick(_updateReadableListening);
+    }
+    return result;
+  }
+
   void _updateReadableListening() {
     final state = _rs;
     state.readableListening = listenerCount('readable') > 0;
@@ -1010,8 +1021,12 @@ class Readable extends NodeStream {
   // -- pipe ----------------------------------------------------------------
 
   /// Node `readable.pipe(destination[, {end}])`.
-  T pipe<T extends Writable>(T dest, {bool end = true}) {
+  T pipe<T extends EventEmitter>(T destination, {bool end = true}) {
     final src = this;
+    final dynamic dest = destination;
+    final NodeStream? destStream = destination is NodeStream
+        ? destination
+        : null;
     final state = _rs;
     if (state.pipes.length == 1 && !state.multiAwaitDrain) {
       state.multiAwaitDrain = true;
@@ -1020,7 +1035,7 @@ class Readable extends NodeStream {
       }
       state.awaitDrainWriter = null;
     }
-    state.pipes.add(dest);
+    state.pipes.add(destination);
     final doEnd = end;
     Function? ondrain;
     var cleanedUp = false;
@@ -1041,11 +1056,12 @@ class Readable extends NodeStream {
 
     void pauseSrc() {
       if (!cleanedUp) {
-        if (state.pipes.length == 1 && identical(state.pipes[0], dest)) {
-          state.awaitDrainWriter = dest;
+        if (state.pipes.length == 1 && identical(state.pipes[0], destination)) {
+          state.awaitDrainWriter = destination;
           state.multiAwaitDrain = false;
-        } else if (state.pipes.length > 1 && state.pipes.contains(dest)) {
-          state.awaitDrainWriters.add(dest);
+        } else if (state.pipes.length > 1 &&
+            state.pipes.contains(destination)) {
+          state.awaitDrainWriters.add(destination);
         }
         src.pause();
       }
@@ -1071,16 +1087,16 @@ class Readable extends NodeStream {
       if (ret == false) pauseSrc();
     }
 
-    unpipe = () => src.unpipe(dest);
+    unpipe = () => src.unpipe(destination);
     onerror = (Object? er) {
       unpipe();
       dest.removeListener('error', onerror);
       if (dest.listenerCount('error') == 0) {
-        final s = dest._w ?? dest._r;
+        final s = destStream?._w ?? destStream?._r;
         if (s != null &&
             !(s is _WritableState ? s.errorEmitted : false) &&
-            !(dest._r?.errorEmitted ?? false)) {
-          dest._errorOrDestroy(er!);
+            !(destStream?._r?.errorEmitted ?? false)) {
+          destStream!._errorOrDestroy(er!);
         } else {
           dest.emit('error', er);
         }
@@ -1108,7 +1124,7 @@ class Readable extends NodeStream {
       if (ondrain != null &&
           (state.awaitDrainWriter != null ||
               state.awaitDrainWriters.isNotEmpty) &&
-          (dest._w?.needDrain ?? false)) {
+          (destStream?._w?.needDrain ?? false)) {
         (ondrain as void Function())();
       }
     };
@@ -1119,7 +1135,7 @@ class Readable extends NodeStream {
     dest.once('close', onclose);
     dest.once('finish', onfinish);
     dest.emit('pipe', src);
-    if (dest.writableNeedDrain) {
+    if (dest.writableNeedDrain == true) {
       pauseSrc();
     } else if (state.flowing != true) {
       src.resume();
@@ -1129,15 +1145,15 @@ class Readable extends NodeStream {
     } else {
       src.once('end', endFn);
     }
-    return dest;
+    return destination;
   }
 
   /// Node `readable.unpipe([destination])`.
-  Readable unpipe([Writable? dest]) {
+  Readable unpipe([EventEmitter? dest]) {
     final state = _rs;
     if (state.pipes.isEmpty) return this;
     if (dest == null) {
-      final dests = List<Writable>.of(state.pipes);
+      final dests = List<EventEmitter>.of(state.pipes);
       state.pipes.clear();
       pause();
       for (final d in dests) {
@@ -1849,7 +1865,7 @@ class Duplex extends Readable with _WritableImpl implements Writable {
   }
 
   @override
-  Duplex unpipe([Writable? destination]) {
+  Duplex unpipe([EventEmitter? destination]) {
     super.unpipe(destination);
     return this;
   }
@@ -2086,8 +2102,7 @@ void Function() finished(
     readableFinished = true;
     if (stream.destroyed) willEmitClose = false;
     if (willEmitClose &&
-        (!(stream is _WritableImpl && stream.writable) ||
-            writable)) {
+        (!(stream is _WritableImpl && stream.writable) || writable)) {
       return;
     }
     if (!writable || writableFinished) callback();

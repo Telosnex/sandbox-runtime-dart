@@ -199,21 +199,13 @@ class NodeSocket extends stream.Duplex {
   /// one and then call [startConnect].
   NodeSocket.pending({bool allowHalfOpen = false})
     : _connecting = true,
-      super(
-        allowHalfOpen: allowHalfOpen,
-        emitClose: false,
-        autoDestroy: true,
-      );
+      super(allowHalfOpen: allowHalfOpen, emitClose: false, autoDestroy: true);
 
   /// Adopt a connected dart:io socket, as a server does with an accepted
   /// connection. No 'connect' event is emitted, as in Node.
   NodeSocket.fromSocket(Socket socket, {bool allowHalfOpen = false})
     : _connecting = false,
-      super(
-        allowHalfOpen: allowHalfOpen,
-        emitClose: false,
-        autoDestroy: true,
-      ) {
+      super(allowHalfOpen: allowHalfOpen, emitClose: false, autoDestroy: true) {
     _attach(socket);
   }
 
@@ -221,11 +213,7 @@ class NodeSocket extends stream.Duplex {
   /// [startServerTlsOver]. Not connecting, as in Node.
   NodeSocket.over({bool allowHalfOpen = false})
     : _connecting = false,
-      super(
-        allowHalfOpen: allowHalfOpen,
-        emitClose: false,
-        autoDestroy: true,
-      );
+      super(allowHalfOpen: allowHalfOpen, emitClose: false, autoDestroy: true);
 
   Socket? _socket;
   StreamSubscription<Uint8List>? _subscription;
@@ -354,13 +342,14 @@ class NodeSocket extends stream.Duplex {
     socket.flush().then(
       (_) {
         _inFlight -= n;
-        _settleWrites();
         applyListener(callback, const []);
+        // The stream counts a chunk as buffered until its callback runs.
+        _settleWrites();
       },
       onError: (Object error) {
         _inFlight -= n;
-        _settleWrites();
         applyListener(callback, [socketError(error, 'write')]);
+        _settleWrites();
       },
     );
   }
@@ -631,9 +620,7 @@ class NodeSocket extends stream.Duplex {
         ),
       );
     } else {
-      destroy(
-        NodeError('Socket closed', code: 'ERR_SOCKET_CLOSED'),
-      );
+      destroy(NodeError('Socket closed', code: 'ERR_SOCKET_CLOSED'));
     }
     return this;
   }
@@ -848,7 +835,6 @@ class NodeSocket extends stream.Duplex {
     _unrefed = false;
     return this;
   }
-
 }
 
 /// Node `net.Server` for TCP and Unix-domain listeners.

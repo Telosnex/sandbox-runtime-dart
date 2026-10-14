@@ -13,6 +13,57 @@ Future<void> settle([int ms = 20]) =>
 String str(Object? c) => c is String ? c : utf8.decode(c! as List<int>);
 
 void main() {
+  test(
+    'once(readable), read(n), unshift, then on(data) resumes flowing',
+    () async {
+      final r = Readable(read: (int _) {});
+      final got = <String>[];
+      r.once('readable', () {
+        final head = r.read(1)! as List<int>;
+        r.unshift(Uint8List.fromList(head));
+        r.on('data', (Object? c) => got.add(str(c)));
+      });
+      r.push(Uint8List.fromList(utf8.encode('xyz')));
+      await settle();
+      r.push(Uint8List.fromList(utf8.encode('!')));
+      await settle();
+      expect(got.join(), 'xyz!');
+    },
+  );
+
+  test(
+    'read(n) then unshift: a later on(data) and pipe deliver buffered first',
+    () async {
+      for (final usePipe in [false, true]) {
+        final r = Readable(read: (int _) {});
+        r.push(Uint8List.fromList(utf8.encode('abcdef')));
+        final head = r.read(2)! as List<int>;
+        expect(utf8.decode(head), 'ab');
+        r.unshift(Uint8List.fromList(head));
+        final got = <String>[];
+        var ended = false;
+        r.on('end', () => ended = true);
+        if (usePipe) {
+          r.pipe(
+            Writable(
+              write: (Object? chunk, String enc, Function cb) {
+                got.add(str(chunk));
+                cb();
+              },
+            ),
+          );
+        } else {
+          r.on('data', (Object? c) => got.add(str(c)));
+        }
+        r.push(Uint8List.fromList(utf8.encode('gh')));
+        r.push(null);
+        await settle();
+        expect(got.join(), 'abcdefgh');
+        expect(ended, isTrue);
+      }
+    },
+  );
+
   test('Readable: data then end then close', () async {
     final log = <String>[];
     final r = Readable(read: (int _) {});
