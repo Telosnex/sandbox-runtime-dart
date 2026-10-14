@@ -334,7 +334,20 @@ class ServerResponse extends events.EventEmitter {
 
   ServerResponse end([Object? data, Function? callback]) {
     if (_ended) return this;
-    if (data != null) write(data);
+    if (data != null) {
+      // Node end(): an implicit header on a one-shot body carries its length.
+      if (!headersSent &&
+          !hasHeader('content-length') &&
+          !hasHeader('transfer-encoding')) {
+        final status = statusCode;
+        if (!(status >= 100 && status < 200 ||
+            status == 204 ||
+            status == 304)) {
+          setHeader('Content-Length', _bytes(data).length);
+        }
+      }
+      write(data);
+    }
     final expectedLength = int.tryParse(
       getHeader('content-length')?.toString() ?? '',
     );
@@ -792,6 +805,7 @@ class Agent {
   final Map<String, int> _inUse = {};
   final Map<String, List<Completer<void>>> _waiting = {};
   bool _destroyed = false;
+  final Expando<void Function([Object?])> _idleDrops = Expando();
 
   Future<_AgentLease> _acquire(
     String key,
@@ -823,6 +837,11 @@ class Agent {
       net.NodeSocket? idle;
       while (pool != null && pool.isNotEmpty) {
         final candidate = pool.removeLast();
+        final drop = _idleDrops[candidate];
+        _idleDrops[candidate] = null;
+        if (drop != null) {
+          candidate.off('end', drop).off('close', drop);
+        }
         if (!candidate.destroyed && !candidate.closed) {
           idle = candidate;
           break;
@@ -834,7 +853,17 @@ class Agent {
       return _AgentLease(socket, reused, () {
         _active.remove(socket);
         if (!_destroyed && keepAlive && !socket.destroyed && !socket.closed) {
-          (_idle[key] ??= []).add(socket);
+          final pool = (_idle[key] ??= []);
+          pool.add(socket);
+          // Node's agent drops an idle socket the server closed.
+          void drop([Object? _]) {
+            pool.remove(socket);
+            socket.destroy();
+          }
+
+          socket.once('end', drop);
+          socket.once('close', drop);
+          _idleDrops[socket] = drop;
         } else {
           socket.destroy();
         }
