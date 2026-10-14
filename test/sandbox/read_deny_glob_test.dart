@@ -120,8 +120,6 @@ void main() {
 
       test(
         'leaves alone an unlistable directory the pattern cannot match beneath',
-        // Dart: sandbox_utils walk: an unlisted directory the pattern cannot match beneath is still reported (macOS).
-        tags: ['pending'],
         skip: process.getuid?.call() != 0 ? null : 'running as root',
         () {
           // certs/*.pem matches at one depth: certs/pgdata (a volume owned by
@@ -144,8 +142,6 @@ void main() {
 
       test(
         'warns once per mount that lands outside the pattern it came from',
-        // Dart: logForDebugging (utils/debug.dart) writes to stderr directly, not through the console.warn/error spy points.
-        tags: ['pending'],
         () async {
           // A matched link decides what is hidden for the whole sandbox: the
           // pattern names config/, the mount goes on a database directory nothing
@@ -184,8 +180,6 @@ void main() {
 
       test(
         'warns when a pattern still needs more mounts than the threshold after collapsing',
-        // Dart: logForDebugging (utils/debug.dart) writes to stderr directly, not through the console.warn/error spy points.
-        tags: ['pending'],
         () async {
           // The expansion is never truncated — that would silently un-deny paths —
           // so a broad pattern is reported rather than cut short.
@@ -265,8 +259,6 @@ void main() {
 
       test(
         'lists a match found through a link beneath the anchor where it really lives',
-        // Dart: sandbox_utils walkGlobPatternSteps: a plain pattern gets splits=false, so no symlinked directory is followed.
-        tags: ['pending'],
         () {
           expect(
             expandReadDenyGlobLinux('$PROJECT/**/.env', [], anchor: PROJECT),
@@ -351,8 +343,6 @@ void main() {
 
       test(
         'keeps the resolved carve-out beneath a link strictly below the covering directory',
-        // Dart: sandbox_utils walkGlobPatternSteps: a plain pattern gets splits=false, so no symlinked directory is followed.
-        tags: ['pending'],
         () {
           // pkg/a/build/link -> outside, with allowRead written against the
           // target: outside/ is denied as a whole, its carve-out and the
@@ -551,8 +541,6 @@ void main() {
 
         test(
           'asks under the second name when it was not there under the first',
-          // Dart: sandbox_utils walkGlobPatternSteps: a plain pattern gets splits=false, so no symlinked directory is followed.
-          tags: ['pending'],
           () {
             final (:certs, :mounts, :unlistable, :tries) = expandWith(
               'ENOENT',
@@ -669,72 +657,60 @@ void main() {
 
         for (final call in ['statSync', 'realpathSync'])
           for (final code in ['EACCES', 'EMFILE'])
-            test(
-              'denies where it leads besides ($call, $code)',
-              // Dart: sandbox_utils walkGlobPatternSteps: a plain pattern gets splits=false, so no symlinked directory is followed.
-              tags: ['pending'],
-              () {
-                expect(expandWhile({}), CLEAN);
-                for (final link in [
-                  'secrets/key.pem',
-                  'secrets/sub',
-                  'alt/secrets',
-                  'file/secrets',
-                  'up/secrets',
-                  'root/secrets',
-                ]) {
-                  expect(
-                    [
-                      link,
-                      expandWhile({'$call $V/$link': code}),
-                    ],
-                    [
-                      link,
-                      ([...CLEAN, '$V/$link']..sort()),
-                    ],
-                  );
-                }
-                // A match with nothing of the pattern left beneath it.
+            test('denies where it leads besides ($call, $code)', () {
+              expect(expandWhile({}), CLEAN);
+              for (final link in [
+                'secrets/key.pem',
+                'secrets/sub',
+                'alt/secrets',
+                'file/secrets',
+                'up/secrets',
+                'root/secrets',
+              ]) {
                 expect(
-                  expandWhile({
-                    '$call $V/secrets/sub': code,
-                  }, 'vendor/secrets/s*'),
-                  ['proj/vendor/secrets/sub', 'store/sub'],
+                  [
+                    link,
+                    expandWhile({'$call $V/$link': code}),
+                  ],
+                  [
+                    link,
+                    ([...CLEAN, '$V/$link']..sort()),
+                  ],
                 );
-              },
-            );
+              }
+              // A match with nothing of the pattern left beneath it.
+              expect(
+                expandWhile({
+                  '$call $V/secrets/sub': code,
+                }, 'vendor/secrets/s*'),
+                ['proj/vendor/secrets/sub', 'store/sub'],
+              );
+            });
 
-        test(
-          'denies a decoy besides, and nothing less for it',
-          // Dart: sandbox_utils walkGlobPatternSteps: a plain pattern gets splits=false, so no symlinked directory is followed.
-          tags: ['pending'],
-          () {
-            expect(
-              expandWhile({
-                'statSync $V/secrets/key.pem': 'EACCES',
-                'statSync proj/vendor/secrets/key.pem': '=decoy.txt',
-                'realpathSync proj/vendor/secrets/key.pem': '=decoy.txt',
-                'statSync $V/alt/secrets': 'EACCES',
-                'statSync proj/vendor/alt/secrets': '=decoy',
-                'realpathSync proj/vendor/alt/secrets': '=decoy',
-              }),
-              [
-                ...CLEAN.where(
-                  (p) => !['store/dir', 'store/key.txt', 'far.txt'].contains(p),
-                ),
-                'decoy',
-                'decoy.txt',
-                '$V/alt/secrets',
-                '$V/secrets/key.pem',
-              ]..sort(),
-            );
-          },
-        );
+        test('denies a decoy besides, and nothing less for it', () {
+          expect(
+            expandWhile({
+              'statSync $V/secrets/key.pem': 'EACCES',
+              'statSync proj/vendor/secrets/key.pem': '=decoy.txt',
+              'realpathSync proj/vendor/secrets/key.pem': '=decoy.txt',
+              'statSync $V/alt/secrets': 'EACCES',
+              'statSync proj/vendor/alt/secrets': '=decoy',
+              'realpathSync proj/vendor/alt/secrets': '=decoy',
+            }),
+            [
+              ...CLEAN.where(
+                (p) => !['store/dir', 'store/key.txt', 'far.txt'].contains(p),
+              ),
+              'decoy',
+              'decoy.txt',
+              '$V/alt/secrets',
+              '$V/secrets/key.pem',
+            ]..sort(),
+          );
+        });
 
         test(
           'keeps it as spelled beneath whatever the short name says it leads to',
-          // Dart: sandbox_utils walkGlobPatternSteps: a plain pattern gets splits=false, so no symlinked directory is followed.
-          tags: ['pending'],
           () {
             expect(
               expandWhile({
@@ -753,8 +729,6 @@ void main() {
 
         test(
           'keeps one that cannot be inspected under either name as spelled',
-          // Dart: sandbox_utils walkGlobPatternSteps: a plain pattern gets splits=false, so no symlinked directory is followed.
-          tags: ['pending'],
           () {
             expect(
               expandWhile({
@@ -961,39 +935,34 @@ void main() {
         );
       });
 
-      test(
-        'keeps a match beneath a carve-out that only a second link leads to',
-        // Dart: sandbox_utils walkGlobPatternSteps: a plain pattern gets splits=false, so no symlinked directory is followed.
-        tags: ['pending'],
-        () {
-          // proj/build -> store/nm and store/nm/keep -> ../keep: y.txt is matched
-          // as proj/build/keep/pub/y.txt but lives at store/keep/pub/y.txt, which
-          // no spelled ancestor of the match contains. Collapsing along the
-          // spelling would drop it under proj/build and lose the mask beneath the
-          // carve-out.
-          final chain = caseRoot('chain');
-          final proj = join(chain, 'proj');
-          final store = join(chain, 'store');
-          mkdirSync(proj, {'recursive': true});
-          mkdirSync(join(store, 'nm'), {'recursive': true});
-          mkdirSync(join(store, 'keep', 'pub'), {'recursive': true});
-          writeFileSync(join(store, 'keep', 'pub', 'y.txt'), '');
-          writeFileSync(join(store, 'nm', 'z.out'), '');
-          symlinkSync(join(store, 'nm'), join(proj, 'build'));
-          symlinkSync(join('..', 'keep'), join(store, 'nm', 'keep'));
+      test('keeps a match beneath a carve-out that only a second link leads to', () {
+        // proj/build -> store/nm and store/nm/keep -> ../keep: y.txt is matched
+        // as proj/build/keep/pub/y.txt but lives at store/keep/pub/y.txt, which
+        // no spelled ancestor of the match contains. Collapsing along the
+        // spelling would drop it under proj/build and lose the mask beneath the
+        // carve-out.
+        final chain = caseRoot('chain');
+        final proj = join(chain, 'proj');
+        final store = join(chain, 'store');
+        mkdirSync(proj, {'recursive': true});
+        mkdirSync(join(store, 'nm'), {'recursive': true});
+        mkdirSync(join(store, 'keep', 'pub'), {'recursive': true});
+        writeFileSync(join(store, 'keep', 'pub', 'y.txt'), '');
+        writeFileSync(join(store, 'nm', 'z.out'), '');
+        symlinkSync(join(store, 'nm'), join(proj, 'build'));
+        symlinkSync(join('..', 'keep'), join(store, 'nm', 'keep'));
 
-          final mounts = expandReadDenyGlobLinux(join(proj, '**/build/**'), [
-            join(store, 'keep', 'pub'),
-          ]);
+        final mounts = expandReadDenyGlobLinux(join(proj, '**/build/**'), [
+          join(store, 'keep', 'pub'),
+        ]);
 
-          expect(mounts, [
-            join(store, 'keep'),
-            join(store, 'keep', 'pub'),
-            join(store, 'keep', 'pub', 'y.txt'),
-            join(store, 'nm'),
-          ]);
-        },
-      );
+        expect(mounts, [
+          join(store, 'keep'),
+          join(store, 'keep', 'pub'),
+          join(store, 'keep', 'pub', 'y.txt'),
+          join(store, 'nm'),
+        ]);
+      });
 
       test('drops a matched link that does not resolve', () {
         final dangling = caseRoot('dangling');
@@ -3012,7 +2981,6 @@ void main() {
       for (final (why, tail) in LINK_PATTERNS)
         test(
           'covers the file behind a directory link when $why',
-          // Dart: sandbox_utils walkGlobPatternSteps: a plain pattern gets splits=false, so no symlinked directory is followed.
           tags: const ['**/key.txt', '**/cfg/key.txt'].contains(tail)
               ? null
               : ['pending'],
@@ -3023,8 +2991,6 @@ void main() {
 
       test(
         'mounts a match behind a link whose target is outside the pattern base, at its target',
-        // Dart: sandbox_utils walkGlobPatternSteps: a plain pattern gets splits=false, so no symlinked directory is followed.
-        tags: ['pending'],
         () {
           final mounts = expandReadDenyGlobLinux(
             join(ROOT, 'out', 'config', '*', 'key'),
@@ -3040,8 +3006,6 @@ void main() {
 
       test(
         'mounts a match behind an absolute-target link outside the base, at its target',
-        // Dart: sandbox_utils walkGlobPatternSteps: a plain pattern gets splits=false, so no symlinked directory is followed.
-        tags: ['pending'],
         () {
           final mounts = expandReadDenyGlobLinux(
             join(ROOT, 'absout', 'config', '*', 'key'),
@@ -3054,8 +3018,6 @@ void main() {
 
       test(
         'mounts a package linked out of node_modules where the package really is',
-        // Dart: sandbox_utils walkGlobPatternSteps: a plain pattern gets splits=false, so no symlinked directory is followed.
-        tags: ['pending'],
         () {
           final mounts = expandReadDenyGlobLinux(
             join(ROOT, 'store', 'node_modules', '**', 'index.js'),
@@ -3103,7 +3065,6 @@ void main() {
       for (final (why, tail) in LINK_PATTERNS)
         test(
           'serves the file through neither spelling when $why',
-          // Dart: sandbox_utils walk (see the cover tests above): the denied link is never followed, so KEYBYTES is served.
           tags: const ['**/key.txt', '**/cfg/key.txt'].contains(tail)
               ? null
               : ['pending'],

@@ -252,7 +252,6 @@ void main() {
       ('//server/share//*.key', '//server/share/'),
       ('/a//*.pem', '/a/'),
     ]) {
-      // Dart: globPatternBaseDir drops the doubled separator of 'C:/a//x*' and 'H://x*' (lib sandbox_utils.dart)
       test(
         'starts $pattern from $base',
         () {
@@ -286,14 +285,13 @@ void main() {
       ('/a///*.pem', ['x.pem']),
       ('/a//**/*.pem', ['x.pem', 'y.pem']),
     ]) {
-      // Dart: expandGlobPattern(anchor:) returns [] for a doubled separator after the anchor (lib sandbox_utils.dart walkGlobPatternSteps)
       test('finds what the tail $tail matches beneath an anchor', () {
         final found = expandGlobPattern(root + tail, anchor: root);
         expect(found.map((p) => basename(p)).toList()..sort(), names);
         for (final p in found) {
           expect(existsSync(p), true);
         }
-      }, tags: ['pending']);
+      });
     }
 
     // Nothing collapses the separators of a Windows path before the walk.
@@ -402,7 +400,6 @@ void main() {
       expect(walk.directoryMatches, <String>[]);
     });
 
-    // Dart: walkGlobPattern(followSymlinkedDirectories) finds nothing through a symlinked directory (lib sandbox_utils.dart walk)
     test(
       'takes a symlinked directory as the match itself without the link option',
       () {
@@ -432,7 +429,6 @@ void main() {
           rmSync(join(BASE, 'elsewhere', 'outside.out'));
         }
       },
-      tags: ['pending'],
     );
 
     test(
@@ -583,7 +579,6 @@ void main() {
       skip: process.getuid?.call() != 0 ? null : 'running as root',
     );
 
-    // Dart: walkGlobPattern reports unlisted dirs (pgdata, locked) the pattern cannot match beneath (lib sandbox_utils.dart walk pruning)
     test(
       'does not try to list a directory the pattern cannot match beneath',
       () {
@@ -620,7 +615,6 @@ void main() {
         }
       },
       skip: process.getuid?.call() != 0 ? null : 'running as root',
-      tags: ['pending'],
     );
 
     test('skips a pattern whose only literal directory is the root', () {
@@ -751,7 +745,6 @@ void main() {
       }
     });
 
-    // Dart: walkGlobPattern(followSymlinkedDirectories) finds nothing through a symlinked directory (lib sandbox_utils.dart walk)
     test(
       'follows a chain of links to its end, under names no longer than real ones',
       () {
@@ -789,7 +782,6 @@ void main() {
           rmSync(root, {'recursive': true, 'force': true});
         }
       },
-      tags: ['pending'],
     );
 
     test(
@@ -1004,7 +996,6 @@ void main() {
       skip: process.getuid?.call() != 0 ? null : 'running as root',
     );
 
-    // Dart: walkGlobPattern(followSymlinkedDirectories) finds nothing through a symlinked directory (lib sandbox_utils.dart walk)
     test('lists a directory again under a name the pattern tells apart', () {
       // vault is reached by its own name, which matches nothing, and through
       // config/secrets, the only spelling `**/secrets/*.pem` matches. However
@@ -1030,9 +1021,8 @@ void main() {
       } finally {
         rmSync(root, {'recursive': true, 'force': true});
       }
-    }, tags: ['pending']);
+    });
 
-    // Dart: walkGlobPattern(followSymlinkedDirectories) finds nothing through a symlinked directory (lib sandbox_utils.dart walk)
     test(
       'follows a `**` written against text through a symlinked directory',
       () {
@@ -1073,10 +1063,8 @@ void main() {
           rmSync(root, {'recursive': true, 'force': true});
         }
       },
-      tags: ['pending'],
     );
 
-    // Dart: walkGlobPattern(followSymlinkedDirectories) finds nothing through a symlinked directory (lib sandbox_utils.dart walk)
     test('follows a bracket expression that can match a separator', () {
       // `[s/]` is an `s` within a name or a separator between two, and both
       // readings are followed, through a link as well.
@@ -1112,7 +1100,7 @@ void main() {
       } finally {
         rmSync(root, {'recursive': true, 'force': true});
       }
-    }, tags: ['pending']);
+    });
 
     test('matches a pattern it cannot split against real paths only', () {
       // A wildcard inside a bracket expression is rewritten like any other, so
@@ -1144,7 +1132,6 @@ void main() {
       }
     });
 
-    // Dart: walkGlobPattern(followSymlinkedDirectories) finds nothing through a symlinked directory (lib sandbox_utils.dart walk)
     test('does not let one name that fails to list answer for the others', () {
       // A listing can fail for a reason that has nothing to do with the
       // directory (too many open files at that moment). Letting that failure
@@ -1202,7 +1189,7 @@ void main() {
       } finally {
         rmSync(root, {'recursive': true, 'force': true});
       }
-    }, tags: ['pending']);
+    });
 
     group('what has a name shorter than its real path', () {
       // h -> a/long/way/home is the base of the pattern, so every directory and
@@ -1463,17 +1450,15 @@ void main() {
         final found = c['found'] as List<String>;
         final whole = (c['whole'] as List<String>?) ?? <String>[];
         final ownSpelling = (c['ownSpelling'] as List<String>?) ?? <String>[];
-        // Dart: walkGlobPattern(followSymlinkedDirectories) finds nothing through a symlinked directory (lib sandbox_utils.dart walk)
         test(when, () {
           expect(walkWhile(answers), {
             'found': found.map(at).toList()..sort(),
             'whole': whole.map(at).toList(),
             'ownSpelling': ownSpelling.map(at).toList(),
           });
-        }, tags: ['pending']);
+        });
       }
 
-      // Dart: walkGlobPattern(followSymlinkedDirectories) finds nothing through a symlinked directory (lib sandbox_utils.dart walk)
       test(
         'hands the next pattern what the short name listed, the directory being denied whole already',
         () {
@@ -1487,10 +1472,8 @@ void main() {
             'ownSpelling': <String>[],
           });
         },
-        tags: ['pending'],
       );
 
-      // Dart: walkGlobPattern(followSymlinkedDirectories) finds nothing through a symlinked directory (lib sandbox_utils.dart walk)
       test('follows a link whose real path the runtime does not resolve', () {
         // Nothing is made to fail here: Bun's realpathSync answers ENOENT for a
         // path with a backslash in it, and takes the same link by another name.
@@ -1504,10 +1487,9 @@ void main() {
         );
 
         expect(walk.matches, [at('store/vendor/.env')]);
-      }, tags: ['pending']);
+      });
     });
 
-    // Dart: walkGlobPattern(followSymlinkedDirectories) finds nothing through a symlinked directory (lib sandbox_utils.dart walk)
     test(
       'follows brackets that spell no set of characters a name at a time',
       () {
@@ -1539,7 +1521,6 @@ void main() {
           rmSync(root, {'recursive': true, 'force': true});
         }
       },
-      tags: ['pending'],
     );
   }, skip: isWindows ? 'Windows not supported by this port' : null);
 
@@ -2639,28 +2620,25 @@ void main() {
   // ============================================================================
 
   group('isUncPath', () {
-    // Dart: isUncPath answers false for UNC spellings on this host (lib sandbox_utils.dart isUncPath)
     test('recognises \\\\server\\share and //server/share', () {
       expect(isUncPath('\\\\srv\\share\\dir'), true);
       expect(isUncPath('//srv/share'), true);
-    }, tags: ['pending']);
+    });
 
-    // Dart: isUncPath answers false for UNC spellings on this host (lib sandbox_utils.dart isUncPath)
     test('recognises the extended-length \\\\?\\UNC\\… form (any casing)', () {
       expect(isUncPath('\\\\?\\UNC\\srv\\share\\dir'), true);
       expect(isUncPath('\\\\?\\unc\\srv\\share'), true);
       expect(isUncPath('//?/UNC/srv/share'), true);
       expect(isUncPath('//?/unc/srv/share'), true);
-    }, tags: ['pending']);
+    });
 
-    // Dart: isUncPath answers false for UNC spellings on this host (lib sandbox_utils.dart isUncPath)
     test('recognises the device-namespace \\\\.\\UNC\\… form', () {
       // `\\.\UNC\server\share\…` is a real network access — same SMB
       // round-trip as `\\server\share\…`, different spelling.
       expect(isUncPath('\\\\.\\UNC\\srv\\share\\x'), true);
       expect(isUncPath('//./UNC/srv/share'), true);
       expect(isUncPath('\\\\.\\unc\\srv\\share'), true);
-    }, tags: ['pending']);
+    });
 
     test('does NOT treat drive-local extended or device paths as UNC', () {
       // `\\?\C:\…` is a drive-local extended path; `\\.\pipe\…` /
@@ -2924,7 +2902,6 @@ void main() {
       expect(within.hasMatch('/tmp/[z-a and more!]'), false);
     });
 
-    // Dart: globToRegex logs no warning under SRT_DEBUG (lib sandbox_utils.dart globToRegex / logForDebugging)
     test('says under SRT_DEBUG which brackets it reads as text', () async {
       final (result: _, :warnings) = await withCapturedWarnings(
         () => Future.value(globToRegex('/tmp/[ab]/[user-id]/*')),
@@ -2932,7 +2909,7 @@ void main() {
       expect(warnings, hasLength(1));
       expect(warnings[0], contains('The brackets in [user-id] spell no set'));
       expect(warnings[0], endsWith(': /tmp/[ab]/[user-id]/*'));
-    }, tags: ['pending']);
+    });
 
     test('gives a regular expression whatever it is given', () {
       // fc.array(fc.constantFrom(...'[[]]--**??//\\^!().az', '__GLOBSTAR__'), { maxLength: 10 })

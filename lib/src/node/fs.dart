@@ -379,7 +379,10 @@ List<Dirent> _readdirSync(String path, {bool withFileTypes = false}) {
     }
     return Directory(path).listSync(followLinks: false).map((entity) {
       final type = FileSystemEntity.typeSync(entity.path, followLinks: false);
-      final name = entity.path.replaceAll('\\', '/').split('/').last;
+      final name =
+          (Platform.isWindows ? entity.path.replaceAll('\\', '/') : entity.path)
+              .split('/')
+              .last;
       return Dirent(name, type);
     }).toList();
   } on FileSystemException catch (error) {

@@ -32,8 +32,24 @@ String resolve(String a, [String? b, String? c, String? d]) {
 }
 
 String _dirname(String path) {
-  final d = p.posix.dirname(path);
-  return d;
+  // Node's lib/path.js posix.dirname.
+  if (path.isEmpty) return '.';
+  final hasRoot = path.codeUnitAt(0) == 0x2f;
+  var end = -1;
+  var matchedSlash = true;
+  for (var i = path.length - 1; i >= 1; --i) {
+    if (path.codeUnitAt(i) == 0x2f) {
+      if (!matchedSlash) {
+        end = i;
+        break;
+      }
+    } else {
+      matchedSlash = false;
+    }
+  }
+  if (end == -1) return hasRoot ? '/' : '.';
+  if (hasRoot && end == 1) return '//';
+  return path.substring(0, end);
 }
 
 /// `path.dirname`. A variable so a test can replace it.

@@ -8,6 +8,13 @@ void main() {
     expect(path.join('/a', 'b', '../c'), '/a/c');
     expect(path.resolve('/a', 'b'), '/a/b');
     expect(path.dirname('/a/b'), '/a');
+    expect(path.dirname('C:/a//x'), 'C:/a/');
+    expect(path.dirname('H://x'), 'H:/');
+    expect(path.dirname('/a//x'), '/a/');
+    expect(path.dirname('/x'), '/');
+    expect(path.dirname('x'), '.');
+    expect(path.dirname('a/b/'), 'a');
+    expect(path.dirname('//x'), '//');
     expect(path.basename('/a/b.txt', '.txt'), 'b');
     expect(path.extname('x.js'), '.js');
     expect(path.relative('/a/b', '/a/c'), '../c');

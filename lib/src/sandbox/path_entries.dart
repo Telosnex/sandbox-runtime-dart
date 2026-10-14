@@ -6,6 +6,7 @@ import 'package:path/path.dart' as path;
 
 import '../node/fs.dart' as fs;
 import '../node/generators.dart';
+import '../node/path.dart' as node_path;
 import '../node/process.dart' as process;
 import '../utils/platform.dart';
 import 'sandbox_config.dart';
@@ -129,7 +130,7 @@ String? _spelledAbsolute(String spelling) {
   }
   final expanded = expandTilde(spelled);
   final absolute = expanded == spelled && !path.isAbsolute(spelled)
-      ? path.absolute(spelled, process.cwd())
+      ? node_path.resolve(process.cwd(), spelled)
       : expanded;
   return onWindows
       ? toForwardSlashes(absolute)

@@ -14,6 +14,7 @@ import '../node/errno.dart';
 import '../node/fs.dart' as fs;
 import '../node/generators.dart';
 import '../node/os.dart' show homedir;
+import '../node/path.dart' as node_path;
 import '../node/process.dart' as process;
 import '../utils/debug.dart';
 import '../utils/platform.dart' show getPlatform;
@@ -192,30 +193,22 @@ String stripExtendedPathPrefix(String p) {
 /// Defense-in-depth: the primary embedder already gates
 /// model-provided cwd/paths upstream.
 bool isUncPath(String p) {
-  final winPath = path.Context(
-    style: path.Style.windows,
-    current: process.cwd(),
-  );
-  final absolute = winPath.isAbsolute(p) ? p : winPath.absolute(p);
-  final normalized = winPath.normalize(absolute).replaceAll('/', r'\');
-  final lower = normalized.toLowerCase();
-  String? body;
-  // Windows path-context normalization resolves to a regular or
-  // device-namespace UNC spelling, so match the UNC marker
-  // case-insensitively with either separator. `[?.]` also
+  // Dart: no path.win32 shim; this is win32.toNamespacedPath for a regular UNC path.
+  final regular = RegExp(
+    r'^[\\/]{2}([^\\/?.][^\\/]*)[\\/]+([^\\/]+)',
+  ).firstMatch(p);
+  final ns = regular != null
+      ? r'\\?\UNC\' + p.substring(2).replaceAll('/', r'\')
+      : p;
+  // Already-namespaced input passes through `toNamespacedPath`
+  // verbatim (casing and separators preserved), so match the UNC
+  // marker case-insensitively with either separator. `[?.]` also
   // catches the device-namespace `\\.\UNC\…` form — that is a real
   // network access, not a local device.
-  if (lower.startsWith(r'\\?\unc\') || lower.startsWith(r'\\.\unc\')) {
-    body = normalized.substring(8);
-  } else if (lower.startsWith(r'\\?\') || lower.startsWith(r'\\.\')) {
-    return false;
-  } else if (normalized.startsWith(r'\\')) {
-    body = normalized.substring(2);
-  } else {
-    return false;
-  }
-  final parts = body.split(r'\').where((part) => part.isNotEmpty).toList();
-  return parts.length >= 2;
+  return RegExp(
+    r'^[\\/]{2}[?.][\\/]unc[\\/]',
+    caseSensitive: false,
+  ).hasMatch(ns);
 }
 
 /// Remove trailing /** glob suffix from a path pattern
@@ -1441,10 +1434,7 @@ List<_GlobPiece>? _globPieces(String pattern, String flags) {
   // A bracket expression first, the way a regular expression reads one:
   // everything up to the first `]`. Then a run of `*` with the separator
   // after it, since `**/` is one thing to globToRegex.
-  final tokenizerPattern = StringBuffer(r'(\[[^\]]*\])|(\*+)(/?)|(/)|([^[*')
-    ..write('/')
-    ..write(r']+|\[');
-  final tokenizer = RegExp(tokenizerPattern.toString());
+  final tokenizer = RegExp(r'(\[[^\]]*\])|(\*+)(/?)|(/)|([^[*/]+|\[)');
   for (final match in tokenizer.allMatches(pattern)) {
     final text = match[0]!;
     final bracket = match[1];
@@ -1688,7 +1678,7 @@ String globPatternBaseDir(String normalizedPattern) {
   // the separator of a root it returns ('C:/'), which no component stands for.
   return staticPrefix.endsWith('/')
       ? staticPrefix.substring(0, staticPrefix.length - 1)
-      : path.posix.dirname(staticPrefix);
+      : node_path.dirname(staticPrefix);
 }
 
 /// Whether a base from {@link globPatternBaseDir} is one no walk starts from:
