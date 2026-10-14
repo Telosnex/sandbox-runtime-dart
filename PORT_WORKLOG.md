@@ -73,6 +73,17 @@ expected output.
 - To test: `git clone /media/psf/Home/dev/sandbox-runtime-dart /root/srt-dart`,
   then `dart pub get`, `dart run tool/build_seccomp.dart` and `dart test`.
 
+### Port: DONE, final audits (2026-10-14)
+
+main runs the whole suite green on macOS (+2486) and on Linux, as an
+unprivileged user (four chunks: 467, 798, 734, 1040; ~/.srt-vm/linux_test
+now runs tests as `parallels`, caps runs, passes args intact). All 20 test
+batches are ported; no `pending` tags remain. Skips that stay, with reasons
+in place: TLS 1.2-capped clients (dart:io has no max version), npm-install
+own-files cases, root-only and macOS-nc cases, Windows sandboxing.
+Open: comment/doc audit (audit-a, audit-b); then Telosnex integration.
+Upstream/deployment notes: ~/dev/srt-wt/FINDINGS.md.
+
 ### Wave 1 phase A: nearly DONE (2026-10-14)
 
 Main 3b7769d has every src/ module ported and reviewed except where noted:
