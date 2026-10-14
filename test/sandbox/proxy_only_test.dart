@@ -784,15 +784,13 @@ Future<void> main() async {
         expect(s.up.got, hasLength(0));
         final open = await () {
           final completer = Completer<int>();
-          // Dart: getConnections missing on NodeHttpServer (shim owner)
-          (s.up.server as dynamic).getConnections(
+          s.up.server.getConnections(
             (Object? _, int n) => completer.complete(n),
           );
           return completer.future;
         }();
         expect(open, 0);
       },
-      tags: ['pending'], // Dart: getConnections missing on NodeHttpServer
     );
 
     test(
@@ -2175,21 +2173,19 @@ Future<void> main() async {
       'a tunnel is terminated with no listener: no listen() from CONNECT to the end of the response',
       () async {
         final s = await tlsSetup((_) => {'action': 'allow'});
-        // Dart: upstream spies on NetServer/HttpServer/HttpsServer
-        // .prototype.listen; a Dart method cannot be patched, so no hook
-        // exists yet (shim owner).
+        final listened = <Object?>[];
         // Every server class a listener could come from (they need not share
         // a prototype chain).
-        final listened = <Object?>[];
+        // Dart: HTTP and HTTPS servers are NodeServers, so the one
+        // NodeServer.listenSpy seam covers all three prototypes.
+        net.NodeServer.listenSpy = (first) => listened.add(first);
+        cleanup.add(() => net.NodeServer.listenSpy = null);
         final raw = await s.send('/ok');
         expect(raw, startsWith('HTTP/1.1 200'));
         expect(s.up.seen.map((g) => g.url), ['/ok']);
         expect(listened, []);
       },
       skip: emitSkip,
-      tags: [
-        'pending',
-      ], // Dart: TLS-terminated tunnel socket reads the whole body ahead (no backpressure to the client); stalled-client response read 65 KB only
     );
   });
 
