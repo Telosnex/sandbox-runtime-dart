@@ -478,8 +478,10 @@ void main() {
       final text = latin1.decode(bytes);
       expect(requests, 2);
       expect(RegExp('HTTP/1.1 200 OK').allMatches(text), hasLength(2));
-      expect(text, contains('2\r\nr1\r\n0\r\n\r\n'));
-      expect(text, contains('2\r\nr2\r\n0\r\n\r\n'));
+      // Node: end(data) before the head is sent sets Content-Length.
+      expect(text, contains('Content-Length: 2\r\n'));
+      expect(text, contains('\r\n\r\nr1'));
+      expect(text, endsWith('\r\n\r\nr2'));
       await close();
     });
 
