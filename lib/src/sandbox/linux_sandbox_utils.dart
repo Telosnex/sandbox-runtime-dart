@@ -222,7 +222,11 @@ const String CAP_SETFCAP_MISSING_MESSAGE =
     '(Linux 5.12 and distribution backports) every sandboxed command fails while writing a uid '
     'map ("Operation not permitted"). Grant CAP_SETFCAP to this process, or run as a non-root user';
 
-/** Why a bubblewrap profile could not be run. */
+/**
+ * Why a bubblewrap profile could not be run. Allowed values:
+ * 'too_many_arguments' | 'nul_in_path' | 'args_file_unavailable' |
+ * 'command_too_long'.
+ */
 typedef LinuxSandboxProfileErrorCode = String;
 
 /** More arguments than bubblewrap parses, on the line or through a file. */
@@ -301,7 +305,7 @@ class WorkingDirectoryChanged extends Error {
  *
  * Also closes the `--args` profiles the wraps of this batch opened.
  */
-void cleanupBwrapMountPoints({bool force = false}) => throw UnimplementedError(
+void cleanupBwrapMountPoints({bool? force}) => throw UnimplementedError(
   'pending port of src/sandbox/linux-sandbox-utils.ts',
 );
 
@@ -349,19 +353,24 @@ class LinuxDependencyOptions {
 /**
  * Get detailed status of Linux sandbox dependencies
  */
-LinuxDependencyStatus getLinuxDependencyStatus([
-  LinuxDependencyOptions? opts,
-]) => throw UnimplementedError(
+LinuxDependencyStatus getLinuxDependencyStatus({
+  SeccompConfig? seccompConfig,
+  String? bwrapPath,
+  String? socatPath,
+}) => throw UnimplementedError(
   'pending port of src/sandbox/linux-sandbox-utils.ts',
 );
 
 /**
  * Check sandbox dependencies and return structured result
  */
-SandboxDependencyCheck checkLinuxDependencies([LinuxDependencyOptions? opts]) =>
-    throw UnimplementedError(
-      'pending port of src/sandbox/linux-sandbox-utils.ts',
-    );
+SandboxDependencyCheck checkLinuxDependencies({
+  SeccompConfig? seccompConfig,
+  String? bwrapPath,
+  String? socatPath,
+}) => throw UnimplementedError(
+  'pending port of src/sandbox/linux-sandbox-utils.ts',
+);
 
 /**
  * The oldest bubblewrap on which everything this library does holds. Mount
