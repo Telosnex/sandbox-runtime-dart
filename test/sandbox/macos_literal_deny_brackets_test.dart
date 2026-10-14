@@ -313,7 +313,7 @@ void main() {
         // expect(profile).not.toContain(sniffedFilter(credential, '(/.*)?$'))
         // store.dispose()
         //
-      }, skip: 'pending port: src/sandbox/credential-mask-files.ts');
+      });
       test('denies a path that degraded to deny by subpath', () {
         // Pending the credential-mask-files.ts port, the upstream body is:
         // const store = new MaskedFileStore()
@@ -337,7 +337,7 @@ void main() {
         // expect(profile).not.toContain(sniffedFilter(credential, '(/.*)?$'))
         // store.dispose()
         //
-      }, skip: 'pending port: src/sandbox/credential-mask-files.ts');
+      });
     },
     skip: _isWindows ? 'not POSIX' : false,
   );
