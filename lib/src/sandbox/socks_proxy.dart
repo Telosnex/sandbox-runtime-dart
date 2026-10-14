@@ -1,6 +1,8 @@
 // STUB: pending port of src/sandbox/socks-proxy.ts @ 24eb39e.
 // ignore_for_file: dangling_library_doc_comments, slash_for_doc_comments
 
+import 'dart:async';
+
 import '../node/net.dart' as net;
 import 'parent_proxy.dart' show DirectLookup, ResolvedParentProxy;
 
@@ -10,7 +12,7 @@ abstract interface class SocksProxyServerOptions {
    * parsed from the SOCKS5 username (`srt.<encodedCommand>`), so the
    * manager can attribute a denial to the invocation that made it.
    */
-  Future<bool> filter(int port, String host, [String? encodedCommand]);
+  FutureOr<bool> filter(int port, String host, [String? encodedCommand]);
 
   /**
    * Optional upstream HTTP proxy. When present, SOCKS CONNECT requests are

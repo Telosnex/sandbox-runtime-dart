@@ -2,7 +2,6 @@
 // ignore_for_file: dangling_library_doc_comments, slash_for_doc_comments
 
 import 'dart:async';
-import 'dart:typed_data';
 
 import '../node/http.dart' as http;
 import '../node/stream.dart' as stream;
@@ -152,12 +151,8 @@ abstract interface class HttpProxyServerOptions {
    * Additional trusted CA(s) for the terminating proxy's outbound TLS leg.
    * Unset → system roots + NODE_EXTRA_CA_CERTS. Primarily a test seam.
    */
-  ({
-    String? string,
-    Uint8List? bytes,
-    List<({String? string, Uint8List? bytes})>? list,
-  })?
-  get tlsTerminateUpstreamCA;
+  Object?
+  get tlsTerminateUpstreamCA; // String | Uint8List | List<String | Uint8List>
 
   /**
    * Optional upstream HTTP proxy. When present, direct-connect traffic (i.e.
