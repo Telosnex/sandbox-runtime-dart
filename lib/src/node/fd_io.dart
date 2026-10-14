@@ -1,8 +1,8 @@
 // Descriptor-backed dart:io sockets for `net.Socket({fd})` and
 // `server.listen({fd})`. dart:io cannot adopt a file descriptor, so reading,
 // writing and accepting go to libc through FFI: a reader isolate polls and
-// reads (so a stop request is honoured within 100 ms), writes are blocking
-// write(2) calls, and an accept isolate does the same for a listening
+// reads (so a stop request is honoured within 100 ms), writes are
+// nonblocking write(2) calls drained from the event loop, and an accept isolate does the same for a listening
 // descriptor. macOS and Linux only; anything else fails closed.
 import 'dart:async';
 import 'dart:convert';
@@ -27,6 +27,11 @@ typedef _SockNameN = Int32 Function(Int32, Pointer<Uint8>, Pointer<Uint32>);
 typedef _SockNameD = int Function(int, Pointer<Uint8>, Pointer<Uint32>);
 typedef _ShutdownN = Int32 Function(Int32, Int32);
 typedef _ShutdownD = int Function(int, int);
+typedef _FcntlN = Int32 Function(Int32, Int32, VarArgs<(Int32,)>);
+typedef _FcntlD = int Function(int, int, int);
+typedef _Accept4N =
+    Int32 Function(Int32, Pointer<Uint8>, Pointer<Uint32>, Int32);
+typedef _Accept4D = int Function(int, Pointer<Uint8>, Pointer<Uint32>, int);
 typedef _ErrnoN = Pointer<Int32> Function();
 
 class _Libc {
@@ -46,6 +51,10 @@ class _Libc {
     getsockname = lib.lookupFunction<_SockNameN, _SockNameD>('getsockname');
     getpeername = lib.lookupFunction<_SockNameN, _SockNameD>('getpeername');
     shutdown = lib.lookupFunction<_ShutdownN, _ShutdownD>('shutdown');
+    fcntl = lib.lookupFunction<_FcntlN, _FcntlD>('fcntl');
+    if (Platform.isLinux) {
+      accept4 = lib.lookupFunction<_Accept4N, _Accept4D>('accept4');
+    }
     final loc = lib.lookupFunction<_ErrnoN, Pointer<Int32> Function()>(
       Platform.isMacOS ? '__error' : '__errno_location',
     );
@@ -57,8 +66,25 @@ class _Libc {
   late final _AcceptD accept;
   late final _SockNameD getsockname, getpeername;
   late final _ShutdownD shutdown;
+  late final _FcntlD fcntl;
+  _Accept4D? accept4;
   late final int Function() errno;
 }
+
+const int _fGetfl = 3, _fSetfl = 4, _fSetfd = 2, _fdCloexec = 1;
+const int _sockCloexec = 0x80000; // Linux accept4 flag
+int get _oNonblock => Platform.isMacOS ? 4 : 0x800;
+
+void _setNonblocking(_Libc c, int fd) {
+  final fl = c.fcntl(fd, _fGetfl, 0);
+  if (fl >= 0) c.fcntl(fd, _fSetfl, fl | _oNonblock);
+}
+
+final Finalizer<int> _fdFinalizer = Finalizer<int>((fd) {
+  try {
+    _Libc().close(fd);
+  } catch (_) {}
+});
 
 const int _eintr = 4;
 const int _eagain = 35; // macOS; Linux is 11 (both handled below)
@@ -185,6 +211,8 @@ ServerSocket fdServerSocket(int fd) => _FdServerSocket(fd);
 class _FdSocket extends Stream<Uint8List> implements Socket {
   _FdSocket(this._fd, this._readable, this._writable) {
     _libc = _Libc();
+    if (_writable) _setNonblocking(_libc, _fd);
+    _fdFinalizer.attach(this, _fd, detach: this);
     _controller = StreamController<Uint8List>(
       onListen: _startReading,
       onResume: () => _more(),
@@ -246,6 +274,7 @@ class _FdSocket extends Stream<Uint8List> implements Socket {
 
   void _maybeFinish() {
     if (_closed && _readerGone && !_done.isCompleted) {
+      _fdFinalizer.detach(this);
       _libc.close(_fd);
       _done.complete();
     }
@@ -264,55 +293,87 @@ class _FdSocket extends Stream<Uint8List> implements Socket {
     cancelOnError: cancelOnError,
   );
 
+  // Pending writes, drained from the event loop; flush() completes when empty.
+  final List<Uint8List> _queue = <Uint8List>[];
+  int _queueOff = 0;
+  Timer? _writeTimer;
+  final List<Completer<void>> _flushWaiters = <Completer<void>>[];
+  Object? _writeError;
+
   @override
   void add(List<int> data) {
     if (!_writable || _writeClosed) {
       throw StateError('Socket is not writable');
     }
+    if (_closed) throw StateError('Socket is closed');
     final bytes = data is Uint8List ? data : Uint8List.fromList(data);
-    final p = malloc<Uint8>(bytes.length == 0 ? 1 : bytes.length);
-    try {
-      p.asTypedList(bytes.length).setAll(0, bytes);
-      var off = 0;
-      while (off < bytes.length) {
-        final n = _libc.write(_fd, p + off, bytes.length - off);
-        if (n < 0) {
-          final e = _libc.errno();
-          if (e == _eintr) continue;
-          if (_again(e)) {
-            _pollOut();
-            continue;
-          }
-          _fail('write', e);
-        }
-        off += n;
-      }
-    } finally {
-      malloc.free(p);
-    }
+    if (bytes.isEmpty) return;
+    _queue.add(Uint8List.fromList(bytes));
+    if (_queue.length == 1) _drain();
   }
 
-  void _pollOut() {
-    final pfd = calloc<Uint8>(8);
-    try {
-      final view = ByteData.sublistView(pfd.asTypedList(8));
-      view.setInt32(0, _fd, Endian.host);
-      view.setInt16(4, 4, Endian.host); // POLLOUT
-      _libc.poll(pfd, 1, 100);
-    } finally {
-      calloc.free(pfd);
+  void _drain() {
+    _writeTimer?.cancel();
+    _writeTimer = null;
+    while (_queue.isNotEmpty && !_closed) {
+      final chunk = _queue.first;
+      final p = malloc<Uint8>(chunk.length - _queueOff);
+      int n;
+      try {
+        p
+            .asTypedList(chunk.length - _queueOff)
+            .setAll(0, chunk.sublist(_queueOff));
+        n = _libc.write(_fd, p, chunk.length - _queueOff);
+      } finally {
+        malloc.free(p);
+      }
+      if (n < 0) {
+        final e = _libc.errno();
+        if (_again(e)) {
+          if (e == _eintr) continue;
+          _writeTimer = Timer(const Duration(milliseconds: 2), _drain);
+          return;
+        }
+        _writeError = SocketException('write failed', osError: OSError('', e));
+        _queue.clear();
+        break;
+      }
+      _queueOff += n;
+      if (_queueOff >= chunk.length) {
+        _queue.removeAt(0);
+        _queueOff = 0;
+      }
+    }
+    if (_closed) _queue.clear();
+    final waiters = List<Completer<void>>.of(_flushWaiters);
+    _flushWaiters.clear();
+    final err = _writeError;
+    _writeError = null;
+    for (final w in waiters) {
+      err == null ? w.complete() : w.completeError(err);
     }
   }
 
   @override
-  Future<void> flush() async {}
+  Future<void> flush() {
+    if (_queue.isEmpty) {
+      final err = _writeError;
+      _writeError = null;
+      return err == null ? Future<void>.value() : Future<void>.error(err);
+    }
+    final c = Completer<void>();
+    _flushWaiters.add(c);
+    return c.future;
+  }
 
   @override
   Future<void> close() async {
-    if (!_writeClosed) {
+    await flush();
+    if (!_writeClosed && _writable) {
       _writeClosed = true;
       _libc.shutdown(_fd, 1); // SHUT_WR
     }
+    _writeClosed = true;
     if (!_readable) destroy();
   }
 
@@ -325,6 +386,7 @@ class _FdSocket extends Stream<Uint8List> implements Socket {
   void destroy() {
     if (_closed) return;
     _closed = true;
+    _writeTimer?.cancel();
     _toReader?.send('stop');
     if (_port == null) _readerGone = true;
     if (!_controller.isClosed) _controller.close();
@@ -405,7 +467,11 @@ class _FdServerSocket extends Stream<Socket> implements ServerSocket {
   void _start() {
     _timer = Timer.periodic(const Duration(milliseconds: 20), (_) {
       while (!_closed && _pollIn(_libc, _fd, 0)) {
-        final fd = _libc.accept(_fd, nullptr.cast(), nullptr.cast());
+        final a4 = _libc.accept4;
+        final fd = a4 != null
+            ? a4(_fd, nullptr.cast(), nullptr.cast(), _sockCloexec)
+            : _libc.accept(_fd, nullptr.cast(), nullptr.cast());
+        if (fd >= 0 && a4 == null) _libc.fcntl(fd, _fSetfd, _fdCloexec);
         if (fd < 0) {
           final e = _libc.errno();
           if (_again(e)) return;
