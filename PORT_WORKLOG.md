@@ -84,10 +84,10 @@ decider_client partial): do not merge that; it gets redone. Causes:
 - reasoning_effort was not set, so agents inherited /root's (low).
 - Shim chain: stream.dart is barely started and NodeSocket/IncomingMessage
   do not extend it yet, so every proxy port is blocked behind it.
-Restart plan: one chunk per task (<=350 upstream lines, split at top-level
-declarations with ~/dev/srt-wt/tools/chunks.py), reasoning_effort high, a
-reviewer per chunk, the same agent resumed for the next chunk of its file.
-Shims first. Branch state at pause: see `git log main..port/<name>` in each
+Restart (user direction): agents are now more capable subinstances; run
+them at low effort, one agent per file as before, concise reports. Brief
+addendum at the end of WAVE1_BRIEF.md: no stopping for stubs, no
+simplified logic, read long files in ranges and commit per chunk. Branch state at pause: see `git log main..port/<name>` in each
 worktree; gate PASS of port/shim-sys e568f3f + port/shim-web 96abefc
 (unreviewed, not merged; shim-sys signs with an openssl subprocess, which
 Rule 3 does not allow).
