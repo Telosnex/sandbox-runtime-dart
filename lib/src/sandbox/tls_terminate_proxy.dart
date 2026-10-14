@@ -977,7 +977,7 @@ void _forwardUpstreamGuarded(
         '[tls-terminate] forwardUpstream failed: ${errorMessage(err)}',
         level: 'error',
       );
-      respondUpstreamError(res, err as Error, target.denyHeader);
+      respondUpstreamError(res, err, target.denyHeader);
       _destroyAfterDenial(req, res);
     }),
   );
@@ -1275,7 +1275,7 @@ Future<void> _forwardUpstream(
       req.socket.destroy();
       return;
     }
-    respondUpstreamError(res, err as Error, target.denyHeader);
+    respondUpstreamError(res, err, target.denyHeader);
   }
 
   // Vet and pick the upstream address first (see createUpstreamLeg); the
