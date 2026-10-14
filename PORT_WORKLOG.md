@@ -460,6 +460,69 @@ Dart `sync*` cannot return a value. So, decided by /root:
 - Plain value generators (`Generator<string>`, for example
   `properAncestors`) stay `Iterable<String> f() sync*`.
 
+### Types for the remaining modules (decided 2026-10-13, wave 0 retry)
+
+Shims are named for the Node module they stand for; a shim class whose
+Node name clashes with dart:io gets a `Node` prefix (`NodeSocket`,
+`NodeServer`, `NodeChildProcess`). Otherwise it keeps Node's name.
+
+| Upstream type | Dart |
+|---|---|
+| `Readable`, `Writable`, `Duplex`, `Transform`, `PassThrough` (`node:stream`) | `lib/src/node/stream.dart`, same names, imported `as stream` |
+| `Socket` (`node:net`) | `net.NodeSocket`; it will extend `stream.Duplex` (wave 1), so `Socket \| Duplex` is `stream.Duplex` |
+| `Server` (`node:net`) / (`node:http`) | `net.NodeServer` / `http.NodeHttpServer` |
+| `IncomingMessage` / `ServerResponse`, `ClientRequest` | `http.IncomingMessage` (will extend `stream.Readable`) / `http.ServerResponse`, `http.ClientRequest` (will extend `stream.Writable`) |
+| `IncomingHttpHeaders`, `Agent` (`node:http`) | `http.IncomingHttpHeaders`, `http.Agent` |
+| `node:https` `request`, `Agent` | `lib/src/node/https.dart` (wave 1) |
+| `TLSSocket`, `SecureContext`, `TLSSocketOptions` | `tls.TLSSocket`, `tls.SecureContext`, options as `Map<String, Object?>` like `tls.connect` |
+| `LookupFunction`, `BlockList` | `net.LookupFunction`, `net.BlockList` |
+| `ChildProcess` | `child_process.NodeChildProcess` |
+| `AbortSignal`, `AbortController` | `abort.dart` |
+| Web `Request`, `Headers`, `ReadableStream<T>`, `ReadableStreamDefaultReader<T>` (globals) | `lib/src/node/fetch.dart`, same names, imported `as fetch` |
+| `URL` (`node:url` or global) | `url.URL` in `lib/src/node/url.dart` (wave 1) |
+| `console.warn/error/log` | `lib/src/node/console.dart`, imported `as console` |
+| `Buffer` | `Uint8List` (Conventions: Node `Buffer`) |
+| `@pondwader/socks5-server` | `lib/src/node/socks5_server.dart` (wave 1) |
+| `X509Certificate`, `sign` (`node:crypto`), `node-forge` | `crypto.dart`, `forge.dart` |
+
+Declarations:
+- A TS `type`/`interface` of plain fields: a class with `final` fields and
+  a `const` constructor of named parameters (as `MacOSSandboxParams`,
+  `ResolvedAddressGuardOptions`). Optional field: nullable.
+- A TS `interface` (or object type) with methods, implemented by object
+  literals upstream: `abstract interface class` (as `MuxProxyServer`,
+  `ResolvedAddressGuard`); an optional method (`m?(...)`) is a nullable
+  function-typed field instead. The object literal becomes a private class
+  implementing it.
+- An exported object constant (`export const SandboxManager: ISandboxManager
+  = { ... }`): `final ISandboxManager SandboxManager = _SandboxManager();`
+  with the lint ignored per file.
+- A union of object types: a sealed class with one subclass per branch,
+  named `<Union><Branch>` (precedent: `FilesystemPathEntry`). A union of
+  string literals: `String` (Conventions: Unions).
+- `Promise<T> | T`: `FutureOr<T>`. `Record<string, T>`: `Map<String, T>`.
+  `unknown`: `Object?`. `readonly T[]`: `List<T>`.
+- `export function*` returning `Steps<T>`: as Generators above.
+
+Test spies. Upstream tests replace a module function with
+`spyOn(module, 'name').mockImplementation(...)`. The Dart port does it by
+making that function a top-level variable that holds the implementation:
+
+```dart
+/// Node's `fs.readdirSync`. A variable so a test can replace it, as
+/// upstream's tests do with `spyOn(fs, 'readdirSync')`.
+List<Dirent> Function(String path, {bool withFileTypes}) readdirSync =
+    _readdirSync;
+```
+
+Callers are unchanged. A test saves it, assigns a closure, and restores it
+in `finally` (or `addTearDown`); calls are counted in the closure. Spy
+points exist for `fs.readdirSync`, `fs.realpathSync`, `fs.statSync`,
+`console.warn`, `console.error`, `console.log`, `process.getuid` and
+`which.whichSync`. A test needing another one: message /root (the files
+are shared). `spyOn(platform, 'getPlatform')` stays
+`process.setPlatformForTesting`.
+
 ### Worked example
 
 Upstream `listenInRange(server, doListen, range, exclude)` returns a
