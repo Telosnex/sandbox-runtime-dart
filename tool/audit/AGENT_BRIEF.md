@@ -24,10 +24,12 @@ Goal: each test file you own must diff against its upstream file by eye.
 - `lib/src/node/mozilla_roots.dart` may show as modified after `dart format`
   or builds; leave it alone (do not commit it).
 
-Porting a test file from scratch: start from
-`dart run tool/audit/ts2dart.dart ../sandbox-runtime/<file>.test.ts`, which
-keeps upstream's statements, titles and comments, then fix what
-`dart analyze` reports. Never reorder or reshape what it kept.
+Porting a test file from scratch: you may start from
+`dart run tool/audit/ts2dart.dart ../sandbox-runtime/<file>.test.ts`, but ONLY
+as the initial skeleton, and ONLY for test files (never for lib/ or tool/
+code). It is a draft, not a port: read the upstream file and your Dart file
+both in full, statement by statement, and fix everything it got wrong
+before you run anything or report. Never reorder or reshape what it kept.
 
 Checks (run them until clean):
 - `dart run tool/audit/comments.dart <name-fragment>` lists upstream comment

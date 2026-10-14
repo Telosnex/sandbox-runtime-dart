@@ -94,9 +94,10 @@ expected output.
 - Check an agent's report against `dart test test/port` and its diff:
   in the fidelity pass, half the agents reported done with work missing,
   and one replaced an upstream comment with an invented one.
-- Start every test port from `tool/audit/ts2dart.dart`: it drafts all 119
-  upstream test files without losing a title or comment, so the porter (or
-  agent) only fixes types and APIs. Put that in each porting task.
+- `tool/audit/ts2dart.dart` may be used ONLY for the initial skeleton of a
+  TEST file, never for lib/ or tool/ code. The porter must still read the
+  upstream file and the Dart file in full to confirm the port is correct.
+  Put this in every porting task.
 - Author: James O'Leary <jpohhhh@gmail.com>.
 
 ### Remaining source (about 19,000 of 27,700 upstream lines)

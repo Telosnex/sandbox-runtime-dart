@@ -45,5 +45,8 @@ translate, and every draft keeps all upstream titles and comments.
 `config-validation.test.ts` drafts with 47 analyzer errors (the Python
 version left 51, before its header and imports were written by hand).
 
+Use it ONLY for the initial skeleton of a test file, never for lib/ or
+tool/ code; then read the upstream file and the draft in full.
+
 Workflow: draft, then `dart analyze` and fix, then `dart test test/port`
 and the file's own tests.
