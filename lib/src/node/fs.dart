@@ -36,6 +36,8 @@ typedef _CloseN = Int32 Function(Int32);
 typedef _CloseD = int Function(int);
 typedef _FchmodN = Int32 Function(Int32, Int32);
 typedef _FchmodD = int Function(int, int);
+typedef _WriteN = IntPtr Function(Int32, Pointer<Uint8>, IntPtr);
+typedef _WriteD = int Function(int, Pointer<Uint8>, int);
 typedef _LstatNative = Int32 Function(Pointer<Uint8>, Pointer<Void>);
 typedef _LstatDart = int Function(Pointer<Uint8>, Pointer<Void>);
 typedef _ReadlinkNative =
@@ -331,6 +333,24 @@ void writeFileSync(
       ? contents
       : utf8.encode(contents.toString());
   final path = target.toString();
+  if (target is int) {
+    final libc = _libc;
+    if (libc == null)
+      throw UnimplementedError('writeFileSync with fd on Windows');
+    final data = calloc<Uint8>(bytes.length);
+    try {
+      data.asTypedList(bytes.length).setAll(0, bytes);
+      final count = libc.lookupFunction<_WriteN, _WriteD>('write')(
+        target,
+        data,
+        bytes.length,
+      );
+      if (count != bytes.length) throw nodeError('EIO', 'write', '$target');
+    } finally {
+      calloc.free(data);
+    }
+    return;
+  }
   File(path).writeAsBytesSync(bytes);
   final mode = options['mode'];
   if (mode is int && (Platform.isLinux || Platform.isMacOS)) {
