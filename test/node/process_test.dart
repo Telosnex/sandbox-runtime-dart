@@ -72,6 +72,11 @@ void main() {
     expect(b.indexOfBytes([1], 1), -1);
     expect(Buffer.concat([b, Buffer.from('a')]).length, 6);
     expect(Buffer.isBuffer(b), isTrue);
+    expect(b.readUIntBE(0, 3), 0x010203);
+    expect(b.readUIntLE(0, 2), 0x0201);
+    expect(() => b.readUIntBE(3, 3), throwsRangeError);
+    expect(() => b.readUIntLE(0, 7), throwsRangeError);
+    expect(os.endianness(), 'LE');
     expect(Buffer.byteLength('aa', 'hex'), 1);
   });
 }
