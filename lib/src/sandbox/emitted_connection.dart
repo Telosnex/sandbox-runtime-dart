@@ -1,12 +1,12 @@
-// PARTIAL: ported every declaration; the bodies of keepFlushedHeaderBatches, writeHeadsAsLatin1, gateSocketOnBufferedBody and endRequestAfterResponse live in node/emitted_http.dart and move back here with the proxy port; pending port of the rest of src/sandbox/emitted-connection.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/emitted-connection.ts @ 24eb39e.
 // ignore_for_file: slash_for_doc_comments, dangling_library_doc_comments
 
-import 'dart:io';
+import 'dart:async';
 
 import '../node/http.dart' as http;
 import '../node/errno.dart';
-import '../node/emitted_http.dart' as node_http;
 import '../node/net.dart' as net;
+import '../node/process.dart' as process;
 
 /**
  * Workarounds for a runtime whose http.Server, serving a connection handed
@@ -14,7 +14,10 @@ import '../node/net.dart' as net;
  */
 
 /** Whether this is Bun, whose http.Server these workarounds are for. */
-bool runsOnBun() => node_http.runsOnBun();
+bool runsOnBun() {
+  // Dart: there is no globalThis.Bun; this is never Bun.
+  return false;
+}
 
 bool Function()? _probeOverride;
 
@@ -24,8 +27,10 @@ bool Function()? _probeOverride;
  * a 'connection' listener of its own. TLS termination in this process
  * hands each tunnel's decrypted connection to one.
  */
-bool servesEmittedConnections() =>
-    _probeOverride?.call() ?? node_http.servesEmittedConnections();
+bool servesEmittedConnections() {
+  return _probeOverride?.call() ??
+      http.createServer().listenerCount('connection') > 0;
+}
 
 /**
  * @internal Test seam: answer servesEmittedConnections with `probe` in
@@ -37,7 +42,10 @@ void overrideEmittedConnectionProbe(bool Function()? probe) {
 }
 
 /** The runtime, as the start-up error names it. */
-String _runtimeName() => 'Dart ${Platform.version.split(' ').first}';
+String _runtimeName() {
+  final bun = process.versions['bun'];
+  return bun != null ? 'Bun $bun' : 'Node ${process.version}';
+}
 
 /**
  * Throw where TLS termination is asked for and this runtime cannot do it
@@ -70,7 +78,56 @@ void assertTlsTerminationSupported() {
  * onMessageComplete to tell the two apart, nothing is installed.
  */
 void keepFlushedHeaderBatches(net.NodeSocket sock) {
-  node_http.keepFlushedHeaderBatches(sock);
+  final net.HTTPParser? parser = sock.parser;
+  if (parser == null) return;
+  // Dart: the statics are HTTPParser's constants, so upstream's typeof checks
+  // on parser.constructor are always true.
+  const int onHeaders = net.HTTPParser.kOnHeaders;
+  const int onHeadersComplete = net.HTTPParser.kOnHeadersComplete;
+  const int onMessageComplete = net.HTTPParser.kOnMessageComplete;
+  final Function? complete = parser[onHeadersComplete];
+  final Function? messageComplete = parser[onMessageComplete];
+  if (parser[onHeaders] is Function ||
+      complete is! Function ||
+      messageComplete is! Function) {
+    return;
+  }
+  var headers = <String>[];
+  var url = '';
+  parser[onHeaders] = (List<String> batch, String part) {
+    headers = [...headers, ...batch];
+    url += part;
+  };
+  parser[onHeadersComplete] =
+      ([
+        Object? a0,
+        Object? a1,
+        Object? a2,
+        Object? a3,
+        Object? a4,
+        Object? a5,
+        Object? a6,
+        Object? a7,
+        Object? a8,
+      ]) {
+        final args = [a0, a1, a2, a3, a4, a5, a6, a7, a8];
+        if (headers.isNotEmpty || url != '') {
+          args[2] = args[2] is List
+              ? [...headers, ...(args[2] as List)]
+              : headers;
+          args[4] = url + (args[4] is String ? args[4] as String : '');
+          headers = [];
+          url = '';
+        }
+        return Function.apply(complete, args);
+      };
+  parser[onMessageComplete] = () {
+    // Whatever came through onHeaders since the head was the message's
+    // trailers.
+    headers = [];
+    url = '';
+    return Function.apply(messageComplete, []);
+  };
 }
 
 /**
@@ -83,7 +140,7 @@ void keepFlushedHeaderBatches(net.NodeSocket sock) {
  * be bytes or ASCII (see respondDenied).
  */
 void writeHeadsAsLatin1(net.NodeSocket sock) {
-  node_http.writeHeadsAsLatin1(sock);
+  if (runsOnBun()) sock.setDefaultEncoding('latin1');
 }
 
 /**
@@ -132,7 +189,27 @@ void gateSocketOnBufferedBody(
   int cap, [
   ByteBudget? budget,
 ]) {
-  node_http.gateSocketOnBufferedBody(req, cap, budget);
+  final socket = req.socket;
+  var counted = 0;
+  void check() {
+    final held = req.readableLength;
+    if (budget != null) adjustByteBudget(budget, held - counted);
+    counted = held;
+    if (held > cap ||
+        (budget != null && budget.used > budget.limit && held > 0)) {
+      socket.pause();
+    }
+  }
+
+  void release() {
+    socket.off('data', check);
+    if (budget != null) adjustByteBudget(budget, -counted);
+    counted = 0;
+  }
+
+  socket.on('data', check);
+  req.once('end', release);
+  req.once('close', release);
 }
 
 final Expando<bool> _endsGracefully = Expando<bool>();
@@ -153,8 +230,16 @@ void markEndsGracefully(Object socket) {
  * destroy the request.
  */
 void endRequestAfterResponse(http.IncomingMessage req) {
-  node_http.endRequestAfterResponse(
-    req,
-    isMarkedEndsGracefully: (socket) => _endsGracefully[socket] == true,
+  final socket = req.socket;
+  if (_endsGracefully[socket] != true || socket.destroyed) {
+    req.destroy();
+    return;
+  }
+  socket.end();
+  final backstop = Timer(
+    const Duration(milliseconds: 1000),
+    () => req.destroy(),
   );
+  // Dart: a Timer has no unref().
+  socket.once('close', () => backstop.cancel());
 }
