@@ -561,6 +561,10 @@ class NodeSocket extends stream.Duplex {
     return super.unshift(chunk, encoding);
   }
 
+  /// The host this socket was asked to connect to (Node's `socket._host`),
+  /// null until [startConnect].
+  String? connectHost;
+
   /// Open the connection for a [NodeSocket.pending] socket. [secure], when
   /// given, wraps the connected socket in TLS: 'connect' is emitted when TCP
   /// connects, and 'secureConnect' when the handshake is done.
@@ -572,6 +576,7 @@ class NodeSocket extends stream.Duplex {
     Future<Socket> Function(Socket raw)? secure,
     Future<Socket> Function()? dialer,
   }) {
+    connectHost = host;
     unawaited(_connect(path, port, host, lookup, secure, dialer));
   }
 
