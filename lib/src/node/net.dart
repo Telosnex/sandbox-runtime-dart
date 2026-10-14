@@ -878,6 +878,35 @@ class NodeSocket extends stream.Duplex {
     unawaited(_serverTlsOver(under, secure));
   }
 
+  /// Reads the raw connection under a socket just handed to a TLSSocket
+  /// until [enough] holds of what has been read (or it ends, or 5 s pass),
+  /// and returns [have] plus those bytes.
+  Future<Uint8List> collectRawUntil(
+    Uint8List have,
+    bool Function(Uint8List) enough,
+  ) async {
+    var buf = have;
+    final sub = _under?._subscription;
+    if (sub == null || enough(buf)) return buf;
+    final done = Completer<void>();
+    void finish() {
+      if (!done.isCompleted) done.complete();
+    }
+
+    sub.onData((List<int> d) {
+      buf = Uint8List.fromList([...buf, ...d]);
+      if (enough(buf)) finish();
+    });
+    sub.onDone(finish);
+    sub.onError((Object _) => finish());
+    sub.resume();
+    final timer = Timer(const Duration(seconds: 5), finish);
+    await done.future;
+    timer.cancel();
+    sub.pause();
+    return buf;
+  }
+
   Future<void> _serverTlsOver(
     NodeSocket under,
     Future<Socket> Function(Socket raw, Uint8List buffered) secure,

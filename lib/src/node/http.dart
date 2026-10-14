@@ -1446,7 +1446,7 @@ void _mergeParsedHeader(
 
 void _mergeHeader(Map<String, Object?> headers, String name, String value) {
   if (!headers.containsKey(name)) {
-    headers[name] = value;
+    headers[name] = name == 'set-cookie' ? [value] : value;
     return;
   }
   final previous = headers[name];
