@@ -1077,6 +1077,7 @@ Future<void> main() async {
             onClosed: (why) => closed.add(why),
           ),
         );
+        // eslint-disable-next-line @typescript-eslint/await-thenable -- bun:test types .rejects.toThrow() as void; the await is required at runtime
         await expectLater(p.ready, throwsA(anything));
         await p.close();
         expect(closed[0], startsWith('start failed'));
@@ -1101,6 +1102,7 @@ Future<void> main() async {
             onClosed: (why) => closed.add(why),
           ),
         );
+        // eslint-disable-next-line @typescript-eslint/await-thenable -- bun:test types .rejects.toThrow() as void; the await is required at runtime
         await expectLater(p.ready, throwsA(anything));
         await p.close();
         expect(closed[0], startsWith('start failed'));
@@ -1585,7 +1587,7 @@ Future<void> main() async {
       ('/v1/models?q=%2e', '/v1/models?q=%2e'),
       ('/a\\b', '/a\\b'),
     ]) {
-      test('origin form "$raw" goes as spelled', () {
+      test('origin form $raw goes as spelled', () {
         expect(requestTargetAsSpelled(raw), want);
       });
     }
@@ -1600,7 +1602,7 @@ Future<void> main() async {
       '/v1/\u0001',
       '',
     ]) {
-      test('"$raw" is refused', () {
+      test('$raw is refused', () {
         expect(requestTargetAsSpelled(raw), isNull);
       });
     }
@@ -1694,7 +1696,7 @@ Future<void> main() async {
       );
 
       test(
-        'TLS-terminated: //, /\\ and absolute form are answered 400 without asking',
+        r'TLS-terminated: //, /\ and absolute form are answered 400 without asking',
         () async {
           final s = await tlsSetup((_) => {'action': 'allow'});
           for (final p in [
@@ -1805,6 +1807,7 @@ Future<void> main() async {
   });
 
   group('proxy-only mode takes destination hosts in plain ASCII only', () {
+    /** A CONNECT to target; the raw reply (the 200 or the refusal). */
     Future<String> connectTo(int port, String target) => rawExchange(
       port,
       'CONNECT $target HTTP/1.1\r\nHost: $target\r\n\r\n',
@@ -2028,6 +2031,7 @@ Future<void> main() async {
         'a connection handed in with emit("connection"): the proxy reads a few MiB ahead, not the whole body',
         () async {
           final size = 64 << 20;
+          // The upstream reads 1 MiB, then nothing for 1.5 s, then the rest.
           final up = await stallingUpstream(1500);
           final upPort = (up.address() as net.NodeAddress).port;
           final proxy = createHttpProxyServer(
@@ -2201,6 +2205,8 @@ Future<void> main() async {
         // Dart: upstream spies on NetServer/HttpServer/HttpsServer
         // .prototype.listen; a Dart method cannot be patched, so no hook
         // exists yet (shim owner).
+        // Every server class a listener could come from (they need not share
+        // a prototype chain).
         final listened = <Object?>[];
         final raw = await s.send('/ok');
         expect(raw, startsWith('HTTP/1.1 200'));
