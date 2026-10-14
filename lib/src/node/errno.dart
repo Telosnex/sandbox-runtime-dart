@@ -249,3 +249,20 @@ String _reasonForCode(String code) {
       return 'operating system error';
   }
 }
+
+/// JS `(err as Error).message`: the message of a NodeException, Exception
+/// or Error, and `String(err)` otherwise.
+String errorMessage(Object? err) {
+  if (err is NodeException) return err.message;
+  if (err is OSError) return err.message;
+  if (err is IOException || err is FormatException) {
+    final dynamic e = err;
+    try {
+      return e.message as String;
+    } catch (_) {}
+  }
+  if (err is ArgumentError) return '${err.message}';
+  if (err is StateError) return err.message;
+  if (err is UnsupportedError) return err.message ?? '';
+  return '$err';
+}

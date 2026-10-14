@@ -115,3 +115,38 @@ int bufferIndexOf(List<int> haystack, Object value, [int byteOffset = 0]) {
   }
   return -1;
 }
+
+/// Node's `buf.readUInt16BE(offset)`.
+int readUInt16BE(List<int> buf, [int offset = 0]) {
+  _bounds(buf, offset, 2);
+  return (buf[offset] << 8) | buf[offset + 1];
+}
+
+/// Node's `buf.readUInt32BE(offset)`.
+int readUInt32BE(List<int> buf, [int offset = 0]) {
+  _bounds(buf, offset, 4);
+  return (buf[offset] << 24) |
+      (buf[offset + 1] << 16) |
+      (buf[offset + 2] << 8) |
+      buf[offset + 3];
+}
+
+/// Node's `buf.writeUInt16BE(value, offset)`; returns offset + 2.
+int writeUInt16BE(List<int> buf, int value, [int offset = 0]) {
+  _bounds(buf, offset, 2);
+  if (value < 0 || value > 0xffff) {
+    throw RangeError.range(value, 0, 0xffff, 'value');
+  }
+  buf[offset] = value >> 8;
+  buf[offset + 1] = value & 0xff;
+  return offset + 2;
+}
+
+void _bounds(List<int> buf, int offset, int size) {
+  if (offset < 0 || offset + size > buf.length) {
+    throw RangeError(
+      'The value of "offset" is out of range. It must be >= 0 '
+      'and <= ${buf.length - size}. Received $offset',
+    );
+  }
+}
