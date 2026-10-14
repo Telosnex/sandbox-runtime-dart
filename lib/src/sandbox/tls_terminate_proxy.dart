@@ -1143,12 +1143,7 @@ Future<void> _forwardUpstream(
   fwdHeaders['host'] = authority;
   // The decision's edits go before the credential hooks below, so a value
   // a decision sets can itself carry a masked credential's sentinel.
-  if (decision != null) {
-    applyHeaderEdits(fwdHeaders, (
-      removeHeaders: decision.removeHeaders,
-      setHeaders: decision.setHeaders,
-    ));
-  }
+  if (decision != null) applyHeaderEdits(fwdHeaders, decision);
   // SigV4 planning runs on the PRE-substitution headers (the trigger is
   // the fake access key id in the credential scope, which the header
   // substitution below replaces) but on the POST-strip view: the plan's

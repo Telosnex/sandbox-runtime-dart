@@ -260,7 +260,7 @@ Future<({stream.Readable body, RequestDecision decision})?> decideAndRespond(
     shim = teeSource;
     teeSource.on('error', () {});
     req.pipe(teeSource);
-    final web = stream.Readable.toWeb(teeSource);
+    final web = stream.Readable.toWeb<Uint8List>(teeSource);
     final [a, b] = web.tee();
     forCallback = a;
     forUpstream = stream.Readable.fromWeb(b);

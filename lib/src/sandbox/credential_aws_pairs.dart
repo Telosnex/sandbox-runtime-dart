@@ -1,7 +1,18 @@
-// STUB: pending port of src/sandbox/credential-aws-pairs.ts @ 24eb39e.
-// ignore_for_file: constant_identifier_names, dangling_library_doc_comments, slash_for_doc_comments
+// Ported from sandbox-runtime src/sandbox/credential-aws-pairs.ts @ 24eb39e.
+// ignore_for_file: constant_identifier_names, dangling_library_doc_comments, slash_for_doc_comments, prefer_interpolation_to_compose_strings, library_private_types_in_public_api
 
+import '../node/console.dart' as console;
 import '../node/http.dart' show IncomingHttpHeaders;
+import '../node/process.dart' as process;
+import '../utils/debug.dart' show logForDebugging;
+import 'aws_sigv4.dart'
+    show
+        Sigv4SignInput,
+        UNSIGNED_PAYLOAD,
+        detectSigv4,
+        parseSigv4Authorization,
+        signSigv4,
+        singleHeader;
 import 'credential_sentinel.dart' show HostMatcher;
 import 'sandbox_config.dart'
     show AwsPairConfig, CredentialEnvVarConfig, Sigv4Config;
@@ -68,25 +79,26 @@ class AwsCredentialPair {
  * written to disk, never logged.
  */
 class AwsPairRegistry {
+  final Map<String, AwsCredentialPair> _bySentinel = {};
+
   /** Insert or replace the pair keyed on its access-key-id sentinel. */
-  void register(AwsCredentialPair pair) => throw UnimplementedError(
-    'pending port of src/sandbox/credential-aws-pairs.ts',
-  );
+  void register(AwsCredentialPair pair) {
+    _bySentinel[pair.accessKeyIdSentinel] = pair;
+  }
 
   /** Exact-match lookup by the fake access key id; never pattern-based. */
-  AwsCredentialPair? lookup(String accessKeyIdSentinel) =>
-      throw UnimplementedError(
-        'pending port of src/sandbox/credential-aws-pairs.ts',
-      );
+  AwsCredentialPair? lookup(String accessKeyIdSentinel) {
+    return _bySentinel[accessKeyIdSentinel];
+  }
 
-  int get size => throw UnimplementedError(
-    'pending port of src/sandbox/credential-aws-pairs.ts',
-  );
+  int get size {
+    return _bySentinel.length;
+  }
 
   /** Drop every pair. Called on session teardown. */
-  void clear() => throw UnimplementedError(
-    'pending port of src/sandbox/credential-aws-pairs.ts',
-  );
+  void clear() {
+    _bySentinel.clear();
+  }
 }
 
 /**
@@ -114,17 +126,114 @@ void registerAwsPairs(
   Map<String, String> setEnvVars,
   AwsPairRegistry registry, [
   Map<String, String?>? env,
-]) => throw UnimplementedError(
-  'pending port of src/sandbox/credential-aws-pairs.ts',
-);
+]) {
+  env ??= process.env;
+  final specs = <AwsPairConfig>[...(awsPairs ?? [])];
+  final explicitNames = Set<String>.of(
+    specs.expand(
+      (p) => [
+        p.accessKeyIdVar,
+        p.secretAccessKeyVar,
+        ...(p.sessionTokenVar != null && p.sessionTokenVar!.isNotEmpty
+            ? [p.sessionTokenVar!]
+            : <String>[]),
+      ],
+    ),
+  );
+  final conventional = [
+    AWS_ACCESS_KEY_ID_VAR,
+    AWS_SECRET_ACCESS_KEY_VAR,
+    AWS_SESSION_TOKEN_VAR,
+  ];
+  if (!conventional.any((n) => explicitNames.contains(n))) {
+    specs.add(
+      const AwsPairConfig(
+        accessKeyIdVar: AWS_ACCESS_KEY_ID_VAR,
+        secretAccessKeyVar: AWS_SECRET_ACCESS_KEY_VAR,
+        sessionTokenVar: AWS_SESSION_TOKEN_VAR,
+      ),
+    );
+  }
+
+  // A variable is usable as a pair member when it has a whole-value
+  // mask entry AND was actually masked at runtime (set in the host env).
+  CredentialEnvVarConfig? wholeValueEntry(String name) => envVars
+      .where(
+        (v) =>
+            v.name == name &&
+            v.mode == 'mask' &&
+            v.extract == null &&
+            v.decode == null,
+      )
+      .firstOrNull;
+  String? maskedSentinel(String name) =>
+      wholeValueEntry(name) != null ? setEnvVars[name] : null;
+
+  for (final spec in specs) {
+    final akidSentinel = maskedSentinel(spec.accessKeyIdVar);
+    final secretMasked = maskedSentinel(spec.secretAccessKeyVar) != null;
+    final realAkid = env[spec.accessKeyIdVar];
+    final realSecret = env[spec.secretAccessKeyVar];
+    if (akidSentinel == null ||
+        !secretMasked ||
+        realAkid == null ||
+        realSecret == null) {
+      if (secretMasked && akidSentinel == null) {
+        final msg =
+            '[sandbox-runtime] WARNING: "${spec.secretAccessKeyVar}" is '
+            'masked but "${spec.accessKeyIdVar}" is not, so no AWS '
+            'credential pair was registered. SigV4 requests will be signed '
+            'with the masked placeholder secret and the proxy cannot '
+            'detect or re-sign them — they will fail upstream. Mask both '
+            'variables (whole-value) to enable re-signing.';
+        console.warn(msg);
+        logForDebugging(msg, level: 'warn');
+      }
+      continue;
+    }
+
+    final akidEntry = wholeValueEntry(spec.accessKeyIdVar)!;
+    final sessionSentinel = spec.sessionTokenVar != null
+        ? maskedSentinel(spec.sessionTokenVar!)
+        : null;
+    final realSessionToken =
+        sessionSentinel != null && spec.sessionTokenVar != null
+        ? env[spec.sessionTokenVar!]
+        : null;
+
+    registry.register(
+      AwsCredentialPair(
+        accessKeyIdSentinel: akidSentinel,
+        realAccessKeyId: realAkid,
+        realSecretAccessKey: realSecret,
+        realSessionToken: realSessionToken,
+        injectHosts: akidEntry.injectHosts ?? allowedDomains,
+      ),
+    );
+    logForDebugging(
+      '[credential-aws] registered SigV4 pair for '
+              '${spec.accessKeyIdVar}/${spec.secretAccessKeyVar}' +
+          (realSessionToken != null ? ' (+session token)' : ''),
+    );
+  }
+}
 
 /** Allowed values: `'deny'` | `'passthrough'`. */
 typedef Sigv4Policy = String;
 
-({Sigv4Policy streaming, Sigv4Policy presigned, Sigv4Policy sigv4a})
-resolveSigv4Policies(Sigv4Config? config) => throw UnimplementedError(
-  'pending port of src/sandbox/credential-aws-pairs.ts',
-);
+typedef _Sigv4Policies = ({
+  Sigv4Policy streaming,
+  Sigv4Policy presigned,
+  Sigv4Policy sigv4a,
+});
+
+_Sigv4Policies resolveSigv4Policies(Sigv4Config? config) {
+  return (
+    streaming: config?.streaming ?? 'deny',
+    presigned: config?.presigned ?? 'deny',
+    sigv4a: config?.sigv4a ?? 'deny',
+  );
+}
 
 /**
  * Decision for one request, produced before header substitution runs.
@@ -142,7 +251,23 @@ class Sigv4PlanDeny extends Sigv4Plan {
 }
 
 class Sigv4PlanResign extends Sigv4Plan {
-  const Sigv4PlanResign({required this.payloadHash});
+  // Dart: upstream's object-literal `apply` method arrives as a closure.
+  Sigv4PlanResign({
+    required this.payloadHash,
+    required void Function(
+      IncomingHttpHeaders headers,
+      String hostHeader,
+      String payloadHash,
+    )
+    apply,
+  }) : _apply = apply;
+
+  final void Function(
+    IncomingHttpHeaders headers,
+    String hostHeader,
+    String payloadHash,
+  )
+  _apply;
 
   final String action = 'resign';
 
@@ -164,9 +289,9 @@ class Sigv4PlanResign extends Sigv4Plan {
     IncomingHttpHeaders headers,
     String hostHeader,
     String payloadHash,
-  ) => throw UnimplementedError(
-    'pending port of src/sandbox/credential-aws-pairs.ts',
-  );
+  ) {
+    _apply(headers, hostHeader, payloadHash);
+  }
 }
 
 /**
@@ -197,6 +322,118 @@ PlanSigv4 createSigv4Planner(
   AwsPairRegistry registry,
   Sigv4Config? config,
   HostMatcher matches,
-) => throw UnimplementedError(
-  'pending port of src/sandbox/credential-aws-pairs.ts',
-);
+) {
+  final policies = resolveSigv4Policies(config);
+  return (method, requestTarget, headers, destHost) {
+    if (registry.size == 0) return null;
+    final detected = detectSigv4(headers, requestTarget);
+    if (detected == null) return null;
+    final pair = registry.lookup(detected.accessKeyId);
+    // Unknown key id — including a real, unmasked AWS credential — is
+    // never rewritten and never denied.
+    if (pair == null) return null;
+    if (!pair.injectHosts.any((p) => matches(destHost, p))) return null;
+
+    if (detected.kind != 'header-sigv4') {
+      // Dart: records are not indexable; `policies[detected.kind]` by switch.
+      final policy = switch (detected.kind) {
+        'streaming' => policies.streaming,
+        'presigned' => policies.presigned,
+        'sigv4a' => policies.sigv4a,
+        _ => null,
+      };
+      if (policy == 'passthrough') {
+        logForDebugging(
+          '[credential-aws] ${detected.kind} request with masked '
+          'credential passed through un-resigned per '
+          'credentials.sigv4.${detected.kind} (its signature covers '
+          'the placeholder secret and will fail upstream)',
+        );
+        return null;
+      }
+      return Sigv4PlanDeny(
+        reason:
+            'AWS SigV4 ${detected.kind} request uses a masked credential '
+            'but cannot be re-signed by the sandbox proxy; denied by '
+            'policy. Set credentials.sigv4.${detected.kind} to '
+            '"passthrough" to forward it unmodified (it will fail '
+            'upstream: the signature covers the masked placeholder).',
+      );
+    }
+
+    final auth = parseSigv4Authorization(
+      singleHeader(headers['authorization'])!,
+    );
+    if (auth == null) {
+      return const Sigv4PlanDeny(
+        reason:
+            'AWS SigV4 request uses a masked credential but its '
+            'Authorization header is malformed; the proxy cannot re-sign it.',
+      );
+    }
+    final amzDate = singleHeader(headers['x-amz-date']);
+    if (amzDate == null) {
+      return const Sigv4PlanDeny(
+        reason:
+            'AWS SigV4 request uses a masked credential but carries no '
+            'x-amz-date header; the proxy cannot re-sign it.',
+      );
+    }
+    // Presence check now so apply() cannot fail after the body was
+    // consumed. host is synthesized; a session token the pair carries
+    // is injected by apply().
+    final signedHeaders = [...auth.signedHeaders];
+    for (final name in signedHeaders) {
+      if (name == 'host') continue;
+      if (name == 'x-amz-security-token' && pair.realSessionToken != null) {
+        continue;
+      }
+      if (headers[name] == null) {
+        return Sigv4PlanDeny(
+          reason:
+              'AWS SigV4 request uses a masked credential but signed '
+              'header "$name" is missing; the proxy cannot re-sign it.',
+        );
+      }
+    }
+    if (pair.realSessionToken != null &&
+        !signedHeaders.contains('x-amz-security-token')) {
+      signedHeaders.add('x-amz-security-token');
+    }
+
+    final contentSha = singleHeader(headers['x-amz-content-sha256']);
+    return Sigv4PlanResign(
+      payloadHash: contentSha == UNSIGNED_PAYLOAD ? UNSIGNED_PAYLOAD : null,
+      apply: (fwdHeaders, hostHeader, payloadHash) {
+        if (pair.realSessionToken != null) {
+          fwdHeaders['x-amz-security-token'] = pair.realSessionToken;
+        }
+        if (fwdHeaders['x-amz-content-sha256'] != null &&
+            contentSha != UNSIGNED_PAYLOAD) {
+          // The recomputed hash is authoritative: the signature must
+          // cover the bytes forwarded upstream, not the client's claim.
+          fwdHeaders['x-amz-content-sha256'] = payloadHash;
+        }
+        final authorization = signSigv4(
+          Sigv4SignInput(
+            method: method,
+            requestTarget: requestTarget,
+            headers: fwdHeaders,
+            hostHeader: hostHeader,
+            signedHeaders: signedHeaders,
+            payloadHash: payloadHash,
+            amzDate: amzDate,
+            scope: (
+              date: auth.date,
+              region: auth.region,
+              service: auth.service,
+            ),
+            accessKeyId: pair.realAccessKeyId,
+            secretAccessKey: pair.realSecretAccessKey,
+          ),
+        ).authorization;
+        fwdHeaders['authorization'] = authorization;
+      },
+    );
+  };
+}

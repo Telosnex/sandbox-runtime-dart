@@ -9,8 +9,10 @@ import 'dart:typed_data';
 import 'package:path/path.dart' as p;
 
 import '../node/crypto.dart' as crypto;
-import '../node/errno.dart' show codeForErrno;
+import '../node/errno.dart' show errorCode, errorMessage;
 import '../node/forge.dart' as forge;
+import '../node/fs.dart' as fs;
+import '../node/fs_promises.dart' as fsp;
 import '../node/os.dart' as os;
 import '../node/tls.dart' as tls;
 import '../utils/debug.dart' show logForDebugging;
@@ -249,13 +251,10 @@ MitmCA createMitmCA({
 Future<void> disposeMitmCA(MitmCA ca) async {
   for (final dir in _ownedDirs(ca)) {
     try {
-      // rm(..., {force: true}): a directory already gone is not an error.
-      if (await Directory(dir).exists()) {
-        await Directory(dir).delete(recursive: true);
-      }
+      await fsp.rm(dir, {'recursive': true, 'force': true});
     } catch (err) {
       logForDebugging(
-        '[mitm-ca] cleanup failed: ${_errMessage(err)}',
+        '[mitm-ca] cleanup failed: ${errorMessage(err)}',
         level: 'warn',
       );
     }
@@ -270,12 +269,10 @@ Future<void> disposeMitmCA(MitmCA ca) async {
 void disposeMitmCASync(MitmCA ca) {
   for (final dir in _ownedDirs(ca)) {
     try {
-      if (Directory(dir).existsSync()) {
-        Directory(dir).deleteSync(recursive: true);
-      }
+      fs.rmSync(dir, {'recursive': true, 'force': true});
     } catch (err) {
       logForDebugging(
-        '[mitm-ca] cleanup failed: ${_errMessage(err)}',
+        '[mitm-ca] cleanup failed: ${errorMessage(err)}',
         level: 'warn',
       );
     }
@@ -322,7 +319,7 @@ String _writeTrustBundle(
     try {
       raw = File(extraPath).readAsStringSync();
     } catch (err) {
-      final code = _errCode(err);
+      final code = errorCode(err) ?? err.toString();
       logForDebugging(
         '[mitm-ca] extraCaCertPaths: cannot read $extraPath ($code); '
         'skipping',
@@ -348,7 +345,7 @@ String _writeTrustBundle(
     parts.addAll(certs);
   }
   final path = p.join(dir, 'trust-bundle.crt');
-  _writeFileSync(path, '${parts.join('\n')}\n', 420 /* 0o644 */);
+  fs.writeFileSync(path, '${parts.join('\n')}\n', {'mode': 420 /* 0o644 */});
   return path;
 }
 
@@ -491,7 +488,7 @@ MitmCA _buildMitmCA(
   List<String>? extraCaCertPaths,
   bool? ephemeral,
 }) {
-  final bundleDir = _mkdtempSync(p.join(os.tmpdir(), 'srt-ca-'));
+  final bundleDir = fs.mkdtempSync(p.join(os.tmpdir(), 'srt-ca-'));
   return MitmCA(
     certPath: certPath,
     keyPath: keyPath,
@@ -638,7 +635,7 @@ CaPairValidation validateCaPair(String certPem, String keyPem) {
     cert = pki.certificateFromPem(certPem);
     key = pki.privateKeyFromPem(keyPem);
   } catch (err) {
-    return CaPairValidationFailure('parse: ${_errMessage(err)}');
+    return CaPairValidationFailure('parse: ${errorMessage(err)}');
   }
   if (key is! forge.PrivateKey) {
     return const CaPairValidationFailure('key is not RSA');
@@ -659,7 +656,7 @@ CaPairValidation validateCaPair(String certPem, String keyPem) {
   try {
     thumbprint = certThumbprint(certPem);
   } catch (err) {
-    return CaPairValidationFailure('thumbprint: ${_errMessage(err)}');
+    return CaPairValidationFailure('thumbprint: ${errorMessage(err)}');
   }
   return CaPairValidationSuccess(
     thumbprint: thumbprint,
@@ -675,11 +672,11 @@ MitmCA _generateEphemeralCA([List<String>? extraCaCertPaths]) {
   final keyPem = generated.keyPem;
   // Write to disk so trust env vars (NODE_EXTRA_CA_CERTS etc.) can point at
   // a real path. mkdtemp gives us an unguessable per-process directory.
-  final dir = _mkdtempSync(p.join(os.tmpdir(), 'srt-ca-'));
+  final dir = fs.mkdtempSync(p.join(os.tmpdir(), 'srt-ca-'));
   final certPath = p.join(dir, 'ca.crt');
   final keyPath = p.join(dir, 'ca.key');
-  _writeFileSync(certPath, certPem, 420 /* 0o644 */);
-  _writeFileSync(keyPath, keyPem, 384 /* 0o600 */);
+  fs.writeFileSync(certPath, certPem, {'mode': 420 /* 0o644 */});
+  fs.writeFileSync(keyPath, keyPem, {'mode': 384 /* 0o600 */});
   logForDebugging('[mitm-ca] generated ephemeral CA at $certPath');
   return _buildMitmCA(
     certPem,
@@ -698,7 +695,7 @@ String _readPem(String path, String label, String field) {
   try {
     pem = File(path).readAsStringSync();
   } catch (err) {
-    final code = _errCode(err);
+    final code = errorCode(err) ?? err.toString();
     throw Exception('$field: cannot read $path ($code)');
   }
   // Accept either the exact label or a prefixed variant (e.g. "RSA PRIVATE KEY",
@@ -732,45 +729,4 @@ DateTime daysFromNow(int days) {
     d.millisecond,
     d.microsecond,
   );
-}
-
-/** `(err as NodeJS.ErrnoException).code ?? String(err)` for dart:io errors. */
-String _errCode(Object err) {
-  if (err is FileSystemException) {
-    final errno = err.osError?.errorCode;
-    if (errno != null) {
-      final code = codeForErrno(errno);
-      if (code != 'UNKNOWN') return code;
-    }
-  }
-  return err.toString();
-}
-
-/** `(err as Error).message`. */
-String _errMessage(Object err) {
-  if (err is FileSystemException) return err.message;
-  final s = err.toString();
-  return s.startsWith('Exception: ') ? s.substring(11) : s;
-}
-
-/** Node's mkdtempSync(prefix): a fresh 0o700 directory. */
-String _mkdtempSync(String prefix) =>
-    Directory(p.dirname(prefix)).createTempSync(p.basename(prefix)).path;
-
-/**
- * Node's writeFileSync(path, data, {mode}): `mode` applies when the file is
- * created. dart:io has no mode argument, so create empty, chmod, then write.
- */
-void _writeFileSync(String path, String data, int mode) {
-  final f = File(path);
-  if (!f.existsSync()) {
-    f.createSync();
-    if (!Platform.isWindows) {
-      final r = Process.runSync('chmod', [mode.toRadixString(8), path]);
-      if (r.exitCode != 0) {
-        throw FileSystemException('chmod failed: ${r.stderr}', path);
-      }
-    }
-  }
-  f.writeAsStringSync(data, flush: true);
 }

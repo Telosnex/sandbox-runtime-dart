@@ -174,7 +174,7 @@ Future<Uint8List> _readFirstRecord(net.NodeSocket socket, Uint8List head) {
 
   pull = () {
     Uint8List? chunk;
-    while ((chunk = socket.read()) != null) {
+    while ((chunk = socket.read() as Uint8List?) != null) {
       buf = Uint8List.fromList([...buf, ...chunk!]);
       if (buf.length >= want(buf)) {
         done();
