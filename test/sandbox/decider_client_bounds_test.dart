@@ -221,7 +221,7 @@ void main() {
         final streams = d['streams']! as Map<String, Object>;
         var stalled = false;
         final output = stream.Writable(
-          write: (Object chunk, String? _enc, Function done) {
+          write: (Object chunk, String? enc, Function done) {
             if (stalled) return;
             (streams['output']! as stream.Writable).write(chunk);
             done();
