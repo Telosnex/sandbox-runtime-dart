@@ -18,7 +18,8 @@ extern char **environ;
 static volatile pid_t child_pid;
 
 static void forward(int sig) {
-  if (child_pid > 0) kill(child_pid, sig);
+  pid_t p = child_pid;
+  if (p > 0) kill(p, sig);
 }
 
 static void write_all(int fd, const void *buf, size_t n) {
@@ -65,12 +66,16 @@ int main(int argc, char **argv) {
   sa.sa_handler = forward;
   sigemptyset(&sa.sa_mask);
   sa.sa_flags = SA_RESTART;
-  for (int s = 1; s < 32; s++) {
+  for (int s = 1; s <= SIGRTMAX; s++) {
+    if (s == SIGPIPE) continue;
     if (s == SIGKILL || s == SIGSTOP || s == SIGCHLD || s == SIGSEGV ||
         s == SIGBUS || s == SIGFPE || s == SIGILL)
       continue;
+    struct sigaction cur;
+    if (sigaction(s, NULL, &cur) == 0 && cur.sa_handler == SIG_IGN) continue;
     sigaction(s, &sa, NULL);
   }
+  signal(SIGPIPE, SIG_IGN);
   sigprocmask(SIG_SETMASK, &old, NULL);
 
   int e = 0;
@@ -87,6 +92,9 @@ int main(int argc, char **argv) {
   do {
     w = waitpid(pid, &status, 0);
   } while (w < 0 && errno == EINTR);
+  sigprocmask(SIG_BLOCK, &all, NULL);
+  child_pid = 0;
+  sigprocmask(SIG_SETMASK, &old, NULL);
   if (w != pid) return 125;
   if (e == 0) write_all(sfd, &status, sizeof status);
   return 0;

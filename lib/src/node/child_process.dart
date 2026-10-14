@@ -356,10 +356,25 @@ _Launched _launch(
       final helper = _spawnHelper();
       if (helper != null) {
         final st = arena<Int32>(2);
-        if (n.pipe(st) != 0) throw _LaunchError(codeForErrno(n.errno));
+        final pipe2 = _libc!
+            .lookupFunction<
+              Int32 Function(Pointer<Int32>, Int32),
+              int Function(Pointer<Int32>, int)
+            >('pipe2');
+        // O_CLOEXEC on both ends; only a >2 copy of the write end (F_DUPFD,
+        // not close-on-exec) is inherited by the helper.
+        if (pipe2(st, 0x80000) != 0) {
+          throw _LaunchError(codeForErrno(n.errno));
+        }
         statusRead = st[0];
-        statusWrite = st[1];
-        n.fcntl(statusRead, 2, 1);
+        final dup = n.fcntl(st[1], 0, 3);
+        final dupErr = n.errno;
+        n.close(st[1]);
+        if (dup < 0) {
+          n.close(statusRead);
+          throw _LaunchError(codeForErrno(dupErr));
+        }
+        statusWrite = dup;
         final hargs = [
           helper,
           '$statusWrite',
@@ -495,22 +510,21 @@ String? _spawnHelper() {
   final cfg = io.Platform.packageConfig;
   if (cfg != null) {
     try {
-      final config = jsonDecode(io.File(cfg).readAsStringSync()) as Map;
+      final cfgUri = cfg.startsWith('file:') ? Uri.parse(cfg) : Uri.file(cfg);
+      final config =
+          jsonDecode(io.File.fromUri(cfgUri).readAsStringSync()) as Map;
       for (final e in config['packages'] as List) {
         if ((e as Map)['name'] == 'sandbox_runtime') {
-          final root = Uri.file(cfg).resolve(e['rootUri'] as String);
+          final root = cfgUri.resolve(e['rootUri'] as String);
           candidates.add(
             '${root.toFilePath()}/vendor/spawn-helper/$arch/srt-spawn',
           );
         }
       }
     } on Object {
-      // fall through to cwd
+      // no package config helper
     }
   }
-  candidates.add(
-    '${io.Directory.current.path}/vendor/spawn-helper/$arch/srt-spawn',
-  );
   for (final c in candidates) {
     if (io.File(c).existsSync()) return _helperPath = io.File(c).absolute.path;
   }
