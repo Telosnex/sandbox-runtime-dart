@@ -92,36 +92,17 @@ What happened:
 - All agents were interrupted. No agent work reached `main` (still
   0b55ba5 before this note).
 
-Telosnex fixes (done, NOT merged): branch `agent-team-tools`, commit
-7f2a43178e, worktree ~/dev/telosnex-wt-agent-team (based on telosnex
-41be67faf0). Three fixes, each with tests (red, then green):
+Telosnex fixes: DONE and on Telosnex main as 5f7b62bccf (linear, no merge
+commit; not pushed). Three fixes, each with tests (red, then green):
 1. tool_search: one agent_* tool loaded (searched, in history, or inherited)
    loads all five, like web_search/web_get/cite. Children therefore always
    get all team tools.
 2. A nested run that ends with no answer after a request error is `failed`,
    with the error as its report.
 3. Status JSON says `activity: idle` (not `working`) for finished agents.
-Still open there (founder's call): the live-rewritten agent_create result
-probably breaks prompt caching; `_team_run_id`/`_team_sender` leak into
-recorded tool-call arguments and get copied by models. Optional: give the
-root agent the team tools without a search.
-To do: merge `agent-team-tools` into Telosnex main (it is behind main), run
-the agent_team and tool_search tests there, delete the worktree.
 
-Cleanup needed in this repo (nothing here is accepted):
-- Worktrees/branches under ~/dev/srt-wt, all REJECTED as-is:
-  port/stub-front and port/stub-mitm-mux (no commits, discard),
-  port/stub-http (c6d0206), port/stub-tls (f98d1c8), port/stub-manager
-  (fff06e0, merged port/stub-linux-utils), port/stub-linux-utils (5fde178),
-  port/stub-linux-misc (587dc71; closest to acceptable), port/helpers
-  (17f5757; fake_decider and socks_noauth_pipe are placeholders).
-  Either delete them all (`git worktree remove --force` each, then
-  `git branch -D port/...`) or keep them only as raw material for the next
-  attempt; never merge them without the gate below.
-- stubcheck results when stopped (docs kept / upstream docs):
-  request-filter 0/30 + 4 types erased to Object, tls-terminate-proxy 0/22,
-  decider-client 0/10, http-proxy 1/31, proxy-only 5/16, socks-proxy 3/9,
-  sandbox-manager 4/10, linux-sandbox-utils 6/38, read-deny-glob 1/2.
+Cleanup: DONE. All wave 0 worktrees and port/* branches were deleted; their
+work was rejected and is gone. The Telosnex worktree and branch are deleted.
 
 Kept infrastructure (works, outside the repo):
 - ~/dev/srt-wt/new <name>: worktree + branch port/<name> from main.
@@ -134,15 +115,6 @@ Kept infrastructure (works, outside the repo):
   (exports by name, upstream doc comments verbatim, no Object erasure).
 - ~/dev/srt-wt/WAVE0_BRIEF.md: the stub brief, now with the stubcheck gate.
 Move stubcheck into tool/audit/ if wave 0 is retried.
-
-Before retrying wave 0:
-1. Merge the Telosnex fixes and restart Telosnex.
-2. Leaf agents: system prompt forbidding agent_create/agent; final message
-   is the report. Higher reasoning effort; full context in the task.
-3. Acceptance = stubcheck OK + committed + independent review. Do not
-   accept a report that does not show the gate passing.
-4. Start with 2 agents (stub-tls, stub-http groups), verify, then scale.
-5. Watch for provider errors (the 403 storm); keep concurrency modest.
 
 ### Parallel setup (from wave 0, 2026-10-13)
 
