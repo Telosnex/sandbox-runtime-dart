@@ -1,6 +1,5 @@
 // Ported from sandbox-runtime test/control-fd.test.ts @ 24eb39e.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, prefer_adjacent_string_concatenation
-@Tags(['pending'])
 library;
 
 import 'dart:async';
