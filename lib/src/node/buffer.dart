@@ -7,6 +7,26 @@ import 'dart:typed_data';
 /// `randomBytes`, `crypto.sign` and friends return this type, so
 /// `randomBytes(8).toString('hex')` and `for (b of randomBytes(n))` work.
 class Buffer with ListMixin<int> {
+  /// Node's `buf.readUIntBE(offset, byteLength)`, byteLength 1..6.
+  int readUIntBE(int offset, int byteLength) {
+    _checkUInt(this, offset, byteLength);
+    var v = 0;
+    for (var i = 0; i < byteLength; i++) {
+      v = v * 256 + this[offset + i];
+    }
+    return v;
+  }
+
+  /// Node's `buf.readUIntLE(offset, byteLength)`, byteLength 1..6.
+  int readUIntLE(int offset, int byteLength) {
+    _checkUInt(this, offset, byteLength);
+    var v = 0;
+    for (var i = byteLength - 1; i >= 0; i--) {
+      v = v * 256 + this[offset + i];
+    }
+    return v;
+  }
+
   Buffer._(this._bytes);
   final Uint8List _bytes;
 
@@ -149,4 +169,11 @@ void _bounds(List<int> buf, int offset, int size) {
       'and <= ${buf.length - size}. Received $offset',
     );
   }
+}
+
+void _checkUInt(List<int> buf, int offset, int byteLength) {
+  if (byteLength < 1 || byteLength > 6) {
+    throw RangeError.range(byteLength, 1, 6, 'byteLength');
+  }
+  _bounds(buf, offset, byteLength);
 }
