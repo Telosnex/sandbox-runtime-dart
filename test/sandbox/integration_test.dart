@@ -1479,8 +1479,9 @@ void main() {
     'Exit status of a network-restricted wrap',
     skip: isLinux ? null : 'Linux only',
     () {
+      // Dart: package:test runs a skipped group's body, so probe bwrap only on Linux.
       final CAN_RESTRICT_NETWORK =
-          bwrapCanNamespaceNetwork() && whichSync('socat') != null;
+          isLinux && bwrapCanNamespaceNetwork() && whichSync('socat') != null;
 
       SandboxRuntimeConfig configFor(bool allowAllUnixSockets) =>
           SandboxRuntimeConfig(
