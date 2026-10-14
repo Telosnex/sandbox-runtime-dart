@@ -320,7 +320,21 @@ class ServerResponse extends events.EventEmitter {
     } else if (callback != null) {
       scheduleMicrotask(() => Function.apply(callback, const []));
     }
-    return socket.writableLength < socket.writableHighWaterMark;
+    final ok = socket.writableLength < socket.writableHighWaterMark;
+    if (!ok) _armDrain();
+    return ok;
+  }
+
+  bool _drainArmed = false;
+
+  /// Node `'drain'`: once a write returned false and the queue has emptied.
+  void _armDrain() {
+    if (_drainArmed || destroyed) return;
+    _drainArmed = true;
+    socket.once('drain', ([Object? _]) {
+      _drainArmed = false;
+      if (!destroyed) scheduleMicrotask(() => _emit('drain'));
+    });
   }
 
   ServerResponse addTrailers(Map<String, Object?> trailers) {
