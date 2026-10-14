@@ -1,7 +1,10 @@
-// STUB: pending port of src/sandbox/mitm-ca.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/mitm-ca.ts @ 24eb39e.
 // ignore_for_file: slash_for_doc_comments, dangling_library_doc_comments
 // ignore_for_file: constant_identifier_names, doc_directive_unknown
 
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import '../node/forge.dart' as forge;
@@ -52,7 +55,7 @@ class MitmCA {
   final int? cacheLimit;
 
   /// The key pair every leaf minted against this CA uses (see mintLeafCert).
-  final forge.KeyPair? leafKeyPair;
+  forge.KeyPair? leafKeyPair;
 
   /**
    * DER-encoded empty CRL signed by this CA. Schannel (Windows System32
@@ -81,7 +84,7 @@ class MitmCA {
    */
   final bool ephemeral;
 
-  const MitmCA({
+  MitmCA({
     required this.certPath,
     required this.keyPath,
     required this.trustBundlePath,
@@ -114,7 +117,9 @@ const CRL_PATH = '/srt.crl';
  * RFC 5280 method-1 value from its public key.
  */
 String caSubjectKeyId(forge.Certificate caCert) =>
-    throw UnimplementedError('pending port of src/sandbox/mitm-ca.ts');
+    caCert.getExtension('subjectKeyIdentifier')?['subjectKeyIdentifier'] is String
+        ? forge.forge.util.hexToBytes(caCert.getExtension('subjectKeyIdentifier')!['subjectKeyIdentifier'] as String)
+        : caCert.generateSubjectKeyIdentifier().getBytes();
 
 /**
  * Drop-in replacement for `cert.sign(key, md.sha256.create())` that computes
@@ -127,8 +132,15 @@ String caSubjectKeyId(forge.Certificate caCert) =>
  * constructs a SandboxManager. RSASSA-PKCS1-v1_5 is deterministic, so native
  * `crypto.sign()` yields identical bytes.
  */
-void signCertificateNative(forge.Certificate cert, String keyPem) =>
-    throw UnimplementedError('pending port of src/sandbox/mitm-ca.ts');
+void signCertificateNative(forge.Certificate cert, String keyPem) {
+  final oid = forge.forge.pki.oids.sha256WithRSAEncryption;
+  cert.siginfo.algorithmOid = oid;
+  cert.signatureOid = oid;
+  cert.tbsCertificate = forge.forge.pki.getTBSCertificate(cert);
+  final tbsDer = forge.forge.asn1.toDer(cert.tbsCertificate!).getBytes();
+  cert.signature = rsaSha256SignNative(tbsDer, keyPem);
+  cert.md = forge.forge.md.sha256.create()..update(tbsDer);
+}
 
 /**
  * RSASSA-PKCS1-v1_5 / SHA-256 sign of a forge binary-string `der` with the
@@ -136,7 +148,7 @@ void signCertificateNative(forge.Certificate cert, String keyPem) =>
  * binary string. Native equivalent of `forgeKey.sign(sha256Digest)`.
  */
 String rsaSha256SignNative(String der, String keyPem) =>
-    throw UnimplementedError('pending port of src/sandbox/mitm-ca.ts');
+    forge.forge.pki.privateKeyFromPem(keyPem).sign(der);
 
 /**
  * Create a MitmCA. If `caCertPath`/`caKeyPath` are provided, load from disk
@@ -293,4 +305,4 @@ String randomSerial() =>
     throw UnimplementedError('pending port of src/sandbox/mitm-ca.ts');
 
 DateTime daysFromNow(int days) =>
-    throw UnimplementedError('pending port of src/sandbox/mitm-ca.ts');
+    DateTime.now().add(Duration(days: days));
