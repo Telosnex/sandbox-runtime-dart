@@ -259,6 +259,7 @@ void main() {
           http.IncomingMessage request,
           http.ServerResponse response,
         ) {
+          request.resume();
           request.on('end', () {
             controlledBody.complete();
             response.end('handled');

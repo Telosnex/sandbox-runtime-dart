@@ -49,7 +49,7 @@ class _Constants {
 }
 
 const constants = _Constants();
-typedef _OpenN = Int32 Function(Pointer<Uint8>, Int32, Int32);
+typedef _OpenN = Int32 Function(Pointer<Uint8>, Int32, VarArgs<(Int32,)>);
 typedef _OpenD = int Function(Pointer<Uint8>, int, int);
 typedef _CloseN = Int32 Function(Int32);
 typedef _CloseD = int Function(int);
@@ -918,9 +918,10 @@ void rmSync(String path, [Map<String, Object?> options = const {}]) {
     }
   } else {
     try {
-      Link(path).deleteSync();
-    } on FileSystemException catch (error) {
-      throw nodeError(_codeFromIoError(error), 'rm', path);
+      unlinkSync(path);
+    } on NodeError catch (error) {
+      if (error.code == 'ENOENT' && options['force'] == true) return;
+      rethrow;
     }
   }
 }
