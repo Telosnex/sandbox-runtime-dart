@@ -276,8 +276,6 @@ void main() {
           },
           // Dart: node/tls.dart connect() throws UnimplementedError for minVersion/maxVersion (and TLSSocket has no getProtocol()).
           tags: ['pending'],
-          // Dart: node/tls.dart connect() throws UnimplementedError for minVersion/maxVersion (and TLSSocket has no getProtocol()).
-          tags: ['pending'],
           timeout: const Timeout(Duration(milliseconds: TEST_MS)),
         );
 
@@ -296,8 +294,6 @@ void main() {
             expect(client.serverSpoke(), true);
             expect(client.dropped(), greaterThan(0));
           },
-          // Dart: node/tls.dart connect() throws UnimplementedError for minVersion/maxVersion (and TLSSocket has no getProtocol()).
-          tags: ['pending'],
           // Dart: node/tls.dart connect() throws UnimplementedError for minVersion/maxVersion (and TLSSocket has no getProtocol()).
           tags: ['pending'],
           timeout: const Timeout(Duration(milliseconds: TEST_MS)),
