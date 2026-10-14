@@ -217,7 +217,9 @@ void main() {
           expect(result['tildeBindsRoot'], false);
         },
         timeout: const Timeout(Duration(seconds: 30)),
-        skip: Platform.isLinux ? 'pending port: src/sandbox/linux-sandbox-utils.ts' : false,
+        skip: Platform.isLinux
+            ? 'pending port: src/sandbox/linux-sandbox-utils.ts'
+            : false,
       );
     },
   );
