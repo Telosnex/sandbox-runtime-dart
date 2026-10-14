@@ -372,20 +372,23 @@ void main() {
         await events.once(tlsServer, 'listening');
         final port = (tlsServer.address() as net.NodeAddress).port;
         final under = net.connect({'host': '127.0.0.1', 'port': port});
+        under.on('error', (Object _) {});
         await events.once(under, 'connect');
         final socket = node_tls.connect({
           'socket': under,
           'servername': 'srv.example.test',
           'ca': certPem,
         });
-        final closed = events.once(socket, 'close');
+        socket.on('error', (Object _) {});
+        final closed = Completer<void>();
+        socket.on('close', (Object? _) => closed.complete());
         socket.resume();
         for (var i = 1; i <= 20; i++) {
           Timer(Duration(milliseconds: i * 10), () {
             if (!socket.destroyed) socket.write('b' * 9950);
           });
         }
-        await closed.timeout(_wait);
+        await closed.future.timeout(_wait);
         tlsServer.close();
       });
 
