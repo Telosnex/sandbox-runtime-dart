@@ -20,6 +20,8 @@ class Server extends http.NodeHttpServer {
     final secured = tls.TLSSocket(accepted, {
       'isServer': true,
       'secureContext': context,
+      'requestCert': options['requestCert'],
+      'rejectUnauthorized': options['rejectUnauthorized'],
     });
     secured.once('secure', () => emit('secureConnection', secured));
     secured.on('error', (Object error) {

@@ -92,6 +92,8 @@ class TLSSocket extends net.NodeSocket {
       );
     }
     final protocols = (opts['ALPNProtocols'] as List?)?.cast<String>();
+    final requestCert = opts['requestCert'] == true;
+    final rejectUnauthorized = opts['rejectUnauthorized'] != false;
     // dart:io's server selects a protocol only from the context's list.
     if (protocols != null) context.setAlpnProtocols(protocols, true);
     startServerTlsOver(socket, (raw, buffered) async {
@@ -102,6 +104,8 @@ class TLSSocket extends net.NodeSocket {
           context,
           bufferedData: buffered,
           supportedProtocols: protocols,
+          requestClientCertificate: requestCert,
+          requireClientCertificate: requestCert && rejectUnauthorized,
         );
       } on HandshakeException catch (error) {
         throw NodeError(error.message, code: 'ERR_SSL_HANDSHAKE_FAILURE');
@@ -109,6 +113,12 @@ class TLSSocket extends net.NodeSocket {
         throw NodeError(error.message, code: 'ERR_SSL_HANDSHAKE_FAILURE');
       }
       _setPeer(secured);
+      // dart:io verifies a presented client certificate against the
+      // context's trusted roots during the handshake.
+      authorized = !requestCert || secured.peerCertificate != null;
+      if (requestCert && !authorized) {
+        authorizationError = 'UNABLE_TO_GET_ISSUER_CERT';
+      }
       secureEstablished = true;
       return secured;
     });
@@ -138,7 +148,13 @@ class TLSSocket extends net.NodeSocket {
   X509Certificate? getPeerCertificate() => _peer;
 }
 
-const _tlsSocketOptions = {'isServer', 'secureContext', 'ALPNProtocols'};
+const _tlsSocketOptions = {
+  'isServer',
+  'secureContext',
+  'ALPNProtocols',
+  'requestCert',
+  'rejectUnauthorized',
+};
 
 const _tlsConnectOptions = {
   'host',
@@ -706,6 +722,8 @@ class Server extends net.NodeServer {
         secured = TLSSocket(accepted, {
           'isServer': true,
           'secureContext': serverContextFor(options),
+          'requestCert': options['requestCert'],
+          'rejectUnauthorized': options['rejectUnauthorized'],
         });
       } catch (error) {
         accepted.destroy();
