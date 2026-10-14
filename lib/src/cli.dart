@@ -122,11 +122,7 @@ stream.Readable _openControlFd(int fd) {
   final stat = fs.fstatSync(fd);
   if (!runsOnBun() && (stat.isFIFO() || stat.isSocket())) {
     try {
-      return net.Socket({
-        'fd': fd,
-        'readable': true,
-        'writable': false,
-      }).unref();
+      return net.NodeSocket(fd: fd, readable: true, writable: false).unref();
     } catch (err) {
       final code = err is NodeError ? err.code : null;
       if (code != 'ERR_INVALID_FD_TYPE') {
@@ -146,7 +142,7 @@ stream.Readable _openControlFd(int fd) {
       );
     }
   }
-  return fs.createReadStream('', {'fd': fd});
+  return fs.createReadStream('', fd: fd);
 }
 
 /**
