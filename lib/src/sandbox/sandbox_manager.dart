@@ -745,7 +745,7 @@ bool _shouldTerminateTLSForHost(String host) {
   return true;
 }
 
-/// The object literal upstream hands createHttpProxyServer.
+// Dart: the object literal upstream hands createHttpProxyServer.
 class _HttpProxyServerOptions implements HttpProxyServerOptions {
   _HttpProxyServerOptions({
     required this.filterFn,
@@ -851,7 +851,7 @@ class _HttpProxyServerOptions implements HttpProxyServerOptions {
   ByteBudget? get byteBudget => null;
 }
 
-/// The object literal upstream hands createSocksProxyServer.
+// Dart: the object literal upstream hands createSocksProxyServer.
 class _SocksProxyServerOptions implements SocksProxyServerOptions {
   _SocksProxyServerOptions({
     required this.filterFn,
@@ -894,7 +894,7 @@ Future<int> _startMuxProxyServer(
   final injectBodyCredentials = _buildBodyCredentialInjector();
   _httpProxyServer = createHttpProxyServer(
     _HttpProxyServerOptions(
-      filterFn: (port, host, _socket, [encodedCommand, explain]) =>
+      filterFn: (port, host, socket, [encodedCommand, explain]) =>
           _filterNetworkRequest(
             port,
             host,
@@ -904,7 +904,7 @@ Future<int> _startMuxProxyServer(
           ),
       getMitmSocketPath: _getMitmSocketPath,
       mitmCA: _mitmCA,
-      // Upstream's function takes the host alone; the port is not used.
+      // Dart: upstream's function takes the host alone; the port is not used.
       shouldTerminateTLS: (host, _) => _shouldTerminateTLSForHost(host),
       filterRequest: _config?.network.filterRequest,
       plaintextHeaderSet: _config?.network.allowPlaintextHeaderSet,
@@ -1207,8 +1207,7 @@ Future<void> _initializeSteps(
     // itself (so initialize() after uninstall→reinstall repairs
     // trust) and may make `u.caCertThumb` stale — hence the
     // explicit-path thumb check below skips this branch.
-    // ignore: unnecessary_null_comparison
-    if (useWindowsPersistentCa && tlsTerminate != null) {
+    if (useWindowsPersistentCa) {
       try {
         final p = await ensurePersistentWindowsCa(status: u, srtWin: srtWin);
         _mitmCA = createMitmCA(
@@ -1216,7 +1215,7 @@ Future<void> _initializeSteps(
           caKeyPem: p.keyPem,
           caCertPath: p.certPath,
           caKeyPath: p.keyPath,
-          extraCaCertPaths: tlsTerminate.extraCaCertPaths,
+          extraCaCertPaths: tlsTerminate!.extraCaCertPaths,
         );
       } catch (e) {
         _config = null;
@@ -1357,39 +1356,39 @@ Future<void> _initializeSteps(
   // Initialize network infrastructure
   _initializationPromise = (() async {
     try {
-      final config = _config!;
       // On Windows the WFP loopback permit covers a fixed port
       // range, so the proxies must bind inside it. Other platforms
       // bake the actual ephemeral port into the sandbox profile, so
       // they keep using port 0.
       final (int, int)? portRange = getPlatform() == 'windows'
-          ? (config.windows?.proxyPortRange ?? DEFAULT_WINDOWS_PROXY_PORT_RANGE)
+          ? (_config!.windows?.proxyPortRange ??
+                DEFAULT_WINDOWS_PROXY_PORT_RANGE)
           : null;
 
       // The auth token is only set when this process owns the proxy; an
-      // external proxy (config.network.httpProxyPort) handles its own auth,
+      // external proxy (_config!.network.httpProxyPort) handles its own auth,
       // and embedding our token in its URL would be wrong.
-      _proxyAuthToken = config.network.httpProxyPort != null
+      _proxyAuthToken = _config!.network.httpProxyPort != null
           ? null
           : randomBytes(16).toString('hex');
 
       // The mux front-end serves both protocols on one port. Each side's
       // reported port is the external override if configured, else the mux
-      // port — so the public config.network.{http,socks}ProxyPort contract
+      // port — so the public _config!.network.{http,socks}ProxyPort contract
       // is unchanged. The mux is skipped only when BOTH are external.
       final needLocalProxy =
-          config.network.httpProxyPort == null ||
-          config.network.socksProxyPort == null;
+          _config!.network.httpProxyPort == null ||
+          _config!.network.socksProxyPort == null;
       final muxPort = needLocalProxy
           ? await _startMuxProxyServer(sandboxAskCallback, portRange)
           : null;
-      final httpProxyPort = config.network.httpProxyPort ?? muxPort!;
-      final socksProxyPort = config.network.socksProxyPort ?? muxPort!;
+      final httpProxyPort = _config!.network.httpProxyPort ?? muxPort!;
+      final socksProxyPort = _config!.network.socksProxyPort ?? muxPort!;
       // JVMs read neither HTTPS_PROXY nor its credential; the agent bridges
       // both. Resolved once here, advertised via JAVA_TOOL_OPTIONS per command.
       // Async: the global-npm fallback spawns `npm root -g`.
       _javaAgentJarPath = await getJavaProxyAgentJarPathAsync(
-        config.javaAgentJarPath,
+        _config!.javaAgentJarPath,
       );
       // Leaves are minted lazily per-CONNECT (after this point), so setting
       // the CDP URL now means every leaf carries it. See MitmCA.crlUrl.
@@ -1403,10 +1402,10 @@ Future<void> _initializeSteps(
       if (_mitmCA != null && muxPort != null && getPlatform() == 'windows') {
         _mitmCA!.crlUrl = 'http://127.0.0.1:$muxPort$CRL_PATH';
       }
-      if (config.network.httpProxyPort != null) {
+      if (_config!.network.httpProxyPort != null) {
         logForDebugging('Using external HTTP proxy on port $httpProxyPort');
       }
-      if (config.network.socksProxyPort != null) {
+      if (_config!.network.socksProxyPort != null) {
         logForDebugging('Using external SOCKS proxy on port $socksProxyPort');
       }
 
@@ -1416,7 +1415,7 @@ Future<void> _initializeSteps(
         linuxBridge = await initializeLinuxNetworkBridge(
           httpProxyPort,
           socksProxyPort,
-          config.socatPath,
+          _config!.socatPath,
         );
       }
 
@@ -1492,7 +1491,7 @@ _checkDependenciesCommon([RipgrepConfig? ripgrepConfig]) {
     // profiles take regex patterns directly, so rg is never invoked there.
     final rgToCheck =
         ripgrepConfig ??
-        // sandbox_config.dart and ripgrep.dart each declare a RipgrepConfig.
+        // Dart: sandbox_config.dart and ripgrep.dart each declare a RipgrepConfig.
         (_config?.ripgrep == null
             ? null
             : RipgrepConfig(
@@ -1682,7 +1681,7 @@ CredentialRestrictionConfig _getCredentialRestrictions(
     ],
     unsetEnvVars: [...unsetEnvVars.toSet()],
     setEnvVars: setEnvVars,
-    // The schema holds records; credential-mask-files returns MaskedFileBind.
+    // Dart: the schema holds records; credential-mask-files returns MaskedFileBind.
     maskedFileBinds: [
       for (final b in maskedFileBinds)
         (realPath: b.realPath, fakePath: b.fakePath),
@@ -2027,7 +2026,7 @@ List<String> _windowsMaskedFileDenies(
   ];
 }
 
-/// TS `ReturnType<typeof rawWindowsFsInputs>`.
+// Dart: the return type of rawWindowsFsInputs.
 typedef _RawWindowsFsInputs = ({
   bool disabled,
   List<FilesystemPathEntry> denyRead,
