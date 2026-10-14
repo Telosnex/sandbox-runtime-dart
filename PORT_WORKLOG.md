@@ -73,6 +73,22 @@ expected output.
 - To test: `git clone /media/psf/Home/dev/sandbox-runtime-dart /root/srt-dart`,
   then `dart pub get`, `dart run tool/build_seccomp.dart` and `dart test`.
 
+### Parallel setup (from wave 0, 2026-10-13)
+
+- Every agent works in its own git worktree on its own branch, never in the
+  main checkout: `~/dev/srt-wt/new <name>` creates `~/dev/srt-wt/<name>` on
+  branch `port/<name>` from main. `../sandbox-runtime` resolves there too.
+  Commit only on that branch; /root merges.
+- Linux: `~/.srt-vm/linux_test <worktree dir> [dart test args]` runs the
+  working copy on the VM, queued (one run at a time), and prints the log's
+  path. Never call prlctl directly.
+- Each agent owns a disjoint set of files. Needing a change in a file you do
+  not own (most often a signature in another module): message /root.
+- Done means: `dart analyze` clean for your files, `dart test test/port`
+  passes, your files' tests pass on macOS and Linux, and an independent
+  reviewer agent has read the upstream file and the Dart file in full and
+  signed off.
+
 ### Coordination rules learned (keep them)
 
 - One writer per file. Agents must not spawn sub-agents for files they own: a
@@ -179,14 +195,14 @@ able to put an upstream file next to its Dart file and diff them by eye.
 Upstream test files are named for a behaviour, not a source file. So:
 
 - A test file is always ported whole, as one Dart file named after it.
-- The agent porting source file X ports the test files whose tests exercise X
-  and otherwise only already-ported modules or modules in X's current batch.
-- A test that needs a module that is not ported yet keeps its full body and
-  gets `skip: 'pending port: <upstream file>.ts'`, in exactly that format, so
-  one grep finds them all later.
-- A test file where most tests need modules outside the current batch (for
-  example sandbox-manager) is not ported yet. List it under "Related upstream
-  tests not ported in this batch" with the modules it waits for.
+- From wave 1 (2026-10-13) on, test files are ported by their own agents,
+  in parallel with the source they exercise: every remaining module has a
+  stub with its full API (wave 0), so a test compiles before the code
+  exists. A test whose module is still a stub keeps its full body and runs;
+  it fails with UnimplementedError until the implementation lands, and that
+  failure is the implementer's to-do list. Do not skip it.
+- A test that needs Windows gets `skip: 'Windows not supported by this
+  port'`.
 
 ## Rule 1b: partial files
 
