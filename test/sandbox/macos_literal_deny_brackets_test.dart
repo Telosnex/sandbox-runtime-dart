@@ -4,7 +4,10 @@ import 'dart:io';
 
 import 'package:test/test.dart';
 
+import '../../lib/src/sandbox/credential_mask_files.dart';
+import '../../lib/src/sandbox/credential_sentinel.dart';
 import '../../lib/src/sandbox/macos_sandbox_utils.dart';
+import '../../lib/src/sandbox/sandbox_config.dart' show CredentialFileConfig;
 import '../../lib/src/sandbox/sandbox_schemas.dart';
 import '../../lib/src/sandbox/sandbox_utils.dart';
 
@@ -279,8 +282,6 @@ void main() {
         Directory(tree.root).deleteSync(recursive: true);
       });
 
-      // Used by the two tests pending credential-mask-files.ts.
-      // ignore: unused_element
       String wrapMasked({
         List<({String realPath, String fakePath})>? maskedFileBinds,
         List<String>? degradeToDenyPaths,
@@ -299,44 +300,46 @@ void main() {
       );
 
       test('denies a masked path by subpath', () {
-        // Pending the credential-mask-files.ts port, the upstream body is:
-        // const store = new MaskedFileStore()
-        // const { binds } = buildMaskedFileBinds(
-        // [{ path: credential, mode: 'mask' }],
-        // [],
-        // new SentinelRegistry(),
-        // store,
-        // )
-        // expect(binds).toHaveLength(1)
-        // const profile = wrapMasked({ maskedFileBinds: binds })
-        // expect(profile).toContain(`(subpath ${JSON.stringify(credential)})`)
-        // expect(profile).not.toContain(sniffedFilter(credential, '(/.*)?$'))
-        // store.dispose()
-        //
+        final store = MaskedFileStore();
+        final binds = buildMaskedFileBinds(
+          [CredentialFileConfig(path: credential, mode: 'mask')],
+          [],
+          SentinelRegistry(),
+          store,
+        ).binds;
+        expect(binds, hasLength(1));
+        final profile = wrapMasked(
+          maskedFileBinds: [
+            for (final b in binds) (realPath: b.realPath, fakePath: b.fakePath),
+          ],
+        );
+        expect(profile, contains('(subpath ${jsonEncode(credential)})'));
+        expect(profile, isNot(contains(sniffedFilter(credential, r'(/.*)?$'))));
+        store.dispose();
       });
       test('denies a path that degraded to deny by subpath', () {
-        // Pending the credential-mask-files.ts port, the upstream body is:
-        // const store = new MaskedFileStore()
-        // const { binds, degradeToDenyPaths } = buildMaskedFileBinds(
-        // [
-        // {
-        // path: credential,
-        // mode: 'mask',
-        // extract: 'will_not_match_(\\S+)',
-        // onExtractNoMatch: 'deny',
-        // },
-        // ],
-        // [],
-        // new SentinelRegistry(),
-        // store,
-        // )
-        // expect(binds).toHaveLength(0)
-        // expect(degradeToDenyPaths).toEqual([credential])
-        // const profile = wrapMasked({ degradeToDenyPaths })
-        // expect(profile).toContain(`(subpath ${JSON.stringify(credential)})`)
-        // expect(profile).not.toContain(sniffedFilter(credential, '(/.*)?$'))
-        // store.dispose()
-        //
+        final store = MaskedFileStore();
+        final result = buildMaskedFileBinds(
+          [
+            CredentialFileConfig(
+              path: credential,
+              mode: 'mask',
+              extract: r'will_not_match_(\S+)',
+              onExtractNoMatch: 'deny',
+            ),
+          ],
+          [],
+          SentinelRegistry(),
+          store,
+        );
+        expect(result.binds, hasLength(0));
+        expect(result.degradeToDenyPaths, equals([credential]));
+        final profile = wrapMasked(
+          degradeToDenyPaths: result.degradeToDenyPaths,
+        );
+        expect(profile, contains('(subpath ${jsonEncode(credential)})'));
+        expect(profile, isNot(contains(sniffedFilter(credential, r'(/.*)?$'))));
+        store.dispose();
       });
     },
     skip: _isWindows ? 'not POSIX' : false,

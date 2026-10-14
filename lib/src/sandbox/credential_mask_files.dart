@@ -9,7 +9,7 @@ import 'package:path/path.dart' show join;
 import '../node/buffer.dart' show Buffer;
 import '../node/console.dart' as console;
 import '../node/crypto.dart' show randomUUID;
-import '../node/errno.dart' show NodeException;
+import '../node/errno.dart' show NodeException, errorMessage;
 import '../node/fs.dart' as fs;
 import '../node/os.dart' show tmpdir;
 import '../utils/debug.dart' show logForDebugging;
@@ -219,7 +219,7 @@ MaskedFileBuildResult buildMaskedFileBinds(
       // files; reject binary.
       final raw = fs.readFileSync(realPath) as Uint8List;
       content = Buffer.from(raw).toString('utf8');
-      if (Buffer.byteLength(content) != raw.length) {
+      if (Buffer.byteLength(content, 'utf8') != raw.length) {
         logForDebugging(
           '[credential-mask] Skipping masked file with non-UTF-8 content '
           '(binary credential files are not supported in mask mode): '
@@ -231,7 +231,7 @@ MaskedFileBuildResult buildMaskedFileBinds(
     } catch (err) {
       logForDebugging(
         '[credential-mask] Skipping masked file (unreadable on host): '
-        '${f.path} — ${err is NodeException ? err.message : err}',
+        '${f.path} — ${errorMessage(err)}',
       );
       continue;
     }
