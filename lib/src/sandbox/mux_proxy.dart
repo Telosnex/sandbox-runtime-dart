@@ -186,7 +186,7 @@ MuxProxyServer createMuxProxyServer(MuxProxyOptions opts) {
 
     client.once('readable', () {
       timer.cancel();
-      final Uint8List? peek = client.read(1);
+      final Uint8List? peek = client.read(1) as Uint8List?;
       if (peek == null || peek.isEmpty) {
         // EOF before any byte — client connected and closed.
         client.destroy();

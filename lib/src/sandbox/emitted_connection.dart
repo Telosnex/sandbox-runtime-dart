@@ -78,70 +78,55 @@ void assertTlsTerminationSupported() {
  * onMessageComplete to tell the two apart, nothing is installed.
  */
 void keepFlushedHeaderBatches(net.NodeSocket sock) {
-  // Dart: the parser is an untyped Node internal, read through dynamic.
-  final Object? parser = sock.parser;
+  final net.HTTPParser? parser = sock.parser;
   if (parser == null) return;
-  final dynamic slots = parser;
-  final dynamic statics = slots.constructor;
-  if (statics.kOnHeaders is! int ||
-      statics.kOnHeadersComplete is! int ||
-      statics.kOnMessageComplete is! int) {
-    return;
-  }
-  final int onHeaders = statics.kOnHeaders as int;
-  final int onHeadersComplete = statics.kOnHeadersComplete as int;
-  final int onMessageComplete = statics.kOnMessageComplete as int;
-  final Object? complete = slots[onHeadersComplete];
-  final Object? messageComplete = slots[onMessageComplete];
-  if (slots[onHeaders] is Function ||
+  // Dart: the statics are HTTPParser's constants, so upstream's typeof checks
+  // on parser.constructor are always true.
+  const int onHeaders = net.HTTPParser.kOnHeaders;
+  const int onHeadersComplete = net.HTTPParser.kOnHeadersComplete;
+  const int onMessageComplete = net.HTTPParser.kOnMessageComplete;
+  final Function? complete = parser[onHeadersComplete];
+  final Function? messageComplete = parser[onMessageComplete];
+  if (parser[onHeaders] is Function ||
       complete is! Function ||
       messageComplete is! Function) {
     return;
   }
   var headers = <String>[];
   var url = '';
-  slots[onHeaders] = (List<String> batch, String part) {
+  parser[onHeaders] = (List<String> batch, String part) {
     headers = [...headers, ...batch];
     url += part;
   };
-  final dynamic completeFn = complete;
-  final dynamic messageCompleteFn = messageComplete;
-  slots[onHeadersComplete] =
-      (
-        Object? versionMajor,
-        Object? versionMinor,
-        Object? hdrs,
-        Object? method,
-        Object? reqUrl, [
-        Object? statusCode,
-        Object? statusMessage,
-        Object? upgrade,
-        Object? shouldKeepAlive,
+  parser[onHeadersComplete] =
+      ([
+        Object? a0,
+        Object? a1,
+        Object? a2,
+        Object? a3,
+        Object? a4,
+        Object? a5,
+        Object? a6,
+        Object? a7,
+        Object? a8,
       ]) {
+        final args = [a0, a1, a2, a3, a4, a5, a6, a7, a8];
         if (headers.isNotEmpty || url != '') {
-          hdrs = hdrs is List ? [...headers, ...hdrs] : headers;
-          reqUrl = url + (reqUrl is String ? reqUrl : '');
+          args[2] = args[2] is List
+              ? [...headers, ...(args[2] as List)]
+              : headers;
+          args[4] = url + (args[4] is String ? args[4] as String : '');
           headers = [];
           url = '';
         }
-        return completeFn(
-          versionMajor,
-          versionMinor,
-          hdrs,
-          method,
-          reqUrl,
-          statusCode,
-          statusMessage,
-          upgrade,
-          shouldKeepAlive,
-        );
+        return Function.apply(complete, args);
       };
-  slots[onMessageComplete] = () {
+  parser[onMessageComplete] = () {
     // Whatever came through onHeaders since the head was the message's
     // trailers.
     headers = [];
     url = '';
-    return messageCompleteFn();
+    return Function.apply(messageComplete, []);
   };
 }
 

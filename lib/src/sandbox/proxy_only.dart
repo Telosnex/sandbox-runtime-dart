@@ -494,6 +494,6 @@ String readPemFromFd(int fd) {
   if (isBunRuntime()) {
     throw UnimplementedError('Bun only');
   }
-  final sock = net.Socket({'fd': fd, 'readable': true, 'writable': true});
+  final sock = net.NodeSocket(fd: fd, readable: true, writable: true);
   return (input: sock, output: sock);
 }
