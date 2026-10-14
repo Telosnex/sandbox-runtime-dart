@@ -315,7 +315,6 @@ void main() {
   });
 
   group('the leaf caches keep the most recently used host names', () {
-    // Dart: MitmCA.cacheLimit is final (assignment fails to compile).
     test('past the limit the least recently used name goes', () {
       final ca = generateCa();
       final mitmCA = createMitmCA(caCertPem: ca.certPem, caKeyPem: ca.keyPem);

@@ -393,6 +393,7 @@ class ForgeBinaryBuffer {
   ForgeBinaryBuffer(this._bytes);
   final String _bytes;
   String getBytes() => _bytes;
+  String toHex() => const ForgeUtilApi().bytesToHex(_bytes);
 }
 
 class ForgeRsaKeyPair {
