@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:sandbox_runtime/src/node/fd.dart';
 import 'package:test/test.dart';
 
