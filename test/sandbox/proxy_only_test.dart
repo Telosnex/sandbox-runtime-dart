@@ -1268,9 +1268,6 @@ Future<void> main() async {
         },
         skip: !TAKES_MAX_HEADER_SIZE ? 'maxHeaderSize not taken' : null,
         timeout: Timeout(Duration(milliseconds: 20000)),
-        tags: [
-          'pending',
-        ] /* Dart: needs tls.connect({socket}) (shim-stream) or hangs; see report */,
       );
     },
   );
@@ -1543,9 +1540,6 @@ Future<void> main() async {
       },
       skip: !SERVES_UPGRADE_FIELD ? 'Upgrade field not answered' : null,
       timeout: Timeout(Duration(milliseconds: 15000)),
-      tags: [
-        'pending',
-      ] /* Dart: needs tls.connect({socket}) (shim-stream) or hangs; see report */,
     );
   });
 
@@ -1667,9 +1661,6 @@ Future<void> main() async {
         },
         skip: CLIENT_SENDS_PATH_AS_GIVEN ? null : 'client rewrites paths',
         timeout: Timeout(Duration(seconds: 20)),
-        tags: [
-          'pending',
-        ] /* Dart: needs tls.connect({socket}) (shim-stream) or hangs; see report */,
       );
 
       test(
@@ -1690,9 +1681,6 @@ Future<void> main() async {
         },
         skip: emitSkip,
         timeout: Timeout(Duration(seconds: 20)),
-        tags: [
-          'pending',
-        ] /* Dart: needs tls.connect({socket}) (shim-stream) or hangs; see report */,
       );
 
       test(
@@ -1714,9 +1702,6 @@ Future<void> main() async {
           expect(_seen(s.d), hasLength(0));
           expect(s.up.seen, hasLength(0));
         },
-        tags: [
-          'pending',
-        ] /* Dart: needs tls.connect({socket}) (shim-stream) or hangs; see report */,
       );
 
       test(
@@ -1764,9 +1749,6 @@ Future<void> main() async {
       },
       skip: emitSkip,
       timeout: Timeout(Duration(seconds: 20)),
-      tags: [
-        'pending',
-      ] /* Dart: needs tls.connect({socket}) (shim-stream) or hangs; see report */,
     );
 
     test(
@@ -1790,9 +1772,6 @@ Future<void> main() async {
       },
       skip: emitSkip,
       timeout: Timeout(Duration(seconds: 20)),
-      tags: [
-        'pending',
-      ] /* Dart: needs tls.connect({socket}) (shim-stream) or hangs; see report */,
     );
 
     test('the plain path: 421 misdirected', () async {
