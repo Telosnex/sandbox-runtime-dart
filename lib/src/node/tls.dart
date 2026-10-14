@@ -1,6 +1,7 @@
 // Node-compatible TLS helpers required by sandbox-runtime's MITM proxy.
 // The checked-in Mozilla bundle is generated from curl's dated cacert.pem;
 // no platform trust store is consulted by rootCertificates/trustedRootContext.
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -10,6 +11,7 @@ import 'package:asn1lib/asn1lib.dart' as asn1lib;
 import 'errno.dart';
 import 'mozilla_roots.dart';
 import 'net.dart' as net;
+import 'stream.dart' as stream;
 
 export 'mozilla_roots.dart'
     show mozillaRootBundleVersion, mozillaRootBundleSha256;
@@ -150,6 +152,7 @@ const _tlsConnectOptions = {
   'timeout',
   'allowHalfOpen',
   'noDelay',
+  'socket',
 };
 
 /// Node `tls.connect(options[, secureConnectListener])`. Returns the socket
@@ -190,7 +193,9 @@ TLSSocket connect(Map<Object?, Object?> options, [Function? listener]) {
   if (opts['noDelay'] == true) socket.setNoDelay();
   if (opts['timeout'] is int) socket.setTimeout(opts['timeout'] as int);
   if (listener != null) socket.once('secureConnect', listener);
+  final existing = opts['socket'];
   socket.startConnect(
+    dialer: existing is stream.Duplex ? () => _bridgeDuplex(existing) : null,
     path: opts['path'] as String?,
     port: opts['port'] as int?,
     host: host,
@@ -446,3 +451,33 @@ bool _sameBytes(List<int> left, List<int> right) =>
       left.length,
       (i) => left[i] ^ right[i],
     ).every((b) => b == 0);
+
+/// A loopback dart:io socket whose far end is [duplex], so dart:io can run
+/// TLS over any Node stream. Bytes the duplex emits go in; bytes written out
+/// go to the duplex.
+Future<Socket> _bridgeDuplex(stream.Duplex duplex) async {
+  final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+  final accepted = server.first;
+  final client = await Socket.connect(
+    InternetAddress.loopbackIPv4,
+    server.port,
+  );
+  final far = await accepted;
+  unawaited(server.close());
+  far.setOption(SocketOption.tcpNoDelay, true);
+  duplex.on('data', (Object? chunk) {
+    far.add(chunk is String ? utf8.encode(chunk) : chunk as List<int>);
+  });
+  duplex.on('end', () => unawaited(far.close()));
+  duplex.on('error', (Object? _) => far.destroy());
+  duplex.on('close', () => far.destroy());
+  far.listen(
+    (data) => duplex.write(Uint8List.fromList(data)),
+    onDone: () {
+      if (!duplex.destroyed) duplex.end();
+    },
+    onError: (Object _) {},
+    cancelOnError: true,
+  );
+  return client;
+}

@@ -537,8 +537,9 @@ class NodeSocket extends stream.Duplex {
     String host = 'localhost',
     LookupFunction? lookup,
     Future<Socket> Function(Socket raw)? secure,
+    Future<Socket> Function()? dialer,
   }) {
-    unawaited(_connect(path, port, host, lookup, secure));
+    unawaited(_connect(path, port, host, lookup, secure, dialer));
   }
 
   Future<void> _connect(
@@ -547,10 +548,13 @@ class NodeSocket extends stream.Duplex {
     String host,
     LookupFunction? lookup,
     Future<Socket> Function(Socket raw)? secure,
+    Future<Socket> Function()? dialer,
   ) async {
     try {
       Socket? raw;
-      if (path != null) {
+      if (dialer != null) {
+        raw = await dialer();
+      } else if (path != null) {
         raw =
             await _dial(
               InternetAddress(path, type: InternetAddressType.unix),

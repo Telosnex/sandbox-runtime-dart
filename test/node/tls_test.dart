@@ -274,6 +274,23 @@ void main() {
       setUpAll(() async => server = await _server('tls.example.test'));
       tearDownAll(() => server.close());
 
+      test('connect({socket}) runs TLS over an existing stream', () async {
+        final under = net.connect({'host': '127.0.0.1', 'port': server.port});
+        await events.once(under, 'connect');
+        final socket = node_tls.connect({
+          'socket': under,
+          'host': '127.0.0.1',
+          'servername': 'tls.example.test',
+          'ca': server.certPem,
+        });
+        await events.once(socket, 'secureConnect').timeout(_wait);
+        socket.write('ping');
+        final echoed = await events.once(socket, 'data').timeout(_wait);
+        expect(echoed.single, 'ping'.codeUnits);
+        expect(socket.authorized, isTrue);
+        socket.destroy();
+      });
+
       test('returns at once, queues writes, emits secureConnect', () async {
         final order = <String>[];
         final socket = node_tls.connect({
