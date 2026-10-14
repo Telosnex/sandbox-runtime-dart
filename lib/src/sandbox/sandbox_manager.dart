@@ -141,7 +141,6 @@ import 'sandbox_utils.dart'
 import '../node/generators.dart';
 import 'socks_proxy.dart'
     show SocksProxyServerOptions, SocksProxyWrapper, createSocksProxyServer;
-import '../node/net.dart' as net;
 import 'sandbox_violation_store.dart'
     show
         SandboxViolationStore,
@@ -278,7 +277,7 @@ void _registerCleanup() {
     final bridge = _managerContext?.linuxBridge;
     for (final path in [bridge?.httpSocketPath, bridge?.socksSocketPath]) {
       try {
-        if (path != null && path.isNotEmpty) fs.rmSync(path, force: true);
+        if (path != null && path.isNotEmpty) fs.rmSync(path, {'force': true});
       } catch (_) {
         // Best effort: an 'exit' handler must not throw.
       }
@@ -2321,7 +2320,7 @@ Future<void Function()> _waitToWalk([AbortSignal? signal]) async {
       completer.completeError(signal?.reason ?? AbortError());
     };
     _waitingToWalk.add(go);
-    signal?.addEventListener('abort', leave, once: true);
+    signal?.addEventListener('abort', leave, {'once': true});
     await completer.future;
   }
   _walking = true;
@@ -3193,7 +3192,7 @@ Future<void> _reset() async {
     // Clean up sockets
     if (httpSocketPath.isNotEmpty) {
       try {
-        fs.rmSync(httpSocketPath, force: true);
+        fs.rmSync(httpSocketPath, {'force': true});
         logForDebugging('Cleaned up HTTP socket');
       } catch (err) {
         logForDebugging('HTTP socket cleanup error: $err', level: 'error');
@@ -3202,7 +3201,7 @@ Future<void> _reset() async {
 
     if (socksSocketPath.isNotEmpty) {
       try {
-        fs.rmSync(socksSocketPath, force: true);
+        fs.rmSync(socksSocketPath, {'force': true});
         logForDebugging('Cleaned up SOCKS socket');
       } catch (err) {
         logForDebugging('SOCKS socket cleanup error: $err', level: 'error');
