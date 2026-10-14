@@ -1,0 +1,166 @@
+// Ported from sandbox-runtime test/sandbox/execute-only-binary.test.ts @ 24eb39e.
+// ignore_for_file: slash_for_doc_comments, prefer_adjacent_string_concatenation
+import 'dart:async';
+import 'dart:io' as io;
+
+import 'package:sandbox_runtime/src/node/child_process.dart';
+import 'package:sandbox_runtime/src/node/fs.dart';
+import 'package:sandbox_runtime/src/node/os.dart';
+import 'package:sandbox_runtime/src/node/path.dart';
+import 'package:sandbox_runtime/src/node/process.dart' as process;
+import 'package:sandbox_runtime/src/sandbox/generate_seccomp_filter.dart';
+import 'package:test/test.dart';
+
+import '../helpers/platform.dart';
+
+/**
+ * Regression tests for running apply-seccomp as an execute-only binary
+ * (mode 0111, as some managed environments install it).
+ *
+ * Exec'ing a binary the user cannot read makes the process non-dumpable,
+ * which leaves /proc/self/{setgroups,uid_map,gid_map} root-owned. The
+ * unprivileged fallback path (taken when the first unshare returns EPERM)
+ * must temporarily raise PR_SET_DUMPABLE to write the uid/gid maps — and
+ * restore it afterwards so the helper is not left ptrace-able by same-uid
+ * processes.
+ *
+ * These tests are only meaningful without root: root can read the binary
+ * regardless of its mode, so the non-dumpable condition never triggers
+ * (CI's Linux legs run as the non-root `runner` user, so they do run
+ * there). They also require the unprivileged fallback path itself, i.e.
+ * no CAP_SYS_ADMIN — the same condition as the rest of this suite when
+ * apply-seccomp is spawned directly.
+ */
+
+final isUnprivileged = process.getuid != null && process.getuid!() != 0;
+
+String? applySeccomp;
+late String workDir;
+
+String makeCopy(int mode) {
+  final copy = join(workDir, 'apply-seccomp-${mode.toRadixString(8)}');
+  if (!existsSync(copy)) {
+    // Dart: fs.dart has no copyFileSync.
+    io.File(applySeccomp!).copySync(copy);
+  }
+  chmodSync(copy, mode);
+  return copy;
+}
+
+({int? status, String stdout, String stderr}) runCopy(int mode) {
+  final r = spawnSync(
+    makeCopy(mode),
+    ['/bin/echo', 'ok'],
+    {'stdio': 'pipe', 'timeout': 10000},
+  );
+  return (
+    status: r.status,
+    stdout: r.stdout?.toString() ?? '',
+    stderr: r.stderr?.toString() ?? '',
+  );
+}
+
+/* Spawn a copy running `sleep`, wait for setup to finish, and return the
+ * uid owning the outer helper's /proc entries — root iff dumpable is 0. */
+Future<int> procOwnerDuringRun(int mode) async {
+  final child = spawn(
+    makeCopy(mode),
+    ['/bin/sleep', '3'],
+    {
+      'stdio': ['ignore', 'ignore', 'pipe'],
+    },
+  );
+  var stderr = '';
+  child.stderr!.listen((d) => (stderr += String.fromCharCodes(d)));
+  // Listen from the start. A helper that exits, or fails to spawn, during the
+  // wait below has already emitted its event by the time the finally block
+  // runs; a listener attached there never fires and the test times out
+  // without saying why.
+  final ended = Completer<String>();
+  child.once('exit', (code, signal) {
+    if (!ended.isCompleted) {
+      ended.complete('exited (code=$code, signal=$signal)');
+    }
+  });
+  child.once('error', (err) {
+    if (!ended.isCompleted) {
+      ended.complete('failed to spawn: ${(err as dynamic).message}');
+    }
+  });
+  try {
+    // Namespace setup is a handful of syscalls; 500ms is ample margin.
+    final early = await Future.any<String?>([
+      ended.future,
+      Future<String?>.delayed(const Duration(milliseconds: 500)),
+    ]);
+    if (early != null) {
+      throw Exception(
+        'apply-seccomp copy (mode ${mode.toRadixString(8)}) $early before its ' +
+            '/proc entry could be checked; stderr: ${stderr.trim().isEmpty ? '(empty)' : stderr.trim()}',
+      );
+    }
+    return statSync('/proc/${child.pid}/environ').uid;
+  } finally {
+    child.kill('SIGKILL');
+    await ended.future;
+  }
+}
+
+void main() {
+  group(
+    'apply-seccomp as an execute-only binary',
+    () {
+      setUpAll(() {
+        applySeccomp = getApplySeccompBinaryPath();
+        expect(applySeccomp, isNotNull);
+        expect(existsSync(applySeccomp!), isTrue);
+        workDir = mkdtempSync(join(tmpdir(), 'srt-execute-only-'));
+      });
+
+      tearDownAll(() {
+        {
+          rmSync(workDir, {'recursive': true, 'force': true});
+        }
+      });
+
+      test('sanity: a readable copy (0755) runs a command', () {
+        final r = runCopy(0x1ED /* 0o755 */);
+        expect(r.stderr, '');
+        expect(r.status, 0);
+        expect(r.stdout, contains('ok'));
+      });
+
+      test('an execute-only copy (0111) still starts the sandbox', () {
+        // Without the temporary PR_SET_DUMPABLE bump this fails:
+        //   apply-seccomp: write /proc/self/setgroups ...: Permission denied
+        final r = runCopy(0x49 /* 0o111 */);
+        expect(r.stderr, '');
+        expect(r.status, 0);
+        expect(r.stdout, contains('ok'));
+      });
+
+      test(
+        'restores non-dumpable after setup for an execute-only copy',
+        () async {
+          // dumpable=0 keeps /proc/<pid> root-owned; if the helper were left
+          // dumpable, its /proc entries would belong to our own uid and any
+          // same-uid process could ptrace it for the lifetime of the command.
+          expect(await procOwnerDuringRun(0x49 /* 0o111 */), 0);
+        },
+      );
+
+      test(
+        'preserves dumpable for a readable copy (save/restore, not force-0)',
+        () async {
+          expect(
+            await procOwnerDuringRun(0x1ED /* 0o755 */),
+            process.getuid!(),
+          );
+        },
+      );
+    },
+    skip: (isLinux && isUnprivileged)
+        ? null
+        : 'requires isLinux && isUnprivileged',
+  );
+}
