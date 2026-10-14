@@ -326,7 +326,7 @@ Steps<List<String>> withOtherReadings(
 }
 
 /**
- * What the read rules [getDefaultWritePaths] is given: the entries, the
+ * The read rules `getDefaultWritePaths()` is given: the entries, the
  * credential denies, and the name each spelling also is, as a marked path.
  */
 ({List<FilesystemPathEntry> denyRead, List<FilesystemPathEntry>? allowRead})

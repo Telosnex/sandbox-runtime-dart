@@ -25,6 +25,7 @@ in PORT_WORKLOG.md).
 | `dart run tool/audit/comments.dart [fragment]` | Per ported file, upstream comment lines kept (12+ characters, after normalizing `{@link X}` -> `[X]` and `**\/`). With a fragment, lists the missing lines of matching files. |
 | `dart run tool/audit/titles.dart [fragment \| all]` | Per test file, titles against upstream's (`%s` and `$x` both count as a placeholder). With a fragment or `all`, prints the difference. |
 | `dart run tool/audit/headers.dart` | Per Dart file, its header, upstream file and comment-line counts; exits 1 on a bad header. |
+| `dart run tool/audit/stubcheck.dart <upstream src path>...` | Gate for stubs and partial files: every export (in upstream order), every public member of exported types, every doc comment on them; lists each line using `Object`/`dynamic` for review. Exits 1 on a gap. |
 | `dart run tool/audit/ts2dart.dart <upstream .test.ts> > test/x_test.dart` | First draft of a test port. See below. |
 
 `AGENT_BRIEF.md` is the brief for agents restoring or porting test files.

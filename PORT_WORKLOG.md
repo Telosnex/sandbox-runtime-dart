@@ -114,7 +114,8 @@ Kept infrastructure (works, outside the repo):
 - ~/dev/srt-wt/exports, ~/dev/srt-wt/tools/stubcheck.dart: stub gate
   (exports by name, upstream doc comments verbatim, no Object erasure).
 - ~/dev/srt-wt/WAVE0_BRIEF.md: the stub brief, now with the stubcheck gate.
-Move stubcheck into tool/audit/ if wave 0 is retried.
+stubcheck now lives in the repo: `tool/audit/stubcheck.dart` (the copy in
+~/dev/srt-wt/tools and ~/dev/srt-wt/exports are retired).
 
 ### Parallel setup (from wave 0, 2026-10-13)
 
