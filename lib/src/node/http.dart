@@ -1025,16 +1025,21 @@ class ClientRequest extends events.EventEmitter {
         final String ready;
         final createConnection = _options['createConnection'];
         if (createConnection is Function) {
-          final made = Function.apply(createConnection, [
-            {
-              'host': host,
-              'hostname': host,
-              'port': port,
-              'path': socketPath,
-              'servername': servername,
-              'lookup': lookup,
-            },
-          ]);
+          final connOpts = {
+            'host': host,
+            'hostname': host,
+            'port': port,
+            'path': socketPath,
+            'servername': servername,
+            'lookup': lookup,
+          };
+          // Dart: JS ignores extra arguments; retry with fewer on arity mismatch.
+          Object? made;
+          try {
+            made = Function.apply(createConnection, [connOpts]);
+          } on NoSuchMethodError {
+            made = Function.apply(createConnection, []);
+          }
           if (made is! net.NodeSocket) {
             throw ArgumentError('createConnection must return a socket');
           }
