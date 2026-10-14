@@ -333,11 +333,19 @@ void Function(String call)? fsCallObserver;
 
 void _observe(String call, String path) => fsCallObserver?.call('$call $path');
 
-/// Reproduce `fs.lstatSync(path)`.
-Stats lstatSync(String path) {
+Stats _lstatSync(String path) {
   _observe('lstatSync', path);
   return _stat(path, 'lstat', followLinks: false);
 }
+
+/// Node's `fs.lstatSync`. A variable so a test can replace it, as upstream's
+/// tests do with `spyOn(fs, 'lstatSync')`.
+Stats Function(String path) lstatSync = _lstatSync;
+
+void _symlinkSync(String target, String path) => Link(path).createSync(target);
+
+/// Node's `fs.symlinkSync(target, path)`. A variable so a test can replace it.
+void Function(String target, String path) symlinkSync = _symlinkSync;
 
 /// Reproduce `fs.statSync(path)`.
 Stats _statSync(String path) {
@@ -361,14 +369,20 @@ bool existsSync(String path) {
 }
 
 /// Reproduce `fs.readdirSync(path, {withFileTypes: true})`.
-List<Dirent> _readdirSync(String path, {bool withFileTypes = true}) {
-  if (!withFileTypes) {
-    throw UnimplementedError('readdirSync without withFileTypes');
-  }
+List<Dirent> _readdirSync(String path, {bool withFileTypes = false}) {
   try {
+    if (!withFileTypes) {
+      // Statically callers read `.name`; use readdirNamesSync for Strings.
+      return readdirNamesSync(
+        path,
+      ).map((n) => Dirent(n, FileSystemEntityType.file)).toList();
+    }
     return Directory(path).listSync(followLinks: false).map((entity) {
       final type = FileSystemEntity.typeSync(entity.path, followLinks: false);
-      final name = entity.path.replaceAll('\\', '/').split('/').last;
+      final name =
+          (Platform.isWindows ? entity.path.replaceAll('\\', '/') : entity.path)
+              .split('/')
+              .last;
       return Dirent(name, type);
     }).toList();
   } on FileSystemException catch (error) {
@@ -960,5 +974,22 @@ void rmSync(String path, [Map<String, Object?> options = const {}]) {
       if (error.code == 'ENOENT' && options['force'] == true) return;
       rethrow;
     }
+  }
+}
+
+/// Node's `fs.readdirSync(path)` without file types: entry names.
+List<String> readdirNamesSync(String path) {
+  try {
+    return Directory(path)
+        .listSync(followLinks: false)
+        .map((e) => e.path.replaceAll('\\', '/').split('/').last)
+        .toList();
+  } on FileSystemException catch (error) {
+    throw nodeError(
+      _codeFromIoError(error),
+      'scandir',
+      path,
+      message: error.message,
+    );
   }
 }

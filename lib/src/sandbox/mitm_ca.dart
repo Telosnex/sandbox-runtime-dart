@@ -183,7 +183,7 @@ String rsaSha256SignNative(String der, String keyPem) => String.fromCharCodes(
         Uint8List.fromList(der.codeUnits.map((e) => e & 0xff).toList()),
         keyPem,
       )
-      as Uint8List),
+      as List<int>),
 );
 
 /**

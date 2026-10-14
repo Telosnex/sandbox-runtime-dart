@@ -4,8 +4,7 @@
  * Simple debug logging for standalone sandbox
  */
 
-import 'dart:io';
-
+import '../node/console.dart' as console;
 import '../node/process.dart' as process;
 
 void logForDebugging(String message, {String? level}) {
@@ -22,12 +21,12 @@ void logForDebugging(String message, {String? level}) {
   // Always use stderr to avoid corrupting stdout JSON streams
   switch (selectedLevel) {
     case 'error':
-      stderr.writeln('$prefix $message');
+      console.error('$prefix $message');
       break;
     case 'warn':
-      stderr.writeln('$prefix $message');
+      console.warn('$prefix $message');
       break;
     default:
-      stderr.writeln('$prefix $message');
+      console.error('$prefix $message');
   }
 }

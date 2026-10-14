@@ -164,6 +164,11 @@ class NetworkRestrictionConfig {
   List<String>? deniedHosts;
 
   NetworkRestrictionConfig({this.allowedHosts, this.deniedHosts});
+
+  Map<String, Object?> toJson() => {
+    if (allowedHosts != null) 'allowedHosts': allowedHosts,
+    if (deniedHosts != null) 'deniedHosts': deniedHosts,
+  };
 }
 
 typedef NetworkHostPattern = ({String host, int? port});
