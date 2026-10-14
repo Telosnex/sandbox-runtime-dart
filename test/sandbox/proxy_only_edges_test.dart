@@ -207,7 +207,7 @@ void main() {
         },
         // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
         tags: path == 'tls' ? ['pending'] : null,
-        skip: cannotServe(path) ? 'TLS termination unavailable' : false,
+        skip: cannotServe(path) ? 'TLS termination unavailable' : null,
       );
     }
   });
@@ -277,7 +277,7 @@ void main() {
         },
         // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
         tags: path == 'tls' ? ['pending'] : null,
-        skip: cannotServe(path) ? 'TLS termination unavailable' : false,
+        skip: cannotServe(path) ? 'TLS termination unavailable' : null,
         timeout: const Timeout(Duration(milliseconds: 15000)),
       );
     }
@@ -311,33 +311,40 @@ void main() {
   });
 
   group('an allow that sets a header to several values', () {
-    test('tls: every value reaches the upstream, in order', () async {
-      var seen = <String>[];
-      final s = await serve(
-        path: 'tls',
-        handler: (http.IncomingMessage req, http.ServerResponse res) {
-          seen = [
-            for (final (i, v) in req.rawHeaders.indexed)
-              if (i % 2 == 1 && req.rawHeaders[i - 1].toLowerCase() == 'x-beta')
-                v,
-          ];
-          res.end('ok');
-        },
-        decide: (_) => {
-          'action': 'allow',
-          'setHeaders': {
-            'x-beta': ['one', 'two'],
+    test(
+      'tls: every value reaches the upstream, in order',
+      () async {
+        var seen = <String>[];
+        final s = await serve(
+          path: 'tls',
+          handler: (http.IncomingMessage req, http.ServerResponse res) {
+            seen = [
+              for (final (i, v) in req.rawHeaders.indexed)
+                if (i % 2 == 1 &&
+                    req.rawHeaders[i - 1].toLowerCase() == 'x-beta')
+                  v,
+            ];
+            res.end('ok');
           },
-        },
-      );
-      final sock = await s.open();
-      final reply = readAll(sock);
-      sock.write(
-        'GET /x HTTP/1.1\r\nHost: ${s.target}\r\nX-Beta: guest\r\nConnection: close\r\n\r\n',
-      );
-      expect(await reply, startsWith('HTTP/1.1 200'));
-      expect(seen, ['one', 'two']);
-    }, skip: cannotServe('tls') ? 'TLS termination unavailable' : false);
+          decide: (_) => {
+            'action': 'allow',
+            'setHeaders': {
+              'x-beta': ['one', 'two'],
+            },
+          },
+        );
+        final sock = await s.open();
+        final reply = readAll(sock);
+        sock.write(
+          'GET /x HTTP/1.1\r\nHost: ${s.target}\r\nX-Beta: guest\r\nConnection: close\r\n\r\n',
+        );
+        expect(await reply, startsWith('HTTP/1.1 200'));
+        expect(seen, ['one', 'two']);
+      },
+      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
+      tags: ['pending'],
+      skip: cannotServe('tls') ? 'TLS termination unavailable' : null,
+    );
   });
 
   group('TRACE inside a terminated tunnel', () {
@@ -380,7 +387,7 @@ void main() {
       },
       // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
       tags: ['pending'],
-      skip: cannotServe('tls') ? 'TLS termination unavailable' : false,
+      skip: cannotServe('tls') ? 'TLS termination unavailable' : null,
     );
   });
 }

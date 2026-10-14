@@ -22,8 +22,8 @@ import '../helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
 
 // Dart: upstream's `testWithTls as test`, which `test` cannot alias (and
 // whose helper takes no timeout).
-final Object _tlsSkip = SERVES_EMITTED_CONNECTIONS
-    ? false
+final Object? _tlsSkip = SERVES_EMITTED_CONNECTIONS
+    ? null
     : 'TLS termination unavailable';
 
 // Dart: the object literal upstream hands createHttpProxyServer; every
