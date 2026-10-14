@@ -2347,9 +2347,6 @@ Future<void> main() async {
         expect(await s.send('/ok'), startsWith('HTTP/1.1 200'));
       },
       skip: emitSkip,
-      tags: [
-        'pending',
-      ], // Dart: tls.connect({socket}) (shim-stream) / hangs on 64-192 MiB streaming
     );
   });
 
