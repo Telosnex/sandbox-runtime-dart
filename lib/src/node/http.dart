@@ -28,7 +28,7 @@ class NodeHttpError implements Exception {
 typedef IncomingHttpHeaders = Map<String, Object?>;
 
 /// A Node IncomingMessage-like request or response message.
-class IncomingMessage {
+class IncomingMessage extends stream.Readable {
   IncomingMessage._({
     required this.socket,
     required this.rawHeaders,
@@ -38,11 +38,7 @@ class IncomingMessage {
     this.url,
     this.statusCode,
     this.statusMessage,
-  }) : _body = StreamController<Uint8List>(
-         sync: true,
-         onPause: socket.pause,
-         onResume: socket.resume,
-       );
+  }) : super(autoDestroy: false);
 
   final net.NodeSocket socket;
   final String? method;
@@ -54,33 +50,46 @@ class IncomingMessage {
   final Map<String, Object?> headers;
   final Map<String, Object?> trailers = {};
   final List<String> rawTrailers = [];
-  final StreamController<Uint8List> _body;
-  bool _destroyed = false;
-  bool _readableEnded = false;
+  bool aborted = false;
   int _bodyBuffered = 0;
   int? _bodyGateCap;
   Object? _bodyGateBudget;
-  Completer<void>? _bodyGateWaiter;
   void Function()? _budgetWake;
 
-  bool get destroyed => _destroyed;
-  bool get readableEnded => _readableEnded;
-  bool get complete => _readableEnded;
-  Stream<Uint8List> get body => _body.stream.transform(
-    StreamTransformer<Uint8List, Uint8List>.fromHandlers(
-      handleData: (bytes, sink) {
-        _bodyBuffered = (_bodyBuffered - bytes.length).clamp(0, 1 << 62);
-        _adjustBudget(-bytes.length);
-        _updateBodyGate();
-        sink.add(bytes);
-      },
-      handleDone: (sink) {
-        _finalizeEnd();
-        sink.close();
-      },
-    ),
-  );
-  int get readableLength => _bodyBuffered;
+  bool get complete => readableEnded;
+
+  /// Node `_read`: the consumer wants more, so let the socket flow again
+  /// (unless the buffered-body gate holds it).
+  @override
+  void readImpl(int size) {
+    _full = false;
+    _updateBodyGate();
+    _wake();
+  }
+
+  /// The parser loop waits here while the consumer is behind (the socket is
+  /// read only by that loop, so waiting is what stops the socket flowing).
+  bool _full = false;
+  Completer<void>? _fullWaiter;
+
+  void _wake() {
+    if (_full || _isBodyGateBlocked()) return;
+    final waiter = _fullWaiter;
+    _fullWaiter = null;
+    if (waiter != null && !waiter.isCompleted) waiter.complete();
+  }
+
+  /// A delivered chunk leaves the buffer: release it from the gate and budget.
+  @override
+  bool emit(String event, [Object? a, Object? b, Object? c, Object? d]) {
+    final result = super.emit(event, a, b, c, d);
+    if (event == 'data' && a is List<int>) {
+      _bodyBuffered = (_bodyBuffered - a.length).clamp(0, 1 << 62);
+      _adjustBudget(-a.length);
+      _updateBodyGate();
+    }
+    return result;
+  }
 
   void gateBufferedBody({required int cap, Object? budget}) {
     if (cap < 0) throw ArgumentError.value(cap, 'cap');
@@ -90,9 +99,10 @@ class IncomingMessage {
   }
 
   Future<void> _waitForBodyGate() async {
-    if (_bodyGateCap == null || !_isBodyGateBlocked()) return;
-    _bodyGateWaiter ??= Completer<void>();
-    await _bodyGateWaiter!.future;
+    if (destroyed || readableEnded) return;
+    if (!_full && !_isBodyGateBlocked()) return;
+    _fullWaiter ??= Completer<void>();
+    await _fullWaiter!.future;
   }
 
   bool _isBodyGateBlocked() {
@@ -108,8 +118,6 @@ class IncomingMessage {
   void _updateBodyGate() {
     if (_bodyGateCap == null) return;
     if (_isBodyGateBlocked()) {
-      socket.pause();
-      _bodyGateWaiter ??= Completer<void>();
       final budget = _bodyGateBudget;
       if (budget != null && _budgetWake == null) {
         void wake() => _updateBodyGate();
@@ -123,10 +131,7 @@ class IncomingMessage {
         (budget as dynamic).waiters.remove(wake);
         _budgetWake = null;
       }
-      socket.resume();
-      final waiter = _bodyGateWaiter;
-      _bodyGateWaiter = null;
-      if (waiter != null && !waiter.isCompleted) waiter.complete();
+      _wake();
     }
   }
 
@@ -147,166 +152,59 @@ class IncomingMessage {
     }
   }
 
-  IncomingMessage on(String event, Function listener) {
-    switch (event) {
-      case 'data':
-        body.listen((bytes) => Function.apply(listener, [bytes]));
-      case 'end':
-        if (_readableEnded) {
-          scheduleMicrotask(() => Function.apply(listener, const []));
-        } else {
-          _endListeners.add(listener);
-        }
-      case 'error':
-        _errorListeners.add(listener);
-      case 'aborted':
-        _abortedListeners.add(listener);
-      case 'close':
-        _closeListeners.add(listener);
-    }
-    return this;
-  }
-
-  final Map<String, List<Function>> _eventListeners = {};
-  List<Function> get _endListeners =>
-      _eventListeners.putIfAbsent('end', () => []);
-  List<Function> get _errorListeners =>
-      _eventListeners.putIfAbsent('error', () => []);
-  List<Function> get _abortedListeners =>
-      _eventListeners.putIfAbsent('aborted', () => []);
-  List<Function> get _closeListeners =>
-      _eventListeners.putIfAbsent('close', () => []);
-
-  IncomingMessage once(String event, Function listener) {
-    late Function wrapper;
-    wrapper = ([Object? value]) {
-      off(event, wrapper);
-      Function.apply(listener, value == null ? const [] : [value]);
-    };
-    return on(event, wrapper);
-  }
-
-  IncomingMessage off(String event, Function listener) {
-    _eventListeners[event]?.remove(listener);
-    return this;
-  }
-
-  IncomingMessage removeListener(String event, Function listener) =>
-      off(event, listener);
-
-  void _emit(String event, [Object? value]) {
-    for (final listener in List<Function>.of(
-      _eventListeners[event] ?? const [],
-    )) {
-      Function.apply(listener, value == null ? const [] : [value]);
-    }
-  }
-
   void _add(List<int> bytes) {
-    if (bytes.isNotEmpty && !_body.isClosed) {
+    if (bytes.isNotEmpty && !destroyed && !readableEnded) {
       _bodyBuffered += bytes.length;
       _adjustBudget(bytes.length);
       _updateBodyGate();
-      _body.add(Uint8List.fromList(bytes));
+      if (!push(Uint8List.fromList(bytes))) _full = true;
     }
   }
 
   void _finish() {
-    if (_body.isClosed) return;
-    if (!_body.isClosed) _body.close();
-    if (_bodyBuffered == 0) _finalizeEnd();
-  }
-
-  void _finalizeEnd() {
-    if (_readableEnded) return;
-    _readableEnded = true;
-    _emit('end');
+    if (destroyed || readableEnded) return;
+    push(null);
   }
 
   void _fail(Object error) {
-    if (!_body.isClosed) _body.addError(error);
-    _emit('error', error);
-    _emit('aborted');
-    _destroyed = true;
-    _emit('close');
+    if (destroyed) return;
+    destroy(error);
   }
 
-  T pipe<T extends stream.Writable>(T destination, {bool end = true}) {
-    if (destination is ServerResponse) {
-      body.listen(
-        (bytes) {
-          if (!destination.write(bytes)) {
-            socket.pause();
-            destination.once('drain', () {
-              if (!destroyed) socket.resume();
-            });
-          }
-        },
-        onError: destination.destroy,
-        onDone: () {
-          if (end) destination.end();
-          socket.resume();
-        },
-        cancelOnError: false,
-      );
-    } else if (destination is net.NodeSocket) {
-      body.listen(
-        (bytes) {
-          if (!destination.write(bytes)) {
-            socket.pause();
-            destination.once('drain', () {
-              if (!destroyed) socket.resume();
-            });
-          }
-        },
-        onError: destination.destroy,
-        onDone: () {
-          if (end) destination.end();
-        },
-      );
-    } else {
-      throw ArgumentError('Unsupported IncomingMessage.pipe destination');
+  /// Node `IncomingMessage._destroy`: marks an unfinished message aborted,
+  /// reports the error only when somebody listens, and drops the socket.
+  @override
+  void destroyImpl(Object? error, Function callback) {
+    if (!readableEnded) {
+      aborted = true;
+      emit('aborted');
     }
-    return destination;
-  }
-
-  IncomingMessage pause() {
-    socket.pause();
-    return this;
-  }
-
-  IncomingMessage resume() {
-    socket.resume();
-    return this;
-  }
-
-  IncomingMessage destroy([Object? error]) {
-    if (_destroyed) return this;
-    _destroyed = true;
-    if (error != null) _fail(error);
+    final waiter = _fullWaiter;
+    _fullWaiter = null;
+    if (waiter != null && !waiter.isCompleted) waiter.complete();
     socket.destroy(error);
-    return this;
+    if (error != null && listenerCount('error') == 0) {
+      callback(null);
+    } else {
+      callback(error);
+    }
   }
 }
 
 /// Node ServerResponse subset with byte-preserving Latin-1 head serialization.
-class ServerResponse extends events.EventEmitter implements stream.Writable {
+class ServerResponse extends events.EventEmitter {
   ServerResponse._(this.socket, this._request);
 
   final net.NodeSocket socket;
   final IncomingMessage _request;
   final Map<String, _HeaderValue> _headers = {};
   final Map<String, Object?> _trailers = {};
-  final Map<String, List<Function>> _listeners = {};
   final Completer<void> _done = Completer<void>();
   int statusCode = 200;
   String? statusMessage;
   bool headersSent = false;
-  @override
   bool writableEnded = false;
-  @override
   bool writableFinished = false;
-  @override
   bool destroyed = false;
   bool _chunked = false;
   bool _noBody = false;
@@ -315,41 +213,36 @@ class ServerResponse extends events.EventEmitter implements stream.Writable {
 
   Future<void> get done => _done.future;
   bool get finished => writableFinished;
-  @override
   bool get writable => !writableEnded && !destroyed;
-  @override
   int get writableLength => socket.writableLength;
 
   @override
   ServerResponse on(String event, Function listener) {
-    (_listeners[event] ??= []).add(listener);
+    super.on(event, listener);
     return this;
   }
 
   @override
   ServerResponse once(String event, Function listener) {
-    late Function wrapped;
-    wrapped = ([Object? value]) {
-      off(event, wrapped);
-      Function.apply(listener, value == null ? const [] : [value]);
-    };
-    return on(event, wrapped);
+    super.once(event, listener);
+    return this;
   }
 
   @override
   ServerResponse off(String event, Function listener) {
-    _listeners[event]?.remove(listener);
+    super.off(event, listener);
     return this;
   }
 
   @override
   ServerResponse removeListener(String event, Function listener) =>
       off(event, listener);
+
   void _emit(String event, [Object? value]) {
-    for (final listener in List<Function>.of(_listeners[event] ?? const [])) {
-      Function.apply(listener, value == null ? const [] : [value]);
-    }
+    if (listenerCount(event) != 0) emit(event, value);
   }
+
+  bool get writableNeedDrain => false;
 
   void setHeader(String name, Object? value) {
     _checkHeaderName(name);
@@ -395,7 +288,6 @@ class ServerResponse extends events.EventEmitter implements stream.Writable {
     return this;
   }
 
-  @override
   bool write(Object data, [Function? callback]) {
     if (_ended || destroyed) {
       final error = StateError('write after end');
@@ -414,7 +306,7 @@ class ServerResponse extends events.EventEmitter implements stream.Writable {
     } else if (callback != null) {
       scheduleMicrotask(() => Function.apply(callback, const []));
     }
-    return socket.writableLength < net.NodeSocket.highWaterMark;
+    return socket.writableLength < socket.writableHighWaterMark;
   }
 
   ServerResponse addTrailers(Map<String, Object?> trailers) {
@@ -426,7 +318,6 @@ class ServerResponse extends events.EventEmitter implements stream.Writable {
     return this;
   }
 
-  @override
   ServerResponse end([Object? data, Function? callback]) {
     if (_ended) return this;
     if (data != null) write(data);
@@ -475,7 +366,6 @@ class ServerResponse extends events.EventEmitter implements stream.Writable {
     return this;
   }
 
-  @override
   ServerResponse destroy([Object? error]) {
     if (destroyed) return this;
     destroyed = true;
@@ -599,6 +489,13 @@ class NodeHttpServer extends net.NodeServer {
   void closeIdleConnections() {
     for (final socket in List<net.NodeSocket>.of(_idleConnections)) {
       _idleConnections.remove(socket);
+      socket.destroy();
+    }
+  }
+
+  /// Node `server.closeAllConnections()`: destroy every open connection.
+  void closeAllConnections() {
+    for (final socket in List<net.NodeSocket>.of(_connections)) {
       socket.destroy();
     }
   }
@@ -821,7 +718,7 @@ class _AgentLease {
 final Agent globalAgent = Agent(keepAlive: true, maxSockets: 1);
 
 /// Node ClientRequest subset. Writes are queued until a socket is assigned.
-class ClientRequest extends events.EventEmitter implements stream.Writable {
+class ClientRequest extends events.EventEmitter {
   ClientRequest(Object options, [Function? responseListener])
     : _options = _requestOptions(options) {
     if (responseListener != null) on('response', responseListener);
@@ -835,13 +732,11 @@ class ClientRequest extends events.EventEmitter implements stream.Writable {
   }
 
   final Map<String, Object?> _options;
-  final Map<String, List<Function>> _listeners = {};
   late final Agent _agent;
   final List<Uint8List> _body = [];
   net.NodeSocket? socket;
   _AgentLease? _lease;
   bool reusedSocket = false;
-  @override
   bool destroyed = false;
   bool _ended = false;
   bool _started = false;
@@ -854,25 +749,19 @@ class ClientRequest extends events.EventEmitter implements stream.Writable {
 
   @override
   ClientRequest on(String event, Function listener) {
-    (_listeners[event] ??= []).add(listener);
-    if (event == 'response' && response != null)
-      scheduleMicrotask(() => Function.apply(listener, [response]));
+    super.on(event, listener);
     return this;
   }
 
   @override
   ClientRequest once(String event, Function listener) {
-    late Function wrapper;
-    wrapper = ([Object? value]) {
-      off(event, wrapper);
-      Function.apply(listener, value == null ? const [] : [value]);
-    };
-    return on(event, wrapper);
+    super.once(event, listener);
+    return this;
   }
 
   @override
   ClientRequest off(String event, Function listener) {
-    _listeners[event]?.remove(listener);
+    super.off(event, listener);
     return this;
   }
 
@@ -880,23 +769,12 @@ class ClientRequest extends events.EventEmitter implements stream.Writable {
   ClientRequest removeListener(String event, Function listener) =>
       off(event, listener);
 
-  @override
-  bool get writable => !_ended && !destroyed;
-  @override
-  bool get writableEnded => _ended;
-  @override
-  bool get writableFinished => _requestFinished;
-  @override
-  int get writableLength =>
-      socket?.writableLength ?? _body.fold<int>(0, (n, b) => n + b.length);
-
   void _emit(String event, [Object? value]) {
-    for (final listener in List<Function>.of(_listeners[event] ?? const [])) {
-      Function.apply(listener, value == null ? const [] : [value]);
-    }
+    if (listenerCount(event) != 0) emit(event, value);
   }
 
-  @override
+  bool get writableNeedDrain => false;
+
   bool write(Object data, [Function? callback]) {
     if (_ended || destroyed) {
       final error = StateError('write after end');
@@ -916,10 +794,9 @@ class ClientRequest extends events.EventEmitter implements stream.Writable {
     _start();
     return (socket?.writableLength ??
             _body.fold<int>(0, (n, b) => n + b.length)) <
-        net.NodeSocket.highWaterMark;
+        (socket?.writableHighWaterMark ?? 16384);
   }
 
-  @override
   ClientRequest end([Object? data, Function? callback]) {
     if (data != null) write(data);
     _ended = true;
@@ -1144,7 +1021,6 @@ class ClientRequest extends events.EventEmitter implements stream.Writable {
   }
 
   void abort() => destroy(const SocketException('aborted'));
-  @override
   ClientRequest destroy([Object? error]) {
     if (destroyed) return this;
     destroyed = true;
@@ -1452,7 +1328,7 @@ class _ByteReader {
 
   Future<int?> _byte() async {
     while (true) {
-      final data = socket.read(1);
+      final data = socket.read(1) as Uint8List?;
       if (data != null && data.isNotEmpty) return data[0];
       if (socket.readableEnded || socket.destroyed) return null;
       final wake = Completer<void>();
@@ -1520,7 +1396,7 @@ class _ByteReader {
     if (first == null) return null;
     final bytes = BytesBuilder(copy: false)..addByte(first);
     while (bytes.length < max) {
-      final next = socket.read(max - bytes.length);
+      final next = socket.read(max - bytes.length) as Uint8List?;
       if (next == null || next.isEmpty) break;
       bytes.add(next);
     }

@@ -42,11 +42,13 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:sandbox_runtime/src/node/os.dart' as os;
 import 'package:sandbox_runtime/src/sandbox/sandbox_utils.dart' as m;
-void main() {
-  // Pending port: src/sandbox/linux-sandbox-utils.ts. Upstream runs
-  // wrapCommandWithSandboxLinux here on Linux and tests its argv for
-  // ' --bind / / '; until then the caller skips that check on Linux.
-  const argv = '';
+import 'package:sandbox_runtime/src/sandbox/linux_sandbox_utils.dart' as linux;
+import 'package:sandbox_runtime/src/sandbox/sandbox_schemas.dart';
+Future<void> main() async {
+  final argv = Platform.isLinux ? await linux.wrapCommandWithSandboxLinux(linux.LinuxSandboxParams(
+    command: 'true', needsNetworkRestriction: false, readConfig: null,
+    writeConfig: FsWriteRestrictionConfig(allowOnly: ['~'], denyWithinAllow: []),
+  )) : '';
   stdout.writeln(jsonEncode({
     'homedir': os.homedir(),
     'results': ${jsonEncode(patterns)}.map((p) => m.normalizePathForSandbox(p)).toList(),
@@ -217,7 +219,6 @@ void main() {
           expect(result['tildeBindsRoot'], false);
         },
         timeout: const Timeout(Duration(seconds: 30)),
-        skip: Platform.isLinux ? 'pending port: src/sandbox/linux-sandbox-utils.ts' : false,
       );
     },
   );
