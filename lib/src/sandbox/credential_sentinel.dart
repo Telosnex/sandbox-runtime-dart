@@ -1,7 +1,9 @@
-// STUB: pending port of src/sandbox/credential-sentinel.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/credential-sentinel.ts @ 24eb39e.
 // ignore_for_file: constant_identifier_names, dangling_library_doc_comments, slash_for_doc_comments
 
 import '../node/http.dart' show IncomingHttpHeaders;
+import '../node/crypto.dart' as crypto;
+import '../node/buffer.dart' show Buffer;
 import 'body_substitution.dart' show SentinelBufferPair;
 
 /**
@@ -16,8 +18,40 @@ import 'body_substitution.dart' show SentinelBufferPair;
 
 const String SENTINEL_PREFIX = 'fake_value_';
 
+// Padding alphabet: the same character class as the base sentinel, so a
+// padded sentinel still survives shells, JSON, URLs, and multipart unquoted.
+const String _SENTINEL_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789_-';
+
+/**
+ * Mint `fake_value_<uuid4>`, padded with random alphabet chars up to the
+ * real value's byte length when the real value is longer. A length-matched
+ * sentinel keeps Content-Length invariant under body substitution, so the
+ * proxy forwards the header verbatim; a shorter real value keeps the
+ * 47-byte base sentinel (entropy is never reduced below the uuid4) and the
+ * proxy falls back to chunked framing instead. The padding carries no
+ * entropy contract — the uuid4 does — so modulo bias is irrelevant.
+ */
+String _mintSentinel(String realValue) {
+  final base = SENTINEL_PREFIX + crypto.randomUUID();
+  final pad = Buffer.byteLength(realValue) - base.length;
+  if (pad <= 0) return base;
+  var out = base;
+  for (final b in crypto.randomBytes(pad)) {
+    out += _SENTINEL_ALPHABET[b % _SENTINEL_ALPHABET.length];
+  }
+  return out;
+}
+
 /** Predicate matching a destination host against one injectHosts pattern. */
 typedef HostMatcher = bool Function(String host, String pattern);
+
+class _SentinelEntry {
+  _SentinelEntry(this.name, this.sentinel, this.realValue, this.injectHosts);
+  final String name;
+  final String sentinel;
+  String realValue;
+  List<String> injectHosts;
+}
 
 /**
  * Sentinel↔real-value map for one sandbox session, keyed by credential name.
@@ -32,6 +66,13 @@ typedef HostMatcher = bool Function(String host, String pattern);
  * distinct sentinels, so each can have an independent host list.
  */
 class SentinelRegistry {
+  final Map<String, _SentinelEntry> _byName = {};
+  final Map<String, _SentinelEntry> _bySentinel = {};
+  // True while every registered sentinel starts with SENTINEL_PREFIX, which
+  // keeps the substring fast path in substituteInString() valid. A
+  // caller-minted sentinel (e.g. a JWT-shaped fake) clears it.
+  bool _allSentinelsPrefixed = true;
+
   /**
    * Return the sentinel for the credential named `name`, minting a fresh one
    * on first use. The sentinel is `fake_value_<uuid4>`: long enough that an
@@ -46,10 +87,14 @@ class SentinelRegistry {
    * sentinel un-length-matched; body substitution then re-frames as chunked
    * rather than trusting a stale Content-Length.)
    */
-  String register(String name, String realValue, List<String> injectHosts) =>
-      throw UnimplementedError(
-        'pending port of src/sandbox/credential-sentinel.ts',
-      );
+  String register(String name, String realValue, List<String> injectHosts) {
+    return registerWithSentinel(
+      name,
+      _mintSentinel(realValue),
+      realValue,
+      injectHosts,
+    );
+  }
 
   /**
    * Like {@link register}, but with a caller-minted sentinel instead of the
@@ -78,14 +123,26 @@ class SentinelRegistry {
     String sentinel,
     String realValue,
     List<String> injectHosts,
-  ) => throw UnimplementedError(
-    'pending port of src/sandbox/credential-sentinel.ts',
-  );
+  ) {
+    final existing = _byName[name];
+    if (existing != null) {
+      existing.realValue = realValue;
+      existing.injectHosts = injectHosts;
+      return existing.sentinel;
+    }
+    if (!sentinel.startsWith(SENTINEL_PREFIX)) {
+      _allSentinelsPrefixed = false;
+    }
+    final entry = _SentinelEntry(name, sentinel, realValue, injectHosts);
+    _byName[name] = entry;
+    _bySentinel[sentinel] = entry;
+    return sentinel;
+  }
 
   /** Real value for `sentinel`, or undefined if not registered. */
-  String? lookupReal(String sentinel) => throw UnimplementedError(
-    'pending port of src/sandbox/credential-sentinel.ts',
-  );
+  String? lookupReal(String sentinel) {
+    return _bySentinel[sentinel]?.realValue;
+  }
 
   /**
    * Names of the registered credentials whose `injectHosts` cover
@@ -93,10 +150,13 @@ class SentinelRegistry {
    * exempted from TLS termination (so substitution can never run there) but
    * a masked credential is configured for injection at it.
    */
-  List<String> namesInjectableAt(String destHost, HostMatcher matches) =>
-      throw UnimplementedError(
-        'pending port of src/sandbox/credential-sentinel.ts',
-      );
+  List<String> namesInjectableAt(String destHost, HostMatcher matches) {
+    final names = <String>[];
+    for (final e in _byName.values) {
+      if (e.injectHosts.any((p) => matches(destHost, p))) names.add(e.name);
+    }
+    return names;
+  }
 
   /**
    * Sentinel→real byte pairs for every credential whose `injectHosts`
@@ -108,24 +168,36 @@ class SentinelRegistry {
   List<SentinelBufferPair> sentinelsForHost(
     String destHost,
     HostMatcher matches,
-  ) => throw UnimplementedError(
-    'pending port of src/sandbox/credential-sentinel.ts',
-  );
+  ) {
+    final pairs = <SentinelBufferPair>[];
+    for (final e in _bySentinel.values) {
+      if (!e.injectHosts.any((p) => matches(destHost, p))) continue;
+      pairs.add(
+        SentinelBufferPair(
+          sentinel: Buffer.from(e.sentinel).toUint8List(),
+          realValue: Buffer.from(e.realValue).toUint8List(),
+        ),
+      );
+    }
+    return pairs;
+  }
 
   /** Iterate registered `[sentinel, realValue]` pairs. */
-  Iterable<(String, String)> entries() => throw UnimplementedError(
-    'pending port of src/sandbox/credential-sentinel.ts',
-  );
+  Iterable<(String, String)> entries() sync* {
+    for (final e in _bySentinel.values) {
+      yield (e.sentinel, e.realValue);
+    }
+  }
 
   /** Number of registered sentinels. */
-  int get size => throw UnimplementedError(
-    'pending port of src/sandbox/credential-sentinel.ts',
-  );
+  int get size => _bySentinel.length;
 
   /** Drop every mapping. Called on session teardown. */
-  void clear() => throw UnimplementedError(
-    'pending port of src/sandbox/credential-sentinel.ts',
-  );
+  void clear() {
+    _byName.clear();
+    _bySentinel.clear();
+    _allSentinelsPrefixed = true;
+  }
 
   /**
    * Replace registered sentinels found in `headers` with their real values,
@@ -144,7 +216,31 @@ class SentinelRegistry {
     IncomingHttpHeaders headers,
     String destHost,
     HostMatcher matches,
-  ) => throw UnimplementedError(
-    'pending port of src/sandbox/credential-sentinel.ts',
-  );
+  ) {
+    if (_bySentinel.isEmpty) return;
+    for (final MapEntry(key: name, :value) in headers.entries.toList()) {
+      if (value == null) continue;
+      if (value is List) {
+        for (var i = 0; i < value.length; i++) {
+          value[i] = _substituteInString(value[i] as String, destHost, matches);
+        }
+      } else {
+        headers[name] = _substituteInString(value as String, destHost, matches);
+      }
+    }
+  }
+
+  String _substituteInString(String s, String destHost, HostMatcher matches) {
+    // Fast path: while every sentinel carries the fixed prefix, a header
+    // value that doesn't contain it cannot contain any sentinel. Disabled
+    // once a caller-minted sentinel (arbitrary shape) is registered.
+    if (_allSentinelsPrefixed && !s.contains(SENTINEL_PREFIX)) return s;
+    var out = s;
+    for (final e in _bySentinel.values) {
+      if (!out.contains(e.sentinel)) continue;
+      if (!e.injectHosts.any((p) => matches(destHost, p))) continue;
+      out = out.split(e.sentinel).join(e.realValue);
+    }
+    return out;
+  }
 }
