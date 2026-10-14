@@ -249,8 +249,6 @@ void main() {
         expect(s.up.seen.map((g) => g.url).toList(), ['/ok']);
         expect(listened, <Object?>[]);
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
     );
   });
@@ -324,7 +322,7 @@ void main() {
       mintLeafCert(mitmCA, 'a.test'); // a is now the most recent
       mintLeafCert(mitmCA, 'c.test');
       expect(mitmCA.leafCerts.keys.toList(), ['a.test', 'c.test']);
-    }, tags: ['pending']);
+    });
   });
 
   /**
@@ -430,8 +428,6 @@ void main() {
         // Kernel buffers and the queue caps: far below the body.
         expect(r.upstreamWroteDuringStall, lessThan(48 << 20));
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
       timeout: const Timeout(Duration(milliseconds: 60000)),
     );
@@ -478,8 +474,6 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 200));
         expect(await s.send('/ok'), startsWith('HTTP/1.1 200'));
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
     );
   });
@@ -543,8 +537,6 @@ void main() {
         expect(s.asked, hasLength(0));
         expect(s.up.seen, hasLength(0));
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
     );
 
@@ -561,8 +553,6 @@ void main() {
         expect(statusOf(r.raw), 421);
         expect(s.up.seen, hasLength(0));
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
     );
 
@@ -698,8 +688,6 @@ void main() {
         await request('/second');
         expect(up.seen.map((g) => g.url).toList(), ['/first', '/second']);
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
     );
 
     test('a tunnel that turns out not to be TLS frees its slot', () async {
@@ -745,8 +733,6 @@ void main() {
         next.sock.destroy();
         expect(next.head, startsWith('HTTP/1.1 200'));
       },
-      // Dart: node/tls.dart connect() throws UnimplementedError for the `socket` option.
-      tags: ['pending'],
       skip: _tlsSkip,
     );
   });

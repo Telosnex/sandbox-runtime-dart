@@ -693,7 +693,10 @@ Future<Socket> _bridgeDuplex(stream.Duplex duplex) async {
   });
   duplex.on('end', () => unawaited(far.close()));
   duplex.on('error', (Object? _) => far.destroy());
-  duplex.on('close', () => far.destroy());
+  duplex.on(
+    'close',
+    () => unawaited(far.close().catchError((Object _) => far)),
+  );
   far.listen(
     (data) => duplex.write(Uint8List.fromList(data)),
     onDone: () {

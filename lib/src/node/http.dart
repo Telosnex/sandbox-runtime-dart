@@ -320,8 +320,19 @@ class ServerResponse extends events.EventEmitter {
     } else if (callback != null) {
       scheduleMicrotask(() => Function.apply(callback, const []));
     }
-    return socket.writableLength < socket.writableHighWaterMark;
+    final room = socket.writableLength < socket.writableHighWaterMark;
+    if (!room && !_needDrain) {
+      // Node: the response emits 'drain' when its socket does.
+      _needDrain = true;
+      socket.once('drain', ([_]) {
+        _needDrain = false;
+        _emit('drain');
+      });
+    }
+    return room;
   }
+
+  bool _needDrain = false;
 
   ServerResponse addTrailers(Map<String, Object?> trailers) {
     trailers.forEach((name, value) {
