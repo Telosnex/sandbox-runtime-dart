@@ -1,0 +1,15 @@
+const forge=require(process.env.HOME+'/dev/sandbox-runtime/node_modules/node-forge');
+const pki=forge.pki;const key=pki.privateKeyFromPem(require('fs').readFileSync(process.argv[2],'utf8'));
+const pub=pki.setRsaPublicKey(key.n,key.e);
+const ca=pki.createCertificate();ca.publicKey=pub;ca.serialNumber='4a1b2c3d4e5f60718293a4b5c6d7e8f9';
+ca.validity.notBefore=new Date(Date.UTC(2024,0,2,3,4,5));ca.validity.notAfter=new Date(Date.UTC(2051,5,6,7,8,9));
+const subj=[{name:'commonName',value:'sandbox-runtime ephemeral CA'},{name:'organizationName',value:'sandbox-runtime'}];
+ca.setSubject(subj);ca.setIssuer(subj);
+ca.setExtensions([{name:'basicConstraints',cA:true,critical:true},{name:'keyUsage',critical:true,keyCertSign:true,cRLSign:true,digitalSignature:true},{name:'subjectKeyIdentifier'}]);
+ca.sign(key,forge.md.sha256.create());
+const leaf=pki.createCertificate();leaf.publicKey=pub;leaf.serialNumber='5a1b2c3d4e5f60718293a4b5c6d7e8f9';
+leaf.validity.notBefore=new Date(Date.UTC(2024,0,2,3,4,5));leaf.validity.notAfter=new Date(Date.UTC(2025,0,2,3,4,5));
+leaf.setSubject([{name:'commonName',value:'example.com'}]);leaf.setIssuer(ca.subject.attributes);
+leaf.setExtensions([{name:'basicConstraints',cA:false,critical:true},{name:'keyUsage',critical:true,digitalSignature:true,keyEncipherment:true},{name:'extKeyUsage',serverAuth:true},{name:'subjectAltName',altNames:[{type:7,ip:'10.1.2.3'},{type:2,value:'example.com'}]},{name:'subjectKeyIdentifier'},{name:'authorityKeyIdentifier',keyIdentifier:forge.util.hexToBytes(ca.getExtension('subjectKeyIdentifier').subjectKeyIdentifier)},{name:'cRLDistributionPoints',altNames:[{type:6,value:'http://127.0.0.1:1234/srt.crl'}]}]);
+leaf.sign(key,forge.md.sha256.create());
+console.log(pki.certificateToPem(ca)+pki.certificateToPem(leaf)+pki.privateKeyToPem(key));

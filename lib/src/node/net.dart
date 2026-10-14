@@ -191,53 +191,92 @@ bool _matches(List<int> address, List<int> network, int prefix) {
   return (address[wholeBytes] & mask) == (network[wholeBytes] & mask);
 }
 
+/// Node's `HTTPParser` (`process.binding('http_parser')`) as `socket.parser`
+/// exposes it: a table of callback slots indexed by the `kOn*` constants,
+/// which Node's server fills in and which code such as
+/// `keepFlushedHeaderBatches` wraps. `parser.constructor.kOnHeaders` in JS is
+/// `HTTPParser.kOnHeaders` here. Slots are called positionally with Node's
+/// arity (a slot is a Dart [Function]; call it with `Function.apply`):
+///
+/// - `kOnHeaders(List<String> headers, String url)`: a batch of raw header
+///   name/value strings (31 header lines at a time) and the URL so far, or a
+///   chunked request's trailers.
+/// - `kOnHeadersComplete(versionMajor, versionMinor, headers, method, url,
+///   statusCode, statusMessage, upgrade, shouldKeepAlive)`: `headers` and
+///   `url` are null when `kOnHeaders` flushed them; `method` is the method
+///   name; returns 0 (Node: skip-body flag).
+/// - `kOnBody(Uint8List chunk)`, `kOnMessageComplete()`.
+///
+/// [incoming] is the message the default slots are filling (Node's
+/// `parser.incoming`).
+class HTTPParser {
+  static const int kOnMessageBegin = 0;
+  static const int kOnHeaders = 1;
+  static const int kOnHeadersComplete = 2;
+  static const int kOnBody = 3;
+  static const int kOnMessageComplete = 4;
+  static const int kOnExecute = 5;
+  static const int kOnTimeout = 6;
+  static const int REQUEST = 1;
+  static const int RESPONSE = 2;
+
+  final List<Function?> _slots = List<Function?>.filled(7, null);
+
+  /// The callback in slot [index] (one of the `kOn*` constants), or null.
+  Function? operator [](int index) => _slots[index];
+
+  void operator []=(int index, Function? callback) => _slots[index] = callback;
+
+  /// Node's `parser.incoming`.
+  Object? incoming;
+
+  /// Node's `parser._headers` and `parser._url`: what `kOnHeaders` collected.
+  List<String> headersSoFar = [];
+  String urlSoFar = '';
+}
+
 /// Node-like byte duplex over dart:io Socket. This is intentionally limited
 /// to the event and stream operations consumed by the sandbox proxies.
 /// Node `net.Socket`.
-class NodeSocket extends EventEmitter implements stream.Writable {
+class NodeSocket extends stream.Duplex {
   /// A socket with no connection yet. `net.connect` and `tls.connect` create
   /// one and then call [startConnect].
-  NodeSocket.pending({this.allowHalfOpen = false}) : _connecting = true;
+  NodeSocket.pending({bool allowHalfOpen = false})
+    : _connecting = true,
+      super(allowHalfOpen: allowHalfOpen, emitClose: false, autoDestroy: true);
 
   /// Adopt a connected dart:io socket, as a server does with an accepted
   /// connection. No 'connect' event is emitted, as in Node.
-  NodeSocket.fromSocket(Socket socket, {this.allowHalfOpen = false})
-    : _connecting = false {
+  NodeSocket.fromSocket(Socket socket, {bool allowHalfOpen = false})
+    : _connecting = false,
+      super(allowHalfOpen: allowHalfOpen, emitClose: false, autoDestroy: true) {
     _attach(socket);
   }
 
   /// A socket that will run over another, already connected one; see
   /// [startServerTlsOver]. Not connecting, as in Node.
-  NodeSocket.over({this.allowHalfOpen = false}) : _connecting = false;
+  NodeSocket.over({bool allowHalfOpen = false})
+    : _connecting = false,
+      super(allowHalfOpen: allowHalfOpen, emitClose: false, autoDestroy: true);
 
-  static const int highWaterMark = 16 * 1024;
+  /// Node's `socket.parser`: set while an HTTP server parses on this socket
+  /// (null otherwise, as on a Node socket that is not an HTTP connection).
+  HTTPParser? parser;
+
   Socket? _socket;
   StreamSubscription<Uint8List>? _subscription;
   ConnectionTask<Socket>? _task;
-  final List<Uint8List> _readQueue = [];
-  int _readOffset = 0;
-  int _pendingBytes = 0;
-  int _bytesWritten = 0;
-  bool _flushing = false;
-  final List<_PendingWrite> _writeQueue = [];
-  bool _writeShutdownStarted = false;
-  bool _writeShutdownComplete = false;
   bool _connecting;
-  bool _readEnded = false;
-  bool _writeEnded = false;
-  bool _closed = false;
-  bool _destroyed = false;
   bool _unrefed = false;
+  bool _reading = false;
+  bool _closeEmitted = false;
+  int _bytesRead = 0;
+  int _bytesDispatched = 0;
+  int _inFlight = 0;
 
-  // Node's readable-side state. [_flowing] is Node's `state.flowing`: null
-  // until a consumer chooses, true when 'data' is emitted as bytes arrive,
-  // false after pause() or while a 'readable' listener pulls with read().
-  // [_paused] is an explicit pause() (Node `kPaused`).
-  bool? _flowing;
-  bool _paused = false;
-  bool _readableListening = false;
-  int _queuedBytes = 0;
-  bool _subscriptionPaused = false;
+  // Work waiting for the connection: Node queues a write, `_final` and
+  // `_read` on 'connect'.
+  final List<void Function()> _onAttach = [];
 
   // Set once a TLS socket has taken this connection over ([_wrapper]), and
   // on that TLS socket, the socket under it ([_under]).
@@ -247,10 +286,8 @@ class NodeSocket extends EventEmitter implements stream.Writable {
   bool _securing = false;
   Completer<void>? _writesSettled;
   bool? _noDelay;
-  bool allowHalfOpen;
   Timer? _timeoutTimer;
   int _timeoutMs = 0;
-  bool _hadError = false;
 
   void _attach(Socket socket) {
     _socket = socket;
@@ -261,36 +298,210 @@ class NodeSocket extends EventEmitter implements stream.Writable {
     _subscription = socket.listen(
       _received,
       onError: (Object error, StackTrace stack) {
-        _hadError = true;
-        emit('error', socketError(error, 'read'));
-        _finishClose();
+        destroy(socketError(error, 'read'));
       },
       onDone: () {
-        if (!_readEnded) {
-          _readEnded = true;
-          emit('end');
-          emit('readable');
-          if (!allowHalfOpen && !_writeEnded) end();
-        }
-        if (_writeShutdownComplete) _finishClose();
+        _subscription = null;
+        if (destroyed) return;
+        // Node's onStreamRead at EOF.
+        push(null);
+        read(0);
       },
       cancelOnError: false,
     );
-    _subscriptionPaused = false;
-    _updateReading();
+    _subscription!.pause();
+    _reading = false;
     socket.done.then<void>(
       (_) {},
+      onError: (Object error) => destroy(socketError(error, 'write')),
+    );
+    final pending = List<void Function()>.of(_onAttach);
+    _onAttach.clear();
+    for (final fn in pending) {
+      fn();
+    }
+    // Node starts reading on connect (afterConnect / onconnection call
+    // read(0)) so data fills the buffer up to the high-water mark.
+    if (!isPaused()) scheduleMicrotask(() => read(0));
+  }
+
+  void _received(Uint8List bytes) {
+    if (bytes.isEmpty || destroyed) return;
+    _bytesRead += bytes.length;
+    _resetTimeout();
+    // Node: a false push stops reading from the handle.
+    if (!push(Uint8List.fromList(bytes))) _readStop();
+  }
+
+  void _readStart() {
+    if (_reading || _handedOver) return;
+    final sub = _subscription;
+    if (sub == null) return;
+    _reading = true;
+    sub.resume();
+  }
+
+  void _readStop() {
+    if (!_reading) return;
+    _reading = false;
+    _subscription?.pause();
+  }
+
+  @override
+  void readImpl(int size) {
+    if (_connecting || _socket == null) {
+      _onAttach.add(() => readImpl(size));
+      return;
+    }
+    _readStart();
+  }
+
+  @override
+  bool get hasWritevImpl => true;
+
+  @override
+  void writeImpl(Object chunk, String encoding, Function callback) =>
+      writevImpl([(chunk: chunk, encoding: encoding)], callback);
+
+  @override
+  void writevImpl(
+    List<({Object chunk, String encoding})> chunks,
+    Function callback,
+  ) {
+    if (_connecting || _socket == null) {
+      _onAttach.add(() => writevImpl(chunks, callback));
+      return;
+    }
+    final socket = _socket!;
+    var n = 0;
+    try {
+      for (final c in chunks) {
+        final bytes = c.chunk as Uint8List;
+        n += bytes.length;
+        socket.add(bytes);
+      }
+    } catch (error) {
+      applyListener(callback, [socketError(error, 'write')]);
+      return;
+    }
+    _bytesDispatched += n;
+    _inFlight += n;
+    _resetTimeout();
+    socket.flush().then(
+      (_) {
+        _inFlight -= n;
+        applyListener(callback, const []);
+        // The stream counts a chunk as buffered until its callback runs.
+        _settleWrites();
+      },
       onError: (Object error) {
-        _hadError = true;
-        emit('error', socketError(error, 'write'));
-        _finishClose();
+        _inFlight -= n;
+        applyListener(callback, [socketError(error, 'write')]);
+        _settleWrites();
       },
     );
-    if (_writeQueue.isNotEmpty) {
-      _flushWrites();
-    } else if (_writeEnded && _pendingBytes == 0) {
-      _shutdownWrite();
+  }
+
+  void _settleWrites() {
+    if (writableLength == 0 && _inFlight == 0) {
+      final settled = _writesSettled;
+      _writesSettled = null;
+      settled?.complete();
     }
+  }
+
+  @override
+  bool get hasFinalImpl => true;
+
+  @override
+  void finalImpl(Function callback) {
+    if (_connecting || _socket == null) {
+      _onAttach.add(() => finalImpl(callback));
+      return;
+    }
+    try {
+      // dart:io Socket.close() flushes, then shuts down only the send side.
+      _socket!.close().then<void>(
+        (_) => applyListener(callback, const []),
+        onError: (Object error) =>
+            applyListener(callback, [socketError(error, 'shutdown')]),
+      );
+    } catch (error) {
+      applyListener(callback, [socketError(error, 'shutdown')]);
+    }
+  }
+
+  @override
+  void destroyImpl(Object? error, Function callback) {
+    _timeoutTimer?.cancel();
+    _task?.cancel();
+    _onAttach.clear();
+    final wrapper = _wrapper;
+    if (_handedOver && wrapper != null) {
+      // The connection is the TLS socket's now; as in Node, destroying the
+      // socket under it destroys it too.
+      wrapper.destroy();
+    } else {
+      _socket?.destroy();
+      _subscription?.cancel();
+      _subscription = null;
+      final under = _under;
+      if (under != null && _socket == null && !_securing) {
+        // A TLS socket whose handshake has not begun: the connection is
+        // still the socket under it.
+        under._socket?.destroy();
+        under._subscription?.cancel();
+      }
+    }
+    applyListener(callback, [error]);
+    final hadError = error != null;
+    scheduleMicrotask(() => _emitClose(hadError));
+  }
+
+  void _emitClose(bool hadError) {
+    if (_closeEmitted) return;
+    _closeEmitted = true;
+    emit('close', hadError);
+    // A TLS socket and the socket under it share one connection: when one
+    // closes, so does the other.
+    final under = _under;
+    if (under != null && !under._closeEmitted) {
+      if (!under.destroyed) {
+        under.destroy();
+      } else {
+        under._emitClose(false);
+      }
+    }
+    final wrapper = _wrapper;
+    if (wrapper != null && !wrapper.destroyed) wrapper.destroy();
+  }
+
+  /// Node `socket.write`: after a TLS socket took the connection over, use
+  /// that socket.
+  @override
+  bool write(Object chunk, [Object? encoding, Function? callback]) {
+    _checkNotHandedOver();
+    _resetTimeout();
+    return super.write(chunk, encoding, callback);
+  }
+
+  @override
+  NodeSocket end([Object? chunk, Object? encoding, Function? cb]) {
+    _checkNotHandedOver();
+    super.end(chunk, encoding, cb);
+    return this;
+  }
+
+  @override
+  Object? read([int? n]) {
+    if (_handedOver && n != 0) _checkNotHandedOver();
+    return super.read(n);
+  }
+
+  @override
+  bool unshift(Object? chunk, [String? encoding]) {
+    _checkNotHandedOver();
+    return super.unshift(chunk, encoding);
   }
 
   /// Open the connection for a [NodeSocket.pending] socket. [secure], when
@@ -325,7 +536,7 @@ class NodeSocket extends EventEmitter implements stream.Writable {
             );
       } else {
         final addresses = await _resolve(host, lookup);
-        if (_destroyed) return;
+        if (destroyed) return;
         emit(
           'lookup',
           null,
@@ -339,7 +550,7 @@ class NodeSocket extends EventEmitter implements stream.Writable {
             raw = await _dial(InternetAddress(candidate.address), port!);
             break;
           } catch (e) {
-            if (_destroyed) return;
+            if (destroyed) return;
             lastError = socketError(
               e,
               'connect',
@@ -350,7 +561,7 @@ class NodeSocket extends EventEmitter implements stream.Writable {
         }
         if (raw == null) throw lastError!;
       }
-      if (_destroyed) {
+      if (destroyed) {
         raw.destroy();
         return;
       }
@@ -363,14 +574,14 @@ class NodeSocket extends EventEmitter implements stream.Writable {
       _connecting = false;
       emit('connect');
       final secured = await secure(raw);
-      if (_destroyed) {
+      if (destroyed) {
         secured.destroy();
         return;
       }
       _attach(secured);
       emit('secureConnect');
     } catch (error) {
-      if (_destroyed) return;
+      if (destroyed) return;
       destroy(error is SocketException ? socketError(error, 'connect') : error);
     }
   }
@@ -425,24 +636,52 @@ class NodeSocket extends EventEmitter implements stream.Writable {
 
   bool get connecting => _connecting;
   bool get pending => _socket == null;
-  @override
-  bool get destroyed => _destroyed;
-  bool get readable => !_readEnded && !_destroyed;
-  @override
-  bool get writable => !_writeEnded && !_destroyed;
-  @override
-  bool get writableEnded => _writeEnded;
-  @override
-  bool get writableFinished => _writeEnded && _pendingBytes == 0;
-  bool get readableEnded => _readEnded;
-  bool get closed => _closed;
-  @override
-  int get writableLength => _pendingBytes;
 
-  /// Node `readable.readableLength`: bytes received and not yet read.
-  int get readableLength => _queuedBytes;
-  int get bytesWritten => _bytesWritten;
+  /// Node `socket.readyState`.
+  String get readyState => _connecting
+      ? 'opening'
+      : readable && writable
+      ? 'open'
+      : readable
+      ? 'readOnly'
+      : writable
+      ? 'writeOnly'
+      : 'closed';
+
+  /// Node `socket.bytesRead`.
+  int get bytesRead => _bytesRead;
+
+  /// Node `socket.bytesWritten`: bytes handed to the connection, plus
+  /// bytes still queued.
+  int get bytesWritten => _bytesDispatched + writableLength;
   bool get unrefed => _unrefed;
+
+  /// Node `socket.resetAndDestroy()`: close with a TCP RST. dart:io cannot
+  /// send a RST, so this closes the connection at once (a FIN, after any
+  /// unsent bytes are dropped).
+  NodeSocket resetAndDestroy() {
+    if (_connecting) {
+      destroy(
+        NodeError(
+          'Socket is still connecting',
+          code: 'ERR_SOCKET_CLOSED_BEFORE_CONNECTION',
+        ),
+      );
+    } else {
+      destroy(NodeError('Socket closed', code: 'ERR_SOCKET_CLOSED'));
+    }
+    return this;
+  }
+
+  /// Node `socket.destroySoon()`.
+  void destroySoon() {
+    if (writable) end();
+    if (writableFinished) {
+      destroy();
+    } else {
+      once('finish', () => destroy());
+    }
+  }
 
   /// The dart:io socket for address queries: this socket's own, or, once a
   /// TLS socket has taken the connection over, that socket's.
@@ -469,365 +708,66 @@ class NodeSocket extends EventEmitter implements stream.Writable {
     }
   }
 
-  /// A 'data' listener puts the readable side in flowing mode, as in Node; a
-  /// 'readable' listener can pull with [read].
   @override
   NodeSocket on(String event, Function listener) {
     super.on(event, listener);
-    _listenerAdded(event);
     return this;
   }
 
   @override
+  NodeSocket addListener(String event, Function listener) =>
+      on(event, listener);
+
+  @override
   NodeSocket once(String event, Function listener) {
     super.once(event, listener);
-    _listenerAdded(event);
     return this;
   }
 
   @override
   NodeSocket prependListener(String event, Function listener) {
     super.prependListener(event, listener);
-    _listenerAdded(event);
     return this;
-  }
-
-  // As Node's Readable.on: a 'readable' listener stops the flow and lets
-  // the listener pull; a 'data' listener starts the flow unless the stream
-  // was paused.
-  void _listenerAdded(String event) {
-    if (event == 'readable') {
-      _readableListening = true;
-      _flowing = false;
-      _updateReading();
-      if (_readQueue.isNotEmpty) scheduleMicrotask(() => emit('readable'));
-    } else if (event == 'data' && _flowing != false) {
-      _flowing = true;
-      _deliverQueued();
-      _updateReading();
-    }
   }
 
   @override
   NodeSocket off(String event, Function listener) {
     super.off(event, listener);
-    if (event == 'data') _updateReading();
-    // As Node's updateReadableListening, when the last 'readable' listener
-    // goes.
-    if (event == 'readable' &&
-        _readableListening &&
-        listenerCount('readable') == 0) {
-      _readableListening = false;
-      if (listenerCount('data') > 0 && !_paused) {
-        resume();
-      } else if (!_paused) {
-        _flowing = null;
-      }
-      _updateReading();
-    }
     return this;
-  }
-
-  /// Whether to take bytes from the connection now. While flowing, always;
-  /// else until [highWaterMark] bytes wait to be read, as Node does. An
-  /// explicit pause() with no 'readable' listener stops reading at once, so
-  /// unread bytes stay in the kernel.
-  bool get _shouldRead {
-    if (_handedOver || _destroyed) return false;
-    if (_emitsData) return true;
-    if (_paused && !_readableListening) return false;
-    return _queuedBytes < highWaterMark;
-  }
-
-  /// Flowing, with a 'data' listener to take the bytes. Node drops the bytes
-  /// of a flowing stream with no 'data' listener; this keeps them for
-  /// read(), which the http shim uses under its own pause() and resume().
-  bool get _emitsData => _flowing == true && listenerCount('data') > 0;
-
-  void _updateReading() {
-    final subscription = _subscription;
-    if (subscription == null) return;
-    final want = _shouldRead;
-    if (want && _subscriptionPaused) {
-      _subscriptionPaused = false;
-      subscription.resume();
-    } else if (!want && !_subscriptionPaused) {
-      _subscriptionPaused = true;
-      subscription.pause();
-    }
   }
 
   @override
   NodeSocket removeListener(String event, Function listener) =>
       off(event, listener);
 
-  void _received(Uint8List bytes) {
-    if (bytes.isEmpty || _destroyed) return;
-    final copy = Uint8List.fromList(bytes);
-    if (_emitsData && _readQueue.isEmpty) {
-      emit('data', copy);
-    } else {
-      _readQueue.add(copy);
-      _queuedBytes += copy.length;
-      _updateReading();
-      emit('readable');
-    }
-    _resetTimeout();
-  }
-
-  /// Read up to [size] bytes synchronously, or null when no byte is ready.
-  Uint8List? read([int? size]) {
-    _checkNotHandedOver();
-    if (_readQueue.isEmpty) return null;
-    final bytes = _take(size);
-    _queuedBytes -= bytes.length;
-    _updateReading();
-    return bytes;
-  }
-
-  Uint8List _take(int? size) {
-    if (size == null || size <= 0) {
-      final parts = <Uint8List>[];
-      while (_readQueue.isNotEmpty) {
-        final part = _readQueue.removeAt(0);
-        if (_readOffset != 0) {
-          parts.add(Uint8List.sublistView(part, _readOffset));
-          _readOffset = 0;
-        } else {
-          parts.add(part);
-        }
-      }
-      return _concat(parts);
-    }
-    var remaining = size;
-    final out = BytesBuilder(copy: false);
-    while (remaining > 0 && _readQueue.isNotEmpty) {
-      final first = _readQueue.first;
-      final available = first.length - _readOffset;
-      final take = available < remaining ? available : remaining;
-      out.add(Uint8List.sublistView(first, _readOffset, _readOffset + take));
-      remaining -= take;
-      _readOffset += take;
-      if (_readOffset == first.length) {
-        _readQueue.removeAt(0);
-        _readOffset = 0;
-      }
-    }
-    return out.takeBytes();
-  }
-
-  /// Put bytes back at the head of the readable queue (Node `unshift`).
-  void unshift(List<int> bytes) {
-    _checkNotHandedOver();
-    if (bytes.isEmpty || _destroyed) return;
-    if (_readQueue.isEmpty) {
-      _readQueue.insert(0, Uint8List.fromList(bytes));
-      _readOffset = 0;
-    } else {
-      final current = _take(null);
-      _readQueue
-        ..clear()
-        ..add(Uint8List.fromList([...bytes, ...current]));
-      _readOffset = 0;
-    }
-    _queuedBytes += bytes.length;
-    _updateReading();
-    emit('readable');
-  }
-
-  /// Write a byte/string chunk. The boolean mirrors Node's high-water mark
-  /// contract; callers must wait for `drain` before resuming after false.
-  /// A string is written as Latin-1 bytes.
   @override
-  bool write(Object data, [Function? callback]) {
-    _checkNotHandedOver();
-    if (_destroyed) {
-      // Node passes ERR_STREAM_DESTROYED to the callback and emits nothing.
-      final error = NodeError(
-        'Cannot call write after a stream was destroyed',
-        code: 'ERR_STREAM_DESTROYED',
-      );
-      if (callback != null) {
-        scheduleMicrotask(() => applyListener(callback, [error]));
-      }
-      return false;
-    }
-    if (_writeEnded) {
-      final error = NodeError(
-        'write after end',
-        code: 'ERR_STREAM_WRITE_AFTER_END',
-      );
-      if (callback != null) {
-        scheduleMicrotask(() => applyListener(callback, [error]));
-      }
-      scheduleMicrotask(() => emit('error', error));
-      return false;
-    }
-    final bytes = data is String
-        ? Uint8List.fromList(data.codeUnits.map((c) => c & 0xff).toList())
-        : Uint8List.fromList(data as List<int>);
-    if (bytes.isEmpty) {
-      if (callback != null) {
-        scheduleMicrotask(() => applyListener(callback, const []));
-      }
-      return _pendingBytes < highWaterMark;
-    }
-    _pendingBytes += bytes.length;
-    _bytesWritten += bytes.length;
-    _writeQueue.add(_PendingWrite(bytes, callback));
-    _flushWrites();
-    _resetTimeout();
-    return _pendingBytes < highWaterMark;
-  }
-
-  void _flushWrites() {
-    if (_flushing || _closed || _socket == null) return;
-    _flushing = true;
-    unawaited(_pumpWrites());
-  }
-
-  Future<void> _pumpWrites() async {
-    final socket = _socket!;
-    try {
-      while (!_closed && _writeQueue.isNotEmpty) {
-        final batch = List<_PendingWrite>.of(_writeQueue);
-        _writeQueue.clear();
-        for (final write in batch) {
-          socket.add(write.bytes);
-        }
-        await socket.flush();
-        final previous = _pendingBytes;
-        for (final write in batch) {
-          _pendingBytes = (_pendingBytes - write.bytes.length).clamp(
-            0,
-            1 << 62,
-          );
-          if (write.callback != null) applyListener(write.callback!, const []);
-        }
-        if (previous >= highWaterMark && _pendingBytes < highWaterMark) {
-          emit('drain');
-        }
-      }
-    } catch (error) {
-      final nodeError = socketError(error, 'write');
-      for (final write in _writeQueue) {
-        if (write.callback != null) applyListener(write.callback!, [nodeError]);
-      }
-      _writeQueue.clear();
-      destroy(nodeError);
-    } finally {
-      _flushing = false;
-      if (_writeQueue.isNotEmpty) {
-        _flushWrites();
-      } else if (_writeEnded && _pendingBytes == 0) {
-        _shutdownWrite();
-      }
-      if (!_flushing && _writeQueue.isEmpty) {
-        final settled = _writesSettled;
-        _writesSettled = null;
-        settled?.complete();
-      }
-    }
-  }
-
-  /// Flush [data] then half-close the write direction while retaining reads.
-  @override
-  NodeSocket end([Object? data, Function? callback]) {
-    _checkNotHandedOver();
-    if (data != null) write(data);
-    if (callback != null) once('finish', callback);
-    if (!_writeEnded) {
-      _writeEnded = true;
-      if (_pendingBytes == 0) _shutdownWrite();
-    }
+  NodeSocket removeAllListeners([String? event]) {
+    super.removeAllListeners(event);
     return this;
   }
 
-  void _shutdownWrite() {
-    if (_closed || _writeShutdownStarted || _socket == null) return;
-    _writeShutdownStarted = true;
-    try {
-      // dart:io Socket.close() flushes, then shuts down only the send side.
-      _socket!.close().then<void>((_) {
-        _writeShutdownComplete = true;
-        emit('finish');
-        if (_readEnded) _finishClose();
-      }, onError: (Object error) => destroy(socketError(error, 'shutdown')));
-    } catch (error) {
-      destroy(socketError(error, 'shutdown'));
-    }
-  }
-
-  /// Close the descriptor at once. With [error], 'error' is emitted before
-  /// 'close'. A connection still being opened is abandoned.
   @override
-  NodeSocket destroy([Object? error]) {
-    if (_destroyed) return this;
-    _destroyed = true;
-    _timeoutTimer?.cancel();
-    _task?.cancel();
-    if (error != null) {
-      _hadError = true;
-      emit('error', error);
-    }
-    final wrapper = _wrapper;
-    if (_handedOver && wrapper != null) {
-      // The connection is the TLS socket's now; as in Node, destroying the
-      // socket under it destroys it too.
-      wrapper.destroy();
-    } else {
-      _socket?.destroy();
-      _subscription?.cancel();
-      final under = _under;
-      if (under != null && _socket == null && !_securing) {
-        // A TLS socket whose handshake has not begun: the connection is
-        // still the socket under it.
-        under._socket?.destroy();
-        under._subscription?.cancel();
-      }
-    }
-    _finishClose();
+  NodeSocket destroy([Object? error, Function? callback]) {
+    super.destroy(error, callback);
     return this;
   }
 
-  void _finishClose() {
-    if (_closed) return;
-    _closed = true;
-    _destroyed = true;
-    _timeoutTimer?.cancel();
-    emit('close', _hadError);
-    // A TLS socket and the socket under it share one connection: when one
-    // closes, so does the other.
-    final under = _under;
-    if (under != null) {
-      under._destroyed = true;
-      under._finishClose();
-    }
-    final wrapper = _wrapper;
-    if (wrapper != null && !wrapper._closed) wrapper.destroy();
-  }
-
+  @override
   NodeSocket pause() {
-    _paused = true;
-    _flowing = false;
-    _updateReading();
+    super.pause();
     return this;
   }
 
+  @override
   NodeSocket resume() {
-    _paused = false;
-    _flowing = !_readableListening;
-    _deliverQueued();
-    _updateReading();
+    super.resume();
     return this;
   }
 
-  void _deliverQueued() {
-    while (_emitsData && _readQueue.isNotEmpty) {
-      final data = read();
-      if (data == null || data.isEmpty) break;
-      emit('data', data);
-    }
+  @override
+  NodeSocket setEncoding(String encoding) {
+    super.setEncoding(encoding);
+    return this;
   }
 
   void _checkNotHandedOver() {
@@ -855,19 +795,19 @@ class NodeSocket extends EventEmitter implements stream.Writable {
     NodeSocket under,
     Future<Socket> Function(Socket raw, Uint8List buffered) secure,
   ) {
-    if (under._socket == null || under._destroyed) {
+    if (under._socket == null || under.destroyed) {
       throw StateError('A TLSSocket needs a connected socket under it');
     }
     if (under._handedOver) {
       throw StateError('This socket is already under a TLSSocket');
     }
-    if (under._writeEnded) {
+    if (under.writableEnded) {
       throw UnimplementedError('TLSSocket over a socket that has ended');
     }
     under
       .._handedOver = true
       .._wrapper = this
-      .._updateReading();
+      .._readStop();
     _under = under;
     unawaited(_serverTlsOver(under, secure));
   }
@@ -877,12 +817,11 @@ class NodeSocket extends EventEmitter implements stream.Writable {
     Future<Socket> Function(Socket raw, Uint8List buffered) secure,
   ) async {
     try {
-      if (under._flushing || under._writeQueue.isNotEmpty) {
+      if (under._inFlight > 0 || under.writableLength > 0) {
         await (under._writesSettled ??= Completer<void>()).future;
       }
-      if (_destroyed) return;
-      final buffered = under._take(null);
-      under._queuedBytes = 0;
+      if (destroyed) return;
+      final buffered = under.takeBufferedBytes();
       final raw = under._socket!;
       final Socket secured;
       _securing = true;
@@ -898,14 +837,14 @@ class NodeSocket extends EventEmitter implements stream.Writable {
         unawaited(under._subscription?.cancel());
         under._subscription = null;
       }
-      if (_destroyed) {
+      if (destroyed) {
         secured.destroy();
         return;
       }
       _attach(secured);
       emit('secure');
     } catch (error) {
-      if (_destroyed) return;
+      if (destroyed) return;
       destroy(error is SocketException ? socketError(error, 'read') : error);
     }
   }
@@ -926,7 +865,7 @@ class NodeSocket extends EventEmitter implements stream.Writable {
 
   void _resetTimeout() {
     _timeoutTimer?.cancel();
-    if (_timeoutMs > 0 && !_closed) {
+    if (_timeoutMs > 0 && !_closeEmitted) {
       _timeoutTimer = Timer(Duration(milliseconds: _timeoutMs), () {
         emit('timeout');
       });
@@ -944,49 +883,6 @@ class NodeSocket extends EventEmitter implements stream.Writable {
     _unrefed = false;
     return this;
   }
-
-  /// Pipe bytes with destination backpressure and Node's default end policy.
-  T pipe<T extends stream.Writable>(T destination, {bool end = true}) {
-    var blocked = false;
-    void onData(Object? value) {
-      final bytes = value! as List<int>;
-      if (!destination.write(bytes)) {
-        blocked = true;
-        pause();
-        destination.once('drain', () {
-          blocked = false;
-          if (!destroyed) resume();
-        });
-      }
-    }
-
-    void onEnd() {
-      if (end) destination.end();
-    }
-
-    void onClose() {
-      if (blocked && !destination.destroyed) destination.destroy();
-    }
-
-    on('data', onData);
-    once('end', onEnd);
-    once('close', onClose);
-    return destination;
-  }
-
-  Uint8List _concat(List<Uint8List> parts) {
-    final builder = BytesBuilder(copy: false);
-    for (final part in parts) {
-      builder.add(part);
-    }
-    return builder.takeBytes();
-  }
-}
-
-class _PendingWrite {
-  const _PendingWrite(this.bytes, this.callback);
-  final Uint8List bytes;
-  final Function? callback;
 }
 
 /// Node `net.Server` for TCP and Unix-domain listeners.

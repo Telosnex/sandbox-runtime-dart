@@ -215,8 +215,11 @@ bool killPid(int pid, [Object signal = 'SIGTERM']) {
 // --- launching ----------------------------------------------------------------
 
 class _Launched {
-  _Launched(this.pid, this.fds);
+  _Launched(this.pid, this.fds, [this.statusFd = -1]);
   final int pid;
+
+  /// Linux spawn helper: pipe that delivers the exact wait status, or -1.
+  final int statusFd;
 
   /// Parent ends of the stdio pipes, -1 where the slot is not 'pipe'.
   final List<int> fds;
@@ -252,6 +255,13 @@ _Launched _launch(
   List<String> args,
   Map<String, Object?> options,
 ) {
+  final shell = options['shell'];
+  if (shell != null && shell != false) {
+    // Node joins command and args with spaces and runs them through the shell.
+    final line = [command, ...args].join(' ');
+    command = shell is String ? shell : '/bin/sh';
+    args = ['-c', line];
+  }
   if (options['detached'] == true) {
     throw UnsupportedError('child_process detached is not supported');
   }
@@ -340,15 +350,77 @@ _Launched _launch(
       // the child's env PATH. Resolve against the child's PATH here.
       final file = _resolve(command, env['PATH']);
       final pid = arena<Int32>();
+      var spawnFile = file;
+      var spawnArgv = argv;
+      var statusRead = -1, statusWrite = -1;
+      final helper = _spawnHelper();
+      if (helper != null) {
+        final st = arena<Int32>(2);
+        final pipe2 = _libc!
+            .lookupFunction<
+              Int32 Function(Pointer<Int32>, Int32),
+              int Function(Pointer<Int32>, int)
+            >('pipe2');
+        // O_CLOEXEC on both ends; only a >2 copy of the write end (F_DUPFD,
+        // not close-on-exec) is inherited by the helper.
+        if (pipe2(st, 0x80000) != 0) {
+          throw _LaunchError(codeForErrno(n.errno));
+        }
+        statusRead = st[0];
+        final dup = n.fcntl(st[1], 0, 3);
+        final dupErr = n.errno;
+        n.close(st[1]);
+        if (dup < 0) {
+          n.close(statusRead);
+          throw _LaunchError(codeForErrno(dupErr));
+        }
+        statusWrite = dup;
+        final hargs = [
+          helper,
+          '$statusWrite',
+          file,
+          ...List.generate(args.length + 1, (i) => argv[i].toDartString()),
+        ];
+        spawnArgv = arena<Pointer<Utf8>>(hargs.length + 1);
+        for (var i = 0; i < hargs.length; i++) {
+          spawnArgv[i] = hargs[i].toNativeUtf8(allocator: arena);
+        }
+        spawnArgv[hargs.length] = nullptr;
+        spawnFile = helper;
+      }
       final rc = n.spawnp(
         pid,
-        file.toNativeUtf8(allocator: arena),
+        spawnFile.toNativeUtf8(allocator: arena),
         actions,
         attr,
-        argv,
+        spawnArgv,
         envp,
       );
-      if (rc != 0) throw _LaunchError(codeForErrno(rc));
+      if (statusWrite >= 0) n.close(statusWrite);
+      if (rc != 0) {
+        if (statusRead >= 0) n.close(statusRead);
+        throw _LaunchError(codeForErrno(rc));
+      }
+      if (statusRead >= 0) {
+        // The helper reports {pid, errno} once the command is exec'd.
+        final msg = arena<Uint8>(8);
+        int got;
+        do {
+          got = n.read(statusRead, msg, 8);
+        } while (got < 0 && codeForErrno(n.errno) == 'EINTR');
+        if (got != 8) {
+          n.close(statusRead);
+          throw _LaunchError('EIO');
+        }
+        final d = ByteData.sublistView(msg.asTypedList(8));
+        final realPid = d.getInt32(0, Endian.host);
+        final err = d.getInt32(4, Endian.host);
+        if (err != 0) {
+          n.close(statusRead);
+          throw _LaunchError(codeForErrno(err));
+        }
+        return _Launched(realPid, List.of(parentEnds), statusRead);
+      }
       return _Launched(pid.value, List.of(parentEnds));
     } finally {
       n.faDestroy(actions);
@@ -395,6 +467,201 @@ NodeError _spawnError(
   final signal = status & 0x7f;
   if (signal == 0) return ((status >> 8) & 0xff, null);
   return (null, signalName(signal) ?? '$signal');
+}
+
+// --- exit status --------------------------------------------------------------
+//
+// The Dart VM reaps children with waitpid(-1) while any dart:io Process is
+// alive, and drops the status of a pid it did not start. On macOS the status
+// is taken from kqueue (EVFILT_PROC, NOTE_EXITSTATUS), which sees the exit
+// before anyone reaps. On Linux a pidfd tells when the child exits, then
+// waitpid reads the status; if the VM reaped it first the status is lost and
+// the result fails closed (status null, error ECHILD).
+
+typedef _KeventN =
+    Int32 Function(
+      Int32,
+      Pointer<Uint8>,
+      Int32,
+      Pointer<Uint8>,
+      Int32,
+      Pointer<Int64>,
+    );
+typedef _KeventD =
+    int Function(int, Pointer<Uint8>, int, Pointer<Uint8>, int, Pointer<Int64>);
+typedef _SyscallN = Long Function(Long, VarArgs<(Int32, Int32)>);
+typedef _SyscallD = int Function(int, int, int);
+
+/// Outcome of waiting: `exited` false means the wait timed out.
+typedef _Exit = ({bool exited, int? status});
+
+String? _helperPath;
+bool _helperLooked = false;
+
+/// The Linux spawn helper (tool/build_spawn_helper.dart), or null.
+String? _spawnHelper() {
+  if (!io.Platform.isLinux) return null;
+  if (_helperLooked) return _helperPath;
+  _helperLooked = true;
+  final arch = process.arch;
+  final candidates = <String>[];
+  final env = io.Platform.environment['SRT_SPAWN_HELPER'];
+  if (env != null) candidates.add(env);
+  final cfg = io.Platform.packageConfig;
+  if (cfg != null) {
+    try {
+      final cfgUri = cfg.startsWith('file:') ? Uri.parse(cfg) : Uri.file(cfg);
+      final config =
+          jsonDecode(io.File.fromUri(cfgUri).readAsStringSync()) as Map;
+      for (final e in config['packages'] as List) {
+        if ((e as Map)['name'] == 'sandbox_runtime') {
+          final root = cfgUri.resolve(e['rootUri'] as String);
+          candidates.add(
+            '${root.toFilePath()}/vendor/spawn-helper/$arch/srt-spawn',
+          );
+        }
+      }
+    } on Object {
+      // no package config helper
+    }
+  }
+  for (final c in candidates) {
+    if (io.File(c).existsSync()) return _helperPath = io.File(c).absolute.path;
+  }
+  return null;
+}
+
+class _ExitWatcher {
+  _ExitWatcher(this._n, this.pid, [this._statusFd = -1]) {
+    if (io.Platform.isMacOS) {
+      final kq = _libc!.lookupFunction<Int32 Function(), int Function()>(
+        'kqueue',
+      )();
+      _fd = kq;
+      final ev = calloc<Uint8>(32);
+      try {
+        _setKevent(ev, pid);
+        if (_kevent(kq, ev, 1, nullptr, 0, nullptr) != 0) {
+          // Already gone from the process table: the status is lost.
+          _fd = -1;
+          _n.close(kq);
+        }
+      } finally {
+        calloc.free(ev);
+      }
+    } else if (_statusFd < 0) {
+      final syscall = _libc!.lookupFunction<_SyscallN, _SyscallD>('syscall');
+      _fd = syscall(434, pid, 0); // pidfd_open
+    }
+  }
+
+  final _Libc _n;
+  final int pid;
+  int _statusFd;
+  int _fd = -1;
+  _Exit? _done;
+
+  static final _KeventD _kevent = _libc!.lookupFunction<_KeventN, _KeventD>(
+    'kevent',
+  );
+
+  static void _setKevent(Pointer<Uint8> ev, int pid) {
+    final d = ByteData.sublistView(ev.asTypedList(32));
+    d.setUint64(0, pid, Endian.host);
+    d.setInt16(8, -5, Endian.host); // EVFILT_PROC
+    d.setUint16(10, 0x1 | 0x10, Endian.host); // EV_ADD | EV_ONESHOT
+    d.setUint32(12, 0x80000000 | 0x04000000, Endian.host); // EXIT|EXITSTATUS
+  }
+
+  /// Wait up to [timeoutMs] (-1: forever) for the child to exit.
+  _Exit wait(int timeoutMs) {
+    final done = _done;
+    if (done != null) return done;
+    if (io.Platform.isMacOS) {
+      if (_fd < 0) return _finish(_reap());
+      final ev = calloc<Uint8>(32);
+      final ts = calloc<Int64>(2);
+      try {
+        ts[0] = timeoutMs ~/ 1000;
+        ts[1] = (timeoutMs % 1000) * 1000000;
+        int got;
+        do {
+          got = _kevent(_fd, nullptr, 0, ev, 1, timeoutMs < 0 ? nullptr : ts);
+        } while (got < 0 && codeForErrno(_n.errno) == 'EINTR');
+        if (got == 0) return (exited: false, status: null);
+        final status = ByteData.sublistView(
+          ev.asTypedList(32),
+        ).getInt64(16, Endian.host);
+        _reap();
+        return _finish(status);
+      } finally {
+        calloc.free(ev);
+        calloc.free(ts);
+      }
+    }
+    if (_statusFd >= 0) return _waitHelper(timeoutMs);
+    if (_fd >= 0) {
+      final pfd = calloc<Int32>(2);
+      try {
+        pfd[0] = _fd;
+        pfd[1] = _pollIn;
+        int ready;
+        do {
+          ready = _n.poll(pfd, 1, timeoutMs);
+        } while (ready < 0 && codeForErrno(_n.errno) == 'EINTR');
+        if (ready == 0) return (exited: false, status: null);
+      } finally {
+        calloc.free(pfd);
+      }
+    }
+    return _finish(_reap(blocking: _fd < 0));
+  }
+
+  _Exit _waitHelper(int timeoutMs) {
+    final pfd = calloc<Int32>(2);
+    final buf = calloc<Uint8>(4);
+    try {
+      pfd[0] = _statusFd;
+      pfd[1] = _pollIn;
+      int ready;
+      do {
+        ready = _n.poll(pfd, 1, timeoutMs);
+      } while (ready < 0 && codeForErrno(_n.errno) == 'EINTR');
+      if (ready == 0) return (exited: false, status: null);
+      int got;
+      do {
+        got = _n.read(_statusFd, buf, 4);
+      } while (got < 0 && codeForErrno(_n.errno) == 'EINTR');
+      final status = got == 4
+          ? ByteData.sublistView(buf.asTypedList(4)).getInt32(0, Endian.host)
+          : null;
+      _n.close(_statusFd);
+      _statusFd = -1;
+      return _done = (exited: true, status: status);
+    } finally {
+      calloc.free(pfd);
+      calloc.free(buf);
+    }
+  }
+
+  int? _reap({bool blocking = false}) {
+    final status = calloc<Int32>();
+    try {
+      int r;
+      do {
+        r = _n.waitpid(pid, status, blocking ? 0 : _wnohang);
+      } while (r < 0 && codeForErrno(_n.errno) == 'EINTR');
+      return r == pid ? status.value : null;
+    } finally {
+      calloc.free(status);
+    }
+  }
+
+  _Exit _finish(int? status) {
+    if (_fd >= 0) _n.close(_fd);
+    _fd = -1;
+    return _done = (exited: true, status: status);
+  }
 }
 
 // --- spawnSync -----------------------------------------------------------------
@@ -464,6 +731,7 @@ SpawnSyncResult spawnSync(
     );
   }
 
+  final watcher = _ExitWatcher(native, launched.pid, launched.statusFd);
   final fds = launched.fds;
   final outputs = <List<int>?>[
     null,
@@ -550,26 +818,34 @@ SpawnSyncResult spawnSync(
     calloc.free(pollfds);
     calloc.free(chunk);
   }
-  final status = calloc<Int32>();
-  try {
-    int w;
-    while ((w = native.waitpid(launched.pid, status, 0)) < 0 &&
-        codeForErrno(native.errno) == 'EINTR') {}
-    final (code, signal) = _decodeStatus(status.value);
-    final stdout = _decodeOutput(outputs[1], encoding);
-    final stderr = _decodeOutput(outputs[2], encoding);
-    return SpawnSyncResult(
-      pid: launched.pid,
-      output: [null, stdout, stderr],
-      stdout: stdout,
-      stderr: stderr,
-      status: code,
-      signal: signal,
-      error: error,
-    );
-  } finally {
-    calloc.free(status);
+  var remaining = -1;
+  if (deadline != null && !killed) {
+    remaining = deadline.difference(DateTime.now()).inMilliseconds;
+    if (remaining < 0) remaining = 0;
   }
+  var exit = watcher.wait(remaining);
+  if (!exit.exited) {
+    native.kill(launched.pid, killSignal);
+    error = _spawnError('spawnSync', 'ETIMEDOUT', command, args);
+    exit = watcher.wait(-1);
+  }
+  final stdout = _decodeOutput(outputs[1], encoding);
+  final stderr = _decodeOutput(outputs[2], encoding);
+  final raw = exit.status;
+  final (code, signal) = raw == null ? (null, null) : _decodeStatus(raw);
+  return SpawnSyncResult(
+    pid: launched.pid,
+    output: [null, stdout, stderr],
+    stdout: stdout,
+    stderr: stderr,
+    status: code,
+    signal: signal,
+    error:
+        error ??
+        (raw == null
+            ? _spawnError('spawnSync', 'ECHILD', command, args)
+            : null),
+  );
 }
 
 SpawnSyncResult _spawnSyncDartIo(
@@ -745,13 +1021,16 @@ ChildProcess spawn(
   child.stdout = reader(fds[1]);
   child.stderr = reader(fds[2]);
   Timer.run(() => child.emit('spawn'));
-  final status = calloc<Int32>();
+  final watcher = _ExitWatcher(native, launched.pid, launched.statusFd);
   Timer.periodic(const Duration(milliseconds: 10), (timer) {
-    final r = native.waitpid(launched.pid, status, _wnohang);
-    if (r == 0) return;
+    final exit = watcher.wait(0);
+    if (!exit.exited) return;
     timer.cancel();
-    final (code, signal) = r < 0 ? (null, null) : _decodeStatus(status.value);
-    calloc.free(status);
+    final raw = exit.status;
+    if (raw == null) {
+      child.emit('error', _spawnError('spawn', 'ECHILD', command, args));
+    }
+    final (code, signal) = raw == null ? (null, null) : _decodeStatus(raw);
     child._exited(code, signal, streams);
   });
   return child;
