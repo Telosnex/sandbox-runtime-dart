@@ -251,63 +251,84 @@ void main() {
           );
         }
 
-        test('leaves a malformed entry to whoever enforces the config', () {
-          final (:root, :link) = install(npmLayout);
-          final (:printed, stderr: _) = run(
-            link,
-            FilesystemPathSpelling(project),
-            '''console.log(JSON.stringify([
+        test(
+          'leaves a malformed entry to whoever enforces the config',
+          () {
+            final (:root, :link) = install(npmLayout);
+            final (:printed, stderr: _) = run(
+              link,
+              FilesystemPathSpelling(project),
+              '''console.log(JSON.stringify([
            warnings({ ...filesystem, denyRead: [{ path: '/x' }] }),
            [await s.wrapWithSandbox('true').catch(e => e.message)],
          ]))''',
-          );
-          final [warnings, [wrap]] = (printed! as List)
-              .map((e) => (e as List).cast<String>())
-              .toList();
-          expect(
-            (warnings as List)
-                .cast<String>()
-                .where((w) => w.contains(root))
-                .toList(),
-            <String>[],
-          );
-          expect(wrap, contains('must be a path, or { path, literal: true }'));
-        }, timeout: const Timeout(Duration(milliseconds: 120000)));
+            );
+            final [warnings, [wrap]] = (printed! as List)
+                .map((e) => (e as List).cast<String>())
+                .toList();
+            expect(
+              (warnings as List)
+                  .cast<String>()
+                  .where((w) => w.contains(root))
+                  .toList(),
+              <String>[],
+            );
+            expect(
+              wrap,
+              contains('must be a path, or { path, literal: true }'),
+            );
+          },
+          timeout: const Timeout(Duration(milliseconds: 120000)),
+          // Dart: needs upstream's TypeScript package (package.json, src/index.ts) run by bun; no Dart equivalent.
+          tags: ['pending'],
+        );
 
-        test('says nothing where the working directory is gone', () {
-          final (:root, :link) = install(npmLayout);
-          final gone = path.join(dir, 'gone');
-          fs.mkdirSync(gone);
-          final (:printed, stderr: _) = run(
-            link,
-            FilesystemPathSpelling(project),
-            '''process.chdir(${jsonEncode(gone)})
+        test(
+          'says nothing where the working directory is gone',
+          () {
+            final (:root, :link) = install(npmLayout);
+            final gone = path.join(dir, 'gone');
+            fs.mkdirSync(gone);
+            final (:printed, stderr: _) = run(
+              link,
+              FilesystemPathSpelling(project),
+              '''process.chdir(${jsonEncode(gone)})
          require('node:fs').rmdirSync(${jsonEncode(gone)})
          console.log(JSON.stringify(warnings({ ...filesystem, allowWrite: ['.'] })))''',
-          );
-          expect(
-            (printed! as List)
-                .cast<String>()
-                .where((w) => w.contains(root))
-                .toList(),
-            <String>[],
-          );
-        }, timeout: const Timeout(Duration(milliseconds: 120000)));
+            );
+            expect(
+              (printed! as List)
+                  .cast<String>()
+                  .where((w) => w.contains(root))
+                  .toList(),
+              <String>[],
+            );
+          },
+          timeout: const Timeout(Duration(milliseconds: 120000)),
+          // Dart: needs upstream's TypeScript package (package.json, src/index.ts) run by bun; no Dart equivalent.
+          tags: ['pending'],
+        );
 
-        test('fails neither call site, whatever goes wrong in it', () {
-          final (:root, :link) = install(npmLayout);
-          fs.writeFileSync(
-            path.join(root, 'src', 'sandbox', 'own-files.ts'),
-            "export function ownInstallWarning() { throw new Error('thrown') }",
-          );
-          final (:printed, stderr: _) = run(
-            link,
-            FilesystemPathSpelling(project),
-            '''const wrapped = await s.wrapWithSandbox('true', undefined, { filesystem })
+        test(
+          'fails neither call site, whatever goes wrong in it',
+          () {
+            final (:root, :link) = install(npmLayout);
+            fs.writeFileSync(
+              path.join(root, 'src', 'sandbox', 'own-files.ts'),
+              "export function ownInstallWarning() { throw new Error('thrown') }",
+            );
+            final (:printed, stderr: _) = run(
+              link,
+              FilesystemPathSpelling(project),
+              '''const wrapped = await s.wrapWithSandbox('true', undefined, { filesystem })
          console.log(JSON.stringify([typeof wrapped, typeof warnings(filesystem)]))''',
-          );
-          expect(printed, ['string', 'object']);
-        }, timeout: const Timeout(Duration(milliseconds: 120000)));
+            );
+            expect(printed, ['string', 'object']);
+          },
+          timeout: const Timeout(Duration(milliseconds: 120000)),
+          // Dart: needs upstream's TypeScript package (package.json, src/index.ts) run by bun; no Dart equivalent.
+          tags: ['pending'],
+        );
       });
     },
   );
