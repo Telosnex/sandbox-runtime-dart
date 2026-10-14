@@ -1,5 +1,7 @@
 // Ported from sandbox-runtime test/sandbox/pid-namespace-isolation.test.ts @ 24eb39e.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments
+import 'dart:io' show Process;
+
 import 'package:sandbox_runtime/src/node/child_process.dart' show spawnSync;
 import 'package:sandbox_runtime/src/node/fs.dart' show existsSync;
 import 'package:sandbox_runtime/src/sandbox/generate_seccomp_filter.dart'
@@ -43,6 +45,13 @@ String? applySeccomp;
     stderr: r.stderr?.toString() ?? '',
   );
 }
+
+// A uid-0 caller execs the workload with a full capability set (see the note
+// in apply-seccomp.c), so capability-dependent denials cannot hold as root.
+final String? rootSkip =
+    isLinux && Process.runSync('id', ['-u']).stdout.toString().trim() == '0'
+        ? 'caps are regained on exec when running as root'
+        : null;
 
 void main() {
   group('apply-seccomp PID namespace isolation', skip: isLinux ? null : 'not Linux', () {
@@ -239,7 +248,7 @@ void main() {
       ); // EPERM or EACCES
     });
 
-    test('denies opening /proc/1/mem for writing', () {
+    test('denies opening /proc/1/mem for writing', skip: rootSkip, () {
       final r = runApplySeccomp([
         'python3',
         '-c',
@@ -257,7 +266,7 @@ void main() {
       expect(r.stdout, contains('DENIED'));
     });
 
-    test('runs the user command with zero effective capabilities', () {
+    test('runs the user command with zero effective capabilities', skip: rootSkip, () {
       // bwrap passes CAP_SYS_ADMIN (ambient) so apply-seccomp can nest a
       // PID+mount namespace. apply-seccomp must clear the ambient set before
       // exec so the workload cannot, e.g., umount /proc to reveal the outer
@@ -267,7 +276,7 @@ void main() {
       expect(r.stdout, matches(RegExp(r'CapEff:\s*0+$', multiLine: true)));
     });
 
-    test('denies umount(/proc) from the user command', () {
+    test('denies umount(/proc) from the user command', skip: rootSkip, () {
       final r = runApplySeccomp([
         'python3',
         '-c',
