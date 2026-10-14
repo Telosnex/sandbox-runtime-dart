@@ -425,7 +425,7 @@ bool relayResponseHead(
     return true;
   } catch (err) {
     logForDebugging(
-      'Invalid upstream response head (status ${upstreamRes.statusCode}): ${err is NodeException ? err.message : err.toString()}',
+      'Invalid upstream response head (status ${upstreamRes.statusCode}): ${errorMessage(err)}',
       level: 'error',
     );
     upstreamRes.destroy();

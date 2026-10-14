@@ -9,6 +9,7 @@ import 'package:path/path.dart' show join;
 
 import '../node/errno.dart';
 import '../node/fs.dart' as fs;
+import '../node/fs_promises.dart' as fs_promises;
 import '../node/http.dart' as http;
 import '../node/net.dart' as net;
 import '../node/os.dart' show tmpdir;
@@ -150,7 +151,7 @@ MuxProxyServer createMuxProxyServer(MuxProxyOptions opts) {
       // is our own sandboxed child, but there's no need to echo host paths.
       final code = (err is NodeError ? err.code : null) ?? 'ERR';
       logForDebugging(
-        'mux: HTTP backend dial failed: ${err is NodeException ? err.message : err}',
+        'mux: HTTP backend dial failed: ${errorMessage(err)}',
         level: 'error',
       );
       if (!client.destroyed) {
@@ -172,9 +173,8 @@ MuxProxyServer createMuxProxyServer(MuxProxyOptions opts) {
     client.once('close', () => openSockets.remove(client));
     client.on(
       'error',
-      (Object err) => logForDebugging(
-        'mux: client socket error: ${err is NodeException ? err.message : err}',
-      ),
+      (Object err) =>
+          logForDebugging('mux: client socket error: ${errorMessage(err)}'),
     );
 
     final timer = Timer(Duration(milliseconds: firstByteTimeoutMs), () {
@@ -212,7 +212,7 @@ MuxProxyServer createMuxProxyServer(MuxProxyOptions opts) {
         final path = _unixSocketPath();
         // A prior process with the same PID may have crashed without
         // unlinking; clear any stale file so listen() doesn't EADDRINUSE.
-        await fs.unlink(path).catchError((_) {});
+        await fs_promises.unlink(path).catchError((_) {});
         final completer = Completer<void>();
         void reject(Object err) => completer.completeError(err);
         opts.httpServer.once('error', reject);
@@ -260,7 +260,7 @@ MuxProxyServer createMuxProxyServer(MuxProxyOptions opts) {
       opts.httpServer.close(([_]) => httpClosed.complete());
       await httpClosed.future;
       if (backendSocketPath != null && backendSocketPath != '') {
-        await fs.unlink(backendSocketPath!).catchError((_) {});
+        await fs_promises.unlink(backendSocketPath!).catchError((_) {});
         backendSocketPath = null;
       }
       backendTcpPort = null;
@@ -268,7 +268,7 @@ MuxProxyServer createMuxProxyServer(MuxProxyOptions opts) {
     removeBackendSocketSync: () {
       try {
         if (backendSocketPath != null && backendSocketPath != '') {
-          fs.rmSync(backendSocketPath!, force: true);
+          fs.rmSync(backendSocketPath!, {'force': true});
         }
       } catch (_) {
         // Best effort, as in close().

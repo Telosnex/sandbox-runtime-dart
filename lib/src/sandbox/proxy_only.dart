@@ -300,9 +300,7 @@ ProxyOnly startProxyOnly(ProxyOnlyOptions opts) {
     await completer.future;
   }();
   ready.catchError(
-    (Object err) => unawaited(
-      close('start failed: ${err is NodeException ? err.message : err}'),
-    ),
+    (Object err) => unawaited(close('start failed: ${errorMessage(err)}')),
   );
 
   opts.lifeline?.on('data', (_) {});
