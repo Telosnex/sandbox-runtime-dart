@@ -3,6 +3,29 @@ import 'package:sandbox_runtime/src/node/url.dart';
 import 'package:test/test.dart';
 
 void main() {
+  group('URL', () {
+    test('parses WHATWG URL fields', () {
+      final url = URL('https://user:pass@example.test:8443/a?q=1#frag');
+      expect(url.protocol, 'https:');
+      expect(url.username, 'user');
+      expect(url.password, 'pass');
+      expect(url.hostname, 'example.test');
+      expect(url.port, '8443');
+      expect(url.pathname, '/a');
+      expect(url.search, '?q=1');
+      expect(url.hash, '#frag');
+      expect(url.origin, 'https://example.test:8443');
+      expect(url.searchParams.get('q'), '1');
+    });
+
+    test('resolves a relative reference against its base', () {
+      expect(
+        URL('../b', 'https://example.test/a/c').href,
+        'https://example.test/b',
+      );
+    });
+  });
+
   group('whatwgUrlHostname', () {
     test('normalizes IPv4 inet_aton forms', () {
       expect(whatwgUrlHostname('127.1'), '127.0.0.1');

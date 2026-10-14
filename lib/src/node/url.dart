@@ -16,53 +16,58 @@ class URL {
   String get href => _href;
   set href(String value) => _href = _parseUrl(value, null);
 
-  String get protocol =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  Uri get _uri => Uri.parse(_href);
+  void _set(Uri value) => _href = value.toString();
+
+  String get protocol => '${_uri.scheme}:';
   set protocol(String value) =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+      _set(_uri.replace(scheme: value.replaceAll(':', '')));
 
-  String get username =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
-  set username(String value) =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  String get username => _uri.userInfo.split(':').first;
+  set username(String value) => _set(
+    _uri.replace(
+      userInfo: '$value:${_uri.userInfo.split(':').skip(1).join(':')}',
+    ),
+  );
 
-  String get password =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  String get password => _uri.userInfo.split(':').skip(1).join(':');
   set password(String value) =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+      _set(_uri.replace(userInfo: '${_uri.userInfo.split(':').first}:$value'));
 
-  String get host => throw UnimplementedError('node:url URL: pending (wave 1)');
-  set host(String value) =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  String get host => _uri.hasPort ? '${_uri.host}:${_uri.port}' : _uri.host;
+  set host(String value) {
+    final parsed = Uri.parse('${_uri.scheme}://$value/');
+    _set(
+      _uri.replace(
+        host: parsed.host,
+        port: parsed.hasPort ? parsed.port : null,
+      ),
+    );
+  }
 
-  String get hostname =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
-  set hostname(String value) =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  String get hostname => _uri.host;
+  set hostname(String value) => _set(_uri.replace(host: value));
 
-  String get port => throw UnimplementedError('node:url URL: pending (wave 1)');
+  String get port => _uri.hasPort ? '${_uri.port}' : '';
   set port(String value) =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+      _set(_uri.replace(port: value.isEmpty ? null : int.parse(value)));
 
-  String get pathname =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
-  set pathname(String value) =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  String get pathname => _uri.path;
+  set pathname(String value) => _set(_uri.replace(path: value));
 
-  String get search =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
-  set search(String value) =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  String get search => _uri.hasQuery ? '?${_uri.query}' : '';
+  set search(String value) => _set(
+    _uri.replace(query: value.startsWith('?') ? value.substring(1) : value),
+  );
 
-  String get hash => throw UnimplementedError('node:url URL: pending (wave 1)');
-  set hash(String value) =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  String get hash => _uri.hasFragment ? '#${_uri.fragment}' : '';
+  set hash(String value) => _set(
+    _uri.replace(fragment: value.startsWith('#') ? value.substring(1) : value),
+  );
 
-  String get origin =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  String get origin => _uri.origin;
 
-  URLSearchParams get searchParams =>
-      throw UnimplementedError('node:url URL: pending (wave 1)');
+  URLSearchParams get searchParams => URLSearchParams(_uri.query);
 
   @override
   String toString() => href;

@@ -15,7 +15,7 @@ class Request {
     Headers? headers,
     this.body,
     this.signal,
-    String? duplex,
+    this.duplex,
   }) : headers = headers ?? Headers();
 
   final String url;
@@ -23,6 +23,7 @@ class Request {
   final Headers headers;
   final ReadableStream<Uint8List>? body;
   final AbortSignal? signal;
+  final String? duplex;
 }
 
 /// Fetch API HTTP headers. Names are case-insensitive and appended values are
@@ -159,44 +160,145 @@ class ReadableStream<T> {
     ReadableStreamStart<T>? start,
     ReadableStreamPull<T>? pull,
     ReadableStreamCancel? cancel,
-  });
+  }) : _sourcePull = pull,
+       _sourceCancel = cancel {
+    _controller = ReadableStreamDefaultController<T>._(this);
+    if (start != null) {
+      try {
+        start(_controller);
+      } on Object catch (error) {
+        _controller.error(error);
+      }
+    }
+  }
 
-  ReadableStreamDefaultReader<T> getReader() =>
-      throw UnimplementedError('web ReadableStream: pending (wave 1)');
+  final ReadableStreamPull<T>? _sourcePull;
+  final ReadableStreamCancel? _sourceCancel;
+  late final ReadableStreamDefaultController<T> _controller;
+  final Queue<T> _queue = Queue<T>();
+  final Queue<Completer<({bool done, T? value})>> _pending = Queue();
+  bool _closed = false;
+  Object? _error;
+  bool _locked = false;
+  bool _pulling = false;
 
-  List<ReadableStream<T>> tee() =>
-      throw UnimplementedError('web ReadableStream: pending (wave 1)');
+  Future<void> _pull() async {
+    if (_pulling || _closed || _sourcePull == null) return;
+    _pulling = true;
+    try {
+      await _sourcePull(_controller);
+    } on Object catch (error) {
+      _controller.error(error);
+    } finally {
+      _pulling = false;
+    }
+  }
 
-  Future<void> cancel([Object? reason]) =>
-      throw UnimplementedError('web ReadableStream: pending (wave 1)');
+  ReadableStreamDefaultReader<T> getReader() {
+    if (_locked) throw StateError('ReadableStream is already locked');
+    _locked = true;
+    return ReadableStreamDefaultReader<T>._(this);
+  }
 
-  bool get locked =>
-      throw UnimplementedError('web ReadableStream: pending (wave 1)');
+  List<ReadableStream<T>> tee() {
+    final reader = getReader();
+    late ReadableStream<T> a;
+    late ReadableStream<T> b;
+    a = ReadableStream<T>(
+      start: (controller) async {
+        while (true) {
+          final result = await reader.read();
+          if (result.done) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(result.value as T);
+          b._controller.enqueue(result.value as T);
+        }
+      },
+    );
+    b = ReadableStream<T>();
+    return [a, b];
+  }
+
+  Future<void> cancel([Object? reason]) async {
+    if (_locked) throw StateError('Cannot cancel a locked ReadableStream');
+    await _cancel(reason);
+  }
+
+  Future<void> _cancel(Object? reason) async {
+    if (_closed) return;
+    _closed = true;
+    _queue.clear();
+    for (final waiter in _pending) {
+      if (!waiter.isCompleted) waiter.complete((done: true, value: null));
+    }
+    _pending.clear();
+    await _sourceCancel?.call(reason);
+  }
+
+  bool get locked => _locked;
+
+  Future<({bool done, T? value})> _read() async {
+    if (_error != null) throw _error!;
+    if (_queue.isNotEmpty) {
+      final value = _queue.removeFirst();
+      unawaited(_pull());
+      return (done: false, value: value);
+    }
+    if (_closed) return (done: true, value: null);
+    final waiter = Completer<({bool done, T? value})>();
+    _pending.add(waiter);
+    unawaited(_pull());
+    return waiter.future;
+  }
+
+  void _enqueue(T chunk) {
+    if (_closed) throw StateError('ReadableStream is closed');
+    if (_pending.isNotEmpty) {
+      _pending.removeFirst().complete((done: false, value: chunk));
+    } else {
+      _queue.add(chunk);
+    }
+  }
+
+  void _close() {
+    if (_closed) return;
+    _closed = true;
+    while (_pending.isNotEmpty) {
+      _pending.removeFirst().complete((done: true, value: null));
+    }
+  }
+
+  void _setError(Object error) {
+    _error = error;
+    _closed = true;
+    while (_pending.isNotEmpty) {
+      _pending.removeFirst().completeError(error);
+    }
+  }
 }
 
 /// The controller supplied to a Web ReadableStream source callback.
 class ReadableStreamDefaultController<T> {
-  void enqueue(T chunk) =>
-      throw UnimplementedError('web ReadableStream: pending (wave 1)');
+  ReadableStreamDefaultController._(this._stream);
+  final ReadableStream<T> _stream;
+  void enqueue(T chunk) => _stream._enqueue(chunk);
 
-  void close() =>
-      throw UnimplementedError('web ReadableStream: pending (wave 1)');
+  void close() => _stream._close();
 
-  void error(Object error) =>
-      throw UnimplementedError('web ReadableStream: pending (wave 1)');
+  void error(Object error) => _stream._setError(error);
 
-  num? get desiredSize =>
-      throw UnimplementedError('web ReadableStream: pending (wave 1)');
+  num? get desiredSize => _stream._closed ? 0 : 1;
 }
 
 /// A default reader for a Web ReadableStream; operations are pending.
 class ReadableStreamDefaultReader<T> {
-  Future<({bool done, T? value})> read() =>
-      throw UnimplementedError('web ReadableStream: pending (wave 1)');
+  ReadableStreamDefaultReader._(this._stream);
+  final ReadableStream<T> _stream;
+  Future<({bool done, T? value})> read() => _stream._read();
 
-  Future<void> cancel([Object? reason]) =>
-      throw UnimplementedError('web ReadableStream: pending (wave 1)');
+  Future<void> cancel([Object? reason]) => _stream._cancel(reason);
 
-  void releaseLock() =>
-      throw UnimplementedError('web ReadableStream: pending (wave 1)');
+  void releaseLock() => _stream._locked = false;
 }
