@@ -529,14 +529,55 @@ String _codeFromIoError(FileSystemException error) {
   }
 }
 
-Object readFileSync(String path, [Object? options]) {
-  final bytes = File(path).readAsBytesSync();
+typedef _ReadN = IntPtr Function(Int32, Pointer<Uint8>, IntPtr);
+typedef _ReadD = int Function(int, Pointer<Uint8>, int);
+
+/// Reproduce `fs.readFileSync(pathOrFd, options)`: a [Buffer], or a String
+/// when an encoding is given. An int [target] reads the descriptor to EOF.
+Object readFileSync(Object target, [Object? options]) {
   final encoding = options is String
       ? options
       : options is Map
       ? options['encoding'] as String?
       : null;
-  return encoding == null ? bytes : utf8.decode(bytes, allowMalformed: true);
+  List<int> bytes;
+  if (target is int) {
+    final libc = _requireLibc('readFileSync');
+    final read = libc.lookupFunction<_ReadN, _ReadD>('read');
+    final chunk = calloc<Uint8>(65536);
+    final out = BytesBuilder();
+    try {
+      while (true) {
+        final n = read(target, chunk, 65536);
+        if (n < 0) {
+          if (codeForErrno(_errno()) == 'EINTR') continue;
+          throw _errnoError('read');
+        }
+        if (n == 0) break;
+        out.add(chunk.asTypedList(n));
+      }
+    } finally {
+      calloc.free(chunk);
+    }
+    bytes = out.takeBytes();
+  } else {
+    final path = target.toString();
+    if (_libc != null) {
+      final fd = openSync(path, 'r');
+      try {
+        return readFileSync(fd, options);
+      } finally {
+        closeSync(fd);
+      }
+    }
+    try {
+      bytes = File(path).readAsBytesSync();
+    } on FileSystemException catch (error) {
+      throw nodeError(_codeFromIoError(error), 'open', path);
+    }
+  }
+  final buffer = Buffer.wrap(Uint8List.fromList(bytes));
+  return encoding == null ? buffer : buffer.toString(encoding);
 }
 
 typedef _ReadvN = IntPtr Function(Int32, Pointer<Uint8>, Int32);

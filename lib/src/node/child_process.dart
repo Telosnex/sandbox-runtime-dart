@@ -552,7 +552,8 @@ SpawnSyncResult spawnSync(
   }
   final status = calloc<Int32>();
   try {
-    while (native.waitpid(launched.pid, status, 0) < 0 &&
+    int w;
+    while ((w = native.waitpid(launched.pid, status, 0)) < 0 &&
         codeForErrno(native.errno) == 'EINTR') {}
     final (code, signal) = _decodeStatus(status.value);
     final stdout = _decodeOutput(outputs[1], encoding);

@@ -264,5 +264,15 @@ String errorMessage(Object? err) {
   if (err is ArgumentError) return '${err.message}';
   if (err is StateError) return err.message;
   if (err is UnsupportedError) return err.message ?? '';
-  return '$err';
+  try {
+    return '$err';
+  } catch (_) {
+    return 'Error';
+  }
+}
+
+/// JS `(err as NodeJS.ErrnoException).code`: the Node error code, or null.
+String? errorCode(Object? err) {
+  if (err is NodeError) return err.code;
+  return null;
 }
