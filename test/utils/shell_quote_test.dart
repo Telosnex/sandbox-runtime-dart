@@ -21,7 +21,7 @@ import 'package:sandbox_runtime/src/utils/shell_quote.dart';
  * quote, and in that mode it backslash-escaped `!`. The wrapper string is
  * only ever run through a non-interactive `<shell> -c`, where bash keeps
  * that backslash, so every `!` in the user command reached the program as
- * the two characters `\\!`: heredoc-written `if (!x)` became unparseable
+ * the two characters `\!`: heredoc-written `if (!x)` became unparseable
  * JavaScript, and `jq 'a != b'` / `awk '!seen[$0]++'` / `find ! -name`
  * filters were silently rewritten. The user command almost always contains
  * a `'`, so this fired on essentially every sandboxed command.
@@ -82,7 +82,7 @@ void main() {
 
     group('round-trips through a real shell', () {
       /**
-         * Runs `<shell> -c` on `quote(['printf', '%s\\0', ...args])` and splits
+         * Runs <shell> -c on quote(['printf', '%s\0', ...args]) and splits
          * the NUL-delimited output back into an argument list. printf appends
          * a trailing NUL, hence the final slice.
          */
@@ -131,7 +131,7 @@ void main() {
             expect(_roundTrip(shell, args), args);
           });
 
-          // Each property sample spawns one real shell process, so cap the
+          // Each fast-check sample spawns one real shell process, so cap the
           // run count and give the test an explicit budget — the default 5s
           // per-test timeout is not enough on a loaded CI runner.
           test('property: any printable-ASCII argv round-trips exactly', () {

@@ -23,7 +23,14 @@ import '../../lib/src/sandbox/sandbox_utils.dart';
 /// `<root>/a[b/c]d` — brackets a glob would read as one character class.
 const BRACKET_SEGMENTS = ['a[b', 'c]d'];
 
-typedef BracketTree = ({String root, String work, String hooks});
+typedef BracketTree = ({
+  /** Bracket-free write root, so only the deny is under test. */
+  String root,
+  /** The bracketed working directory. */
+  String work,
+  /** `<work>/.git/hooks`, the mandatory deny under test. */
+  String hooks,
+});
 
 BracketTree bracketTree(String prefix) {
   final root = joinPath(
@@ -306,7 +313,7 @@ void main() {
         // expect(profile).not.toContain(sniffedFilter(credential, '(/.*)?$'))
         // store.dispose()
         //
-      }, skip: 'pending port: credential-mask-files.ts');
+      }, skip: 'pending port: src/sandbox/credential-mask-files.ts');
       test('denies a path that degraded to deny by subpath', () {
         // Pending the credential-mask-files.ts port, the upstream body is:
         // const store = new MaskedFileStore()
@@ -330,7 +337,7 @@ void main() {
         // expect(profile).not.toContain(sniffedFilter(credential, '(/.*)?$'))
         // store.dispose()
         //
-      }, skip: 'pending port: credential-mask-files.ts');
+      }, skip: 'pending port: src/sandbox/credential-mask-files.ts');
     },
     skip: _isWindows ? 'not POSIX' : false,
   );

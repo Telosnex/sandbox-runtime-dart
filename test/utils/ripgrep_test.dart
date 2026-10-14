@@ -59,6 +59,8 @@ void main() {
     test(
       'passes argv0 to spawn (multicall binary dispatch)',
       () async {
+        // Spawn node with a script that echoes process.argv0 — shell scripts can't
+        // observe argv0 via $0 (shebang loader resets it), but native binaries can.
         final directory = await Directory.systemTemp.createTemp('rg-argv0-');
         try {
           final script = File(path.join(directory.path, 'echo-argv0.cjs'));

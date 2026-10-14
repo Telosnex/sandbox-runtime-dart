@@ -19,7 +19,7 @@ void main() {
         // expect(whichSync('bwrap')).not.toBeNull()
         // expect(whichSync('socat')).not.toBeNull()
       },
-      skip: 'pending port: linux-sandbox-utils.ts',
+      skip: 'pending port: src/sandbox/linux-sandbox-utils.ts',
     );
   });
 
@@ -82,7 +82,7 @@ void main() {
       //
       // expect(wrappedCommand).toBeTruthy()
       // expect(wrappedCommand).toContain('bwrap')
-    }, skip: 'pending port: linux-sandbox-utils.ts');
+    }, skip: 'pending port: src/sandbox/linux-sandbox-utils.ts');
 
     test('threads a custom apply-seccomp path through seccompConfig', () async {
       // Pending the linux-sandbox-utils.ts port, the upstream body is:
@@ -98,7 +98,7 @@ void main() {
       // })
       //
       // expect(wrappedCommand).toContain(real)
-    }, skip: 'pending port: linux-sandbox-utils.ts');
+    }, skip: 'pending port: src/sandbox/linux-sandbox-utils.ts');
 
     test('argv0 mode: builds ARGV0 prefix and uses applyPath verbatim', () async {
       // Pending the linux-sandbox-utils.ts port, the upstream body is:
@@ -111,7 +111,7 @@ void main() {
       //
       // expect(wrappedCommand).toContain('ARGV0=apply-seccomp /proc/self/fd/3 ')
       // expect(wrappedCommand).not.toContain('vendor/seccomp')
-    }, skip: 'pending port: linux-sandbox-utils.ts');
+    }, skip: 'pending port: src/sandbox/linux-sandbox-utils.ts');
 
     test('argv0 mode: shell-quotes argv0 and applyPath', () async {
       // Pending the linux-sandbox-utils.ts port, the upstream body is:
@@ -130,7 +130,7 @@ void main() {
       // expect(wrappedCommand).toContain('ARGV0=')
       // expect(wrappedCommand).toContain('x; rm -rf /')
       // expect(wrappedCommand).toContain('/path with space')
-    }, skip: 'pending port: linux-sandbox-utils.ts');
+    }, skip: 'pending port: src/sandbox/linux-sandbox-utils.ts');
 
     test('argv0 mode: rejects argv0 without applyPath', () async {
       // Pending the linux-sandbox-utils.ts port, the upstream body is:
@@ -142,6 +142,6 @@ void main() {
       //     seccompConfig: { argv0: 'apply-seccomp' },
       //   }),
       // ).rejects.toThrow('seccompConfig.argv0 requires seccompConfig.applyPath')
-    }, skip: 'pending port: linux-sandbox-utils.ts');
+    }, skip: 'pending port: src/sandbox/linux-sandbox-utils.ts');
   });
 }

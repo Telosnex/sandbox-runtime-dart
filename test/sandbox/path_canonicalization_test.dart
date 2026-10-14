@@ -6,8 +6,6 @@ import 'dart:io';
 import 'package:path/path.dart' as path;
 import 'package:test/test.dart';
 
-import 'package:sandbox_runtime/src/node/os.dart' show homedir;
-import 'package:sandbox_runtime/src/node/process.dart' as process;
 import 'package:sandbox_runtime/src/sandbox/macos_sandbox_utils.dart';
 import 'package:sandbox_runtime/src/sandbox/sandbox_schemas.dart';
 import 'package:sandbox_runtime/src/sandbox/sandbox_utils.dart'
@@ -32,24 +30,47 @@ late String _absentRoot;
 late String _scratch;
 
 ///
-/// normalizePathForSandbox with HOME set to `home`. The process shim exposes
-/// the environment at call time; this also keeps the parent's SRT_DEBUG from
-/// putting debug output on the test's stderr.
+/// normalizePathForSandbox in a child with $HOME set to `home`: $HOME is read
+/// once at start-up, so it cannot be changed in this process. The environment
+/// is scrubbed so the parent's SRT_DEBUG does not put sandbox debug output on
+/// the child's stderr.
 ///
-Map<String, Object> _normalizeWithHome(String home, List<String> patterns) {
-  final previous = process.env;
-  process.setEnvForTesting({...previous, 'HOME': home});
-  try {
-    return {
-      'homedir': homedir(),
-      'results': patterns.map(normalizePathForSandbox).toList(),
-      // This test runs on macOS, where the upstream child does not load the
-      // Linux backend that checks the generated --bind argument.
-      'tildeBindsRoot': false,
-    };
-  } finally {
-    process.setEnvForTesting(null);
-  }
+Map<String, Object?> _normalizeWithHome(String home, List<String> patterns) {
+  final script = File(path.join(_scratch, 'normalize-with-home.dart'));
+  script.writeAsStringSync("""
+import 'dart:convert';
+import 'dart:io';
+import 'package:sandbox_runtime/src/node/os.dart' as os;
+import 'package:sandbox_runtime/src/sandbox/sandbox_utils.dart' as m;
+void main() {
+  // Pending port: src/sandbox/linux-sandbox-utils.ts. Upstream runs
+  // wrapCommandWithSandboxLinux here on Linux and tests its argv for
+  // ' --bind / / '; until then the caller skips that check on Linux.
+  const argv = '';
+  stdout.writeln(jsonEncode({
+    'homedir': os.homedir(),
+    'results': ${jsonEncode(patterns)}.map((p) => m.normalizePathForSandbox(p)).toList(),
+    'tildeBindsRoot': RegExp(r' --bind \\/ \\/ ').hasMatch(argv),
+  }));
+}
+""");
+  final child = Process.runSync(
+    Platform.resolvedExecutable,
+    [
+      '--packages=${path.join(Directory.current.path, '.dart_tool', 'package_config.json')}',
+      script.path,
+    ],
+    stdoutEncoding: utf8,
+    stderrEncoding: utf8,
+    environment: {'PATH': Platform.environment['PATH'] ?? '', 'HOME': home},
+    includeParentEnvironment: false,
+    // Its own directory: the Linux wrap scans the working directory and may
+    // leave mount-point stubs there, which this process would not clean up.
+    workingDirectory: _scratch,
+  );
+  expect(child.exitCode, 0, reason: '${child.stderr}');
+  expect(child.stderr, '');
+  return jsonDecode(child.stdout as String) as Map<String, Object?>;
 }
 
 String _captureWarning(String pattern) {
@@ -190,13 +211,13 @@ void main() {
           // write grant. Only a runtime whose homedir() honours an empty $HOME
           // reaches that at all: node does, bun falls back to the passwd entry.
           final result = _normalizeWithHome('', ['~']);
-          final results = result['results'] as List<String>;
+          final results = result['results']! as List<Object?>;
           expect(results[0], isNot('/'));
           expect(results[0], result['homedir']);
           expect(result['tildeBindsRoot'], false);
         },
         timeout: const Timeout(Duration(seconds: 30)),
-        skip: Platform.isLinux ? 'pending port: linux-sandbox-utils.ts' : false,
+        skip: Platform.isLinux ? 'pending port: src/sandbox/linux-sandbox-utils.ts' : false,
       );
     },
   );

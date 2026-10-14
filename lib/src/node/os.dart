@@ -11,15 +11,17 @@ import 'process.dart' as process;
 /// Node's `os.homedir()` spelling, using the process environment at call time.
 String homedir() {
   final env = process.env;
+  // As libuv's uv_os_homedir: a set variable wins even when it is empty
+  // (Node then returns ''); only an unset one falls back.
   if (process.platform == 'win32') {
     final profile = env['USERPROFILE'];
-    if (profile != null && profile.isNotEmpty) return profile;
+    if (profile != null) return profile;
     final drive = env['HOMEDRIVE'] ?? '';
     final homePath = env['HOMEPATH'] ?? '';
     if (drive.isNotEmpty || homePath.isNotEmpty) return '$drive$homePath';
   } else {
     final home = env['HOME'];
-    if (home != null && home.isNotEmpty) return home;
+    if (home != null) return home;
   }
   // Dart exposes the OS account home when the corresponding environment key
   // is absent, as Node's native os.homedir() does.
