@@ -715,85 +715,78 @@ void main() {
         })}';
 
     for (final shell in SHELLS) {
-      test(
-        'SHELL=$shell: a host name is one word, whatever it holds',
-        () async {
-          final dir = mkdtempSync(join(tmpdir(), 'srt-ssh-word-'));
-          final marker = join(dir, 'ran');
-          try {
-            final proxy = await tcp(answer(OK));
-            final vars = macosVars(proxy.port);
-            final command = proxyCommandOf(vars['GIT_SSH_COMMAND']!);
-            final env = {
-              'SRT_SSH_PROXY_COMMAND': vars['SRT_SSH_PROXY_COMMAND']!,
-            };
+      test('SHELL=$shell: a host name is one word, whatever it holds', () async {
+        final dir = mkdtempSync(join(tmpdir(), 'srt-ssh-word-'));
+        final marker = join(dir, 'ran');
+        try {
+          final proxy = await tcp(answer(OK));
+          final vars = macosVars(proxy.port);
+          final command = proxyCommandOf(vars['GIT_SSH_COMMAND']!);
+          final env = {'SRT_SSH_PROXY_COMMAND': vars['SRT_SSH_PROXY_COMMAND']!};
 
-            final plain = hold([
+          final plain = hold([
+            shell,
+            '-c',
+            expandedBySsh(command, 'a.example', '22'),
+          ], env);
+          await until('the request', () => proxy.received.isNotEmpty);
+          plain.child.stdin!.end();
+          expect([await plain.exited, plain.stderr()], [0, '']);
+          expect(proxy.received.map((b) => b.toString()).toList(), [
+            headFor('a.example:22'),
+          ]);
+
+          // The pair broken: the variable lost on the way here, or emptied.
+          final broken = <Map<String, String>>[
+            {},
+            {'SRT_SSH_PROXY_COMMAND': ''},
+          ];
+          for (final lost in broken) {
+            final t = hold([
               shell,
               '-c',
               expandedBySsh(command, 'a.example', '22'),
-            ], env);
-            await until('the request', () => proxy.received.isNotEmpty);
-            plain.child.stdin!.end();
-            expect([await plain.exited, plain.stderr()], [0, '']);
-            expect(proxy.received.map((b) => b.toString()).toList(), [
-              headFor('a.example:22'),
-            ]);
-
-            // The pair broken: the variable lost on the way here, or emptied.
-            final broken = <Map<String, String>>[
-              {},
-              {'SRT_SSH_PROXY_COMMAND': ''},
-            ];
-            for (final lost in broken) {
-              final t = hold([
-                shell,
-                '-c',
-                expandedBySsh(command, 'a.example', '22'),
-              ], lost);
-              expect((await t.leaveLikeSsh()).code, isNot(0));
-              expect(
-                t.stderr(),
-                matches(
-                  RegExp(
-                    r'^[^\n]*SRT_SSH_PROXY_COMMAND: unset, but GIT_SSH_COMMAND needs it\n$',
-                  ),
+            ], lost);
+            expect((await t.leaveLikeSsh()).code, isNot(0));
+            expect(
+              t.stderr(),
+              matches(
+                RegExp(
+                  r'^[^\n]*SRT_SSH_PROXY_COMMAND: unset, but GIT_SSH_COMMAND needs it\n$',
                 ),
-              );
-            }
-
-            // OpenSSH 9.6 and later refuse these themselves; earlier ones hand
-            // them over. (A single quote ends the word in any spelling.)
-            for (final host in [
-              '\$(echo >>$marker)',
-              '`echo >>$marker`',
-              'a;echo >>$marker',
-              'a|echo >>$marker',
-              'a&echo >>$marker',
-              'a\necho >>$marker',
-              'a b',
-              'a"b',
-              'a\\',
-              'a!b',
-              '\$HOME',
-              '*',
-            ]) {
-              final t = hold([
-                shell,
-                '-c',
-                expandedBySsh(command, host, '22'),
-              ], env);
-              expect([host, (await t.leaveLikeSsh()).code == 0], [host, false]);
-            }
-            expect(existsSync(marker), false);
-            expect(proxy.received, hasLength(1));
-          } finally {
-            rmSync(dir, {'recursive': true, 'force': true});
+              ),
+            );
           }
-        }, // Dart: sandbox_utils.dart generateProxyEnvVars drops the closing " of GIT_SSH_COMMAND's ProxyCommand (upstream ends `%p"`).
-        tags: ['pending'],
-        timeout: _testTimeout,
-      );
+
+          // OpenSSH 9.6 and later refuse these themselves; earlier ones hand
+          // them over. (A single quote ends the word in any spelling.)
+          for (final host in [
+            '\$(echo >>$marker)',
+            '`echo >>$marker`',
+            'a;echo >>$marker',
+            'a|echo >>$marker',
+            'a&echo >>$marker',
+            'a\necho >>$marker',
+            'a b',
+            'a"b',
+            'a\\',
+            'a!b',
+            '\$HOME',
+            '*',
+          ]) {
+            final t = hold([
+              shell,
+              '-c',
+              expandedBySsh(command, host, '22'),
+            ], env);
+            expect([host, (await t.leaveLikeSsh()).code == 0], [host, false]);
+          }
+          expect(existsSync(marker), false);
+          expect(proxy.received, hasLength(1));
+        } finally {
+          rmSync(dir, {'recursive': true, 'force': true});
+        }
+      }, timeout: _testTimeout);
     }
   });
 
@@ -996,22 +989,17 @@ void main() {
         );
 
         for (final shell in SHELLS) {
-          test(
-            'SHELL=$shell: ls-remote',
-            () async {
-              proxy!.asked.clear();
-              final r = await run(shell, macosVars(proxy!.port), [
-                ...['ls-remote', '--upload-pack', packs.upload, url(), 'main'],
-              ]);
-              expect(explain(shell, r), startsWith('$shell: status 0,'));
-              expect(r.stdout, '$head\trefs/heads/main\n');
-              expect(r.stderr, '');
-              // Attributed to the command, as every other client's requests are.
-              expect(proxy!.asked, ['127.0.0.1:$sshdPort Zm9v']);
-            }, // Dart: sandbox_utils.dart generateProxyEnvVars drops the closing " of GIT_SSH_COMMAND's ProxyCommand (upstream ends `%p"`).
-            tags: ['pending'],
-            timeout: _testTimeout,
-          );
+          test('SHELL=$shell: ls-remote', () async {
+            proxy!.asked.clear();
+            final r = await run(shell, macosVars(proxy!.port), [
+              ...['ls-remote', '--upload-pack', packs.upload, url(), 'main'],
+            ]);
+            expect(explain(shell, r), startsWith('$shell: status 0,'));
+            expect(r.stdout, '$head\trefs/heads/main\n');
+            expect(r.stderr, '');
+            // Attributed to the command, as every other client's requests are.
+            expect(proxy!.asked, ['127.0.0.1:$sshdPort Zm9v']);
+          }, timeout: _testTimeout);
         }
 
         test(
@@ -1033,8 +1021,6 @@ void main() {
               ),
             );
           },
-          // Dart: sandbox_utils.dart generateProxyEnvVars drops the closing " of GIT_SSH_COMMAND's ProxyCommand (upstream ends `%p"`).
-          tags: ['pending'],
           timeout: _testTimeout,
         );
 
@@ -1057,8 +1043,6 @@ void main() {
               ),
             );
           },
-          // Dart: sandbox_utils.dart generateProxyEnvVars drops the closing " of GIT_SSH_COMMAND's ProxyCommand (upstream ends `%p"`).
-          tags: ['pending'],
           timeout: _testTimeout,
         );
 
@@ -1074,8 +1058,6 @@ void main() {
             expect(r.stderr, contains('sandbox proxy: bad host\n'));
             expect(proxy!.asked, []);
           },
-          // Dart: sandbox_utils.dart generateProxyEnvVars drops the closing " of GIT_SSH_COMMAND's ProxyCommand (upstream ends `%p"`).
-          tags: ['pending'],
           timeout: _testTimeout,
         );
       });
@@ -1191,89 +1173,52 @@ void main() {
           for (final (spelling, vars) in spellings) {
             final n = spellings.indexWhere((s) => s.$1 == spelling);
 
-            test(
-              '$spelling: ls-remote',
-              () async {
-                final r = await sandboxed(vars(), [
-                  ...[
-                    'ls-remote',
-                    '--upload-pack',
-                    packs.upload,
-                    url(),
-                    'main',
-                  ],
-                ]);
-                expect(
-                  explain(spelling, r),
-                  startsWith('$spelling: status 0,'),
-                );
-                expect(r.stdout, '$head\trefs/heads/main\n');
-              }, // Dart: sandbox_utils.dart generateProxyEnvVars drops the closing " of GIT_SSH_COMMAND's ProxyCommand (upstream ends `%p"`).
-              tags: ['pending'],
-              timeout: _testTimeout,
-            );
+            test('$spelling: ls-remote', () async {
+              final r = await sandboxed(vars(), [
+                ...['ls-remote', '--upload-pack', packs.upload, url(), 'main'],
+              ]);
+              expect(explain(spelling, r), startsWith('$spelling: status 0,'));
+              expect(r.stdout, '$head\trefs/heads/main\n');
+            }, timeout: _testTimeout);
 
-            test(
-              '$spelling: clones ${BLOB_BYTES >> 20} MiB intact',
-              () async {
-                final dest = join(dir, 'clone-$n');
-                final r = await sandboxed(vars(), [
-                  ...[
-                    'clone',
-                    '-q',
-                    '--upload-pack',
-                    packs.upload,
-                    url(),
-                    dest,
-                  ],
-                ]);
-                expect(
-                  explain(spelling, r),
-                  startsWith('$spelling: status 0,'),
-                );
-                expect(sha256(join(dest, 'blob')), blobSha256);
-              }, // Dart: sandbox_utils.dart generateProxyEnvVars drops the closing " of GIT_SSH_COMMAND's ProxyCommand (upstream ends `%p"`).
-              tags: ['pending'],
-              timeout: _testTimeout,
-            );
+            test('$spelling: clones ${BLOB_BYTES >> 20} MiB intact', () async {
+              final dest = join(dir, 'clone-$n');
+              final r = await sandboxed(vars(), [
+                ...['clone', '-q', '--upload-pack', packs.upload, url(), dest],
+              ]);
+              expect(explain(spelling, r), startsWith('$spelling: status 0,'));
+              expect(sha256(join(dest, 'blob')), blobSha256);
+            }, timeout: _testTimeout);
 
-            test(
-              '$spelling: pushes ${BLOB_BYTES >> 20} MiB intact',
-              () async {
-                // A blob the far side does not have yet.
-                final file = join(dir, 'work', 'up-$n');
-                writeFileSync(file, randomBytes(BLOB_BYTES));
-                commit('up-$n');
-                final r = await sandboxed(vars(), [
-                  ...['-C', join(dir, 'work'), '-c', 'core.compression=0'],
-                  ...['push', '-q', '--receive-pack', packs.receive],
-                  ...[url(), 'HEAD:refs/heads/pushed-$n'],
-                ]);
-                expect(
-                  explain(spelling, r),
-                  startsWith('$spelling: status 0,'),
-                );
-                final arrived = spawnSync(
-                  'git',
-                  [
-                    '-C',
-                    join(dir, 'repo.git'),
-                    'cat-file',
-                    'blob',
-                    'pushed-$n:up-$n',
-                  ],
-                  {'maxBuffer': 2 * BLOB_BYTES},
-                );
-                expect(
-                  createHash(
-                    'sha256',
-                  ).update(arrived.stdout as Buffer).digest('hex'),
-                  sha256(file),
-                );
-              }, // Dart: sandbox_utils.dart generateProxyEnvVars drops the closing " of GIT_SSH_COMMAND's ProxyCommand (upstream ends `%p"`).
-              tags: ['pending'],
-              timeout: _testTimeout,
-            );
+            test('$spelling: pushes ${BLOB_BYTES >> 20} MiB intact', () async {
+              // A blob the far side does not have yet.
+              final file = join(dir, 'work', 'up-$n');
+              writeFileSync(file, randomBytes(BLOB_BYTES));
+              commit('up-$n');
+              final r = await sandboxed(vars(), [
+                ...['-C', join(dir, 'work'), '-c', 'core.compression=0'],
+                ...['push', '-q', '--receive-pack', packs.receive],
+                ...[url(), 'HEAD:refs/heads/pushed-$n'],
+              ]);
+              expect(explain(spelling, r), startsWith('$spelling: status 0,'));
+              final arrived = spawnSync(
+                'git',
+                [
+                  '-C',
+                  join(dir, 'repo.git'),
+                  'cat-file',
+                  'blob',
+                  'pushed-$n:up-$n',
+                ],
+                {'maxBuffer': 2 * BLOB_BYTES},
+              );
+              expect(
+                createHash(
+                  'sha256',
+                ).update(arrived.stdout as Buffer).digest('hex'),
+                sha256(file),
+              );
+            }, timeout: _testTimeout);
 
             /**
            * How the ProxyCommand of this spelling words a 403. What socat shows
@@ -1309,8 +1254,6 @@ void main() {
                 expect(r.ms, lessThan(PROMPT_MS));
                 expectRefusal(r.stderr, refusal(deniedPort, DENY_REASON));
               },
-              // Dart: sandbox_utils.dart generateProxyEnvVars drops the closing " of GIT_SSH_COMMAND's ProxyCommand (upstream ends `%p"`).
-              tags: ['pending'],
               timeout: _testTimeout,
             );
 
@@ -1338,30 +1281,23 @@ void main() {
                   );
                 }
               },
-              // Dart: sandbox_utils.dart generateProxyEnvVars drops the closing " of GIT_SSH_COMMAND's ProxyCommand (upstream ends `%p"`).
-              tags: ['pending'],
               timeout: _testTimeout,
             );
           }
 
-          test(
-            'the macOS spelling: a wrong token is refused promptly',
-            () async {
-              final r = await sandboxed(macos('wrong'), [
-                ...['ls-remote', '--upload-pack', packs.upload, url()],
-              ]);
-              expect(r.status, 128);
-              expect(r.ms, lessThan(PROMPT_MS));
-              expect(
-                r.stderr,
-                contains(
-                  'sandbox proxy: 127.0.0.1:$sshdPort: 407 Proxy Authentication Required\n',
-                ),
-              );
-            }, // Dart: sandbox_utils.dart generateProxyEnvVars drops the closing " of GIT_SSH_COMMAND's ProxyCommand (upstream ends `%p"`).
-            tags: ['pending'],
-            timeout: _testTimeout,
-          );
+          test('the macOS spelling: a wrong token is refused promptly', () async {
+            final r = await sandboxed(macos('wrong'), [
+              ...['ls-remote', '--upload-pack', packs.upload, url()],
+            ]);
+            expect(r.status, 128);
+            expect(r.ms, lessThan(PROMPT_MS));
+            expect(
+              r.stderr,
+              contains(
+                'sandbox proxy: 127.0.0.1:$sshdPort: 407 Proxy Authentication Required\n',
+              ),
+            );
+          }, timeout: _testTimeout);
 
           test(
             'the macOS spelling: a host that ssh lets through and printf would rewrite goes nowhere',
@@ -1373,8 +1309,6 @@ void main() {
               expect(r.status, 128);
               expect(r.stderr, contains('sandbox proxy: bad host\n'));
             },
-            // Dart: sandbox_utils.dart generateProxyEnvVars drops the closing " of GIT_SSH_COMMAND's ProxyCommand (upstream ends `%p"`).
-            tags: ['pending'],
             timeout: _testTimeout,
           );
         },
