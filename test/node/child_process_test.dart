@@ -9,6 +9,14 @@ import 'package:sandbox_runtime/src/node/errno.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('spawnSync enforces timeout with SIGTERM', () {
+    final sw = Stopwatch()..start();
+    final r = spawnSync('sleep', ['30'], {'timeout': 500});
+    expect(sw.elapsedMilliseconds, lessThan(2000));
+    expect(r.signal, 'SIGTERM');
+    expect((r.error as dynamic).code, 'ETIMEDOUT');
+  });
+
   test('spawnSync pipes input and returns Buffers without encoding', () {
     final r = spawnSync('cat', [], {'input': 'hi'});
     expect(r.status, 0);
