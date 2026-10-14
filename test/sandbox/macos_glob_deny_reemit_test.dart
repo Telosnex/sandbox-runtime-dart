@@ -5,25 +5,25 @@ import 'dart:io';
 
 import 'package:test/test.dart';
 
-/// Profile-text tests for how the macOS read section orders denies against
-/// allowWithinDeny (Seatbelt is last-match-wins). These only inspect the
-/// generated SBPL, so they run on every POSIX host; the read-side enforcement
-/// tests that execute the profiles under sandbox-exec live in
-/// allow-read.test.ts (the write-side ones are at the bottom of this file).
-///
-/// Layout under test (see generateReadRules):
-///   (allow file-read*)
-///   (deny  file-read* `denyOnly`)
-///   (allow file-read* `allowWithinDeny`)
-///   (deny  file-read* `nested literal denies, every glob deny minus the
-///                      allows it covers`)
-///   (allow file-read* (literal "/"))          only when a deny covers "/"
-///   ...
-///   (deny file-write-unlink `read-denied paths inside write roots`)   last
-///
-/// The invariant every test here leans on: after the allowWithinDeny block,
-/// the read section only adds denies. Nothing readable-today becomes
-/// readable, so each assertion is about a deny landing late enough.
+// Profile-text tests for how the macOS read section orders denies against
+// allowWithinDeny (Seatbelt is last-match-wins). These only inspect the
+// generated SBPL, so they run on every POSIX host; the read-side enforcement
+// tests that execute the profiles under sandbox-exec live in
+// allow-read.test.ts (the write-side ones are at the bottom of this file).
+//
+// Layout under test (see generateReadRules):
+//   (allow file-read*)
+//   (deny  file-read* <denyOnly>)
+//   (allow file-read* <allowWithinDeny>)
+//   (deny  file-read* <nested literal denies, every glob deny minus the
+//                      allows it covers>)
+//   (allow file-read* (literal "/"))          only when a deny covers "/"
+//   ...
+//   (deny file-write-unlink <read-denied paths inside write roots>)   last
+//
+// The invariant every test here leans on: after the allowWithinDeny block,
+// the read section only adds denies. Nothing readable-today becomes
+// readable, so each assertion is about a deny landing late enough.
 
 import 'package:sandbox_runtime/src/sandbox/macos_sandbox_utils.dart';
 import 'package:sandbox_runtime/src/sandbox/sandbox_schemas.dart';
@@ -44,7 +44,7 @@ String readSection(String profile) {
   return profile.substring(start, end);
 }
 
-/// Body of the trailing unlink rule, or '' when none was emitted.
+// Body of the trailing unlink rule, or '' when none was emitted.
 String trailingUnlinkRule(String profile) {
   final marker = profile.indexOf('; File read: keep read-denied paths');
   if (marker < 0) return '';
@@ -53,18 +53,18 @@ String trailingUnlinkRule(String profile) {
   return rule;
 }
 
-/// Position of the allowWithinDeny allow rule inside the read section.
+// Position of the allowWithinDeny allow rule inside the read section.
 int allowBlockIndex(String read) {
   final index = read.indexOf(HEADERS['allowRead']!);
   expect(index, greaterThanOrEqualTo(0));
   return index;
 }
 
-/// The slice of the read section between the allowWithinDeny allow rule and
-/// the directory-metadata allow: the late deny rule plus (optionally) the
-/// root re-allow. Everything that must beat the allows has to be in here —
-/// later rules (move-blocking) mention the same filters for other
-/// operations, so `lastIndexOf` over the whole section would mislead.
+// The slice of the read section between the allowWithinDeny allow rule and
+// the directory-metadata allow: the late deny rule plus (optionally) the
+// root re-allow. Everything that must beat the allows has to be in here —
+// later rules (move-blocking) mention the same filters for other
+// operations, so `lastIndexOf` over the whole section would mislead.
 String lateBlock(String read) {
   final allowAt = allowBlockIndex(read);
   final metadataAt = read.indexOf(HEADERS['metadata']!);
@@ -267,6 +267,7 @@ void main() {
         final late = lateBlock(read);
         final rootAt = late.indexOf(HEADERS['rootReallow']!);
         expect(rootAt, greaterThan(late.indexOf('(regex "$ENV_GLOB")')));
+        // And nothing but the root re-allow follows the late denies.
         expect(
           late.substring(rootAt + HEADERS['rootReallow']!.length).trim(),
           isEmpty,
