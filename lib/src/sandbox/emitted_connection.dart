@@ -104,21 +104,44 @@ void keepFlushedHeaderBatches(net.NodeSocket sock) {
     headers = [...headers, ...batch];
     url += part;
   };
-  slots[onHeadersComplete] = (List<Object?> args) {
-    if (headers.isNotEmpty || url != '') {
-      args[2] = args[2] is List ? [...headers, ...(args[2] as List)] : headers;
-      args[4] = url + (args[4] is String ? args[4] as String : '');
-      headers = [];
-      url = '';
-    }
-    return Function.apply(complete, args);
-  };
-  slots[onMessageComplete] = (List<Object?> args) {
+  final dynamic completeFn = complete;
+  final dynamic messageCompleteFn = messageComplete;
+  slots[onHeadersComplete] =
+      (
+        Object? versionMajor,
+        Object? versionMinor,
+        Object? hdrs,
+        Object? method,
+        Object? reqUrl, [
+        Object? statusCode,
+        Object? statusMessage,
+        Object? upgrade,
+        Object? shouldKeepAlive,
+      ]) {
+        if (headers.isNotEmpty || url != '') {
+          hdrs = hdrs is List ? [...headers, ...hdrs] : headers;
+          reqUrl = url + (reqUrl is String ? reqUrl : '');
+          headers = [];
+          url = '';
+        }
+        return completeFn(
+          versionMajor,
+          versionMinor,
+          hdrs,
+          method,
+          reqUrl,
+          statusCode,
+          statusMessage,
+          upgrade,
+          shouldKeepAlive,
+        );
+      };
+  slots[onMessageComplete] = () {
     // Whatever came through onHeaders since the head was the message's
     // trailers.
     headers = [];
     url = '';
-    return Function.apply(messageComplete, args);
+    return messageCompleteFn();
   };
 }
 
