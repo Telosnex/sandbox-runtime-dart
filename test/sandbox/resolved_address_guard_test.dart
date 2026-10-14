@@ -1,16 +1,33 @@
+@Tags(['pending'])
+library;
+
 // Ported from sandbox-runtime test/sandbox/resolved-address-guard.test.ts @ 24eb39e.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:sandbox_runtime/src/node/dns.dart' as dns;
 import 'package:sandbox_runtime/src/node/errno.dart';
+import 'package:sandbox_runtime/src/node/events.dart' as events;
+import 'package:sandbox_runtime/src/node/http.dart' as http;
+import 'package:sandbox_runtime/src/node/https.dart' as https;
+import 'package:sandbox_runtime/src/node/net.dart' as net;
+import 'package:sandbox_runtime/src/sandbox/http_proxy.dart';
+import 'package:sandbox_runtime/src/sandbox/mitm_ca.dart';
+import 'package:sandbox_runtime/src/sandbox/mitm_leaf.dart';
+import 'package:sandbox_runtime/src/sandbox/parent_proxy.dart'
+    show DirectLookup;
+import 'package:sandbox_runtime/src/sandbox/socks_proxy.dart';
 import 'package:sandbox_runtime/src/sandbox/address.dart';
 import 'package:sandbox_runtime/src/sandbox/resolved_address_guard.dart'
     as guard;
 import 'package:sandbox_runtime/src/sandbox/sandbox_config.dart';
 import 'package:path/path.dart' as path;
 import 'package:test/test.dart';
+
+import '../helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
 
 final FIXTURE_DIR = path.join(
   Directory.current.path, // import.meta.dir, '..'
@@ -91,21 +108,67 @@ Future<List<dns.LookupAddress>> lookupAll(
   return completer.future;
 }
 
+// Dart: upstream's `const it = testWithTls`, which `test` cannot alias.
+final Object _tlsSkip = SERVES_EMITTED_CONNECTIONS
+    ? false
+    : 'TLS termination unavailable';
+
 typedef Denial = ({String host, int port, String reason});
 
 /** What the manager does: the guard's lookup for the port, recording refusals. */
-// Pending port: src/sandbox/parent-proxy.ts (DirectLookup).
-// function recordingLookupFor(
-//   guard: ResolvedAddressGuard,
-//   denials: Denial[],
-// ): DirectLookup {
-//   return port => (hostname, options, callback) =>
-//     guard.lookupFor(port)(hostname, options, (err, address, family) => {
-//       if (isResolvedAddressDenied(err)) {
-//         denials.push({ host: hostname, port, reason: err.reason })
-//       }
-//       callback(err, address, family)
-//     })
+DirectLookup recordingLookupFor(
+  guard.ResolvedAddressGuard g,
+  List<Denial> denials,
+) {
+  return (port, [encodedCommand]) =>
+      (hostname, options, callback) =>
+          g.lookupFor(port)(hostname, options, (err, address, [family]) {
+            if (guard.isResolvedAddressDenied(err)) {
+              denials.add((
+                host: hostname,
+                port: port,
+                reason: (err as guard.ResolvedAddressDeniedError).reason,
+              ));
+            }
+            callback(err, address, family);
+          });
+}
+
+// Dart: the object literals upstream hands createHttpProxyServer /
+// createSocksProxyServer; every option not named here is absent (null).
+class _HttpOptions implements HttpProxyServerOptions {
+  _HttpOptions({this.lookupFor, this.mitmCA, this.tlsTerminateUpstreamCA});
+  @override
+  final DirectLookup? lookupFor;
+  @override
+  final MitmCA? mitmCA;
+  @override
+  final dynamic tlsTerminateUpstreamCA;
+  @override
+  FutureOr<bool> filter(
+    int port,
+    String host,
+    dynamic socket, [
+    String? encodedCommand,
+    void Function(String reason)? explain,
+  ]) => true;
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
+}
+
+class _SocksOptions implements SocksProxyServerOptions {
+  _SocksOptions({this.lookupFor});
+  @override
+  final DirectLookup? lookupFor;
+  @override
+  FutureOr<bool> filter(int port, String host, [String? encodedCommand]) =>
+      true;
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
+}
+
+String _utf8(Object? d) => d is String ? d : utf8.decode(d as List<int>);
+String _latin1(Object? d) => d is String ? d : latin1.decode(d as List<int>);
 
 void main() {
   group('address: parseAddressRange', () {
@@ -751,365 +814,376 @@ void main() {
   // loopback"; the fake resolver points allow-listed names at it.
   // ---------------------------------------------------------------------------
   group('resolved-address-guard: through the proxy servers', () {
-    // Upstream setup, kept as written until src/sandbox/http-proxy.ts and src/sandbox/socks-proxy.ts are ported.
-    // let upstream: HttpServer
-    // let upstreamPort: number
-    // let upstreamHits: string[]
-    // let denials: Denial[]
-    // const closers: Array<() => Promise<unknown> | unknown> = []
+    late http.NodeHttpServer upstream;
+    late int upstreamPort;
+    late List<String> upstreamHits;
+    late List<Denial> denials;
+    final closers = <Future<void> Function()>[];
 
-    // beforeEach(async () => {
-    //   upstreamHits = []
-    //   denials = []
-    //   upstream = createHttpServer((req, res) => {
-    //     let body = ''
-    //     req.setEncoding('utf8').on('data', c => (body += c))
-    //     req.on('end', () => {
-    //       upstreamHits.push(
-    //         `${req.method} ${req.url} host=${req.headers.host}` +
-    //           (body ? ` body=${body}` : ''),
-    //       )
-    //       res.writeHead(200, { 'Content-Type': 'text/plain' })
-    //       res.end('upstream-ok')
-    //     })
-    //   })
-    //   upstream.listen(0, '127.0.0.1')
-    //   await once(upstream, 'listening')
-    //   upstreamPort = (upstream.address() as { port: number }).port
-    // })
+    setUp(() async {
+      upstreamHits = [];
+      denials = [];
+      upstream = http.createServer((
+        http.IncomingMessage req,
+        http.ServerResponse res,
+      ) {
+        var body = '';
+        req.setEncoding('utf8').on('data', (Object? c) => body += _utf8(c));
+        req.on('end', () {
+          upstreamHits.add(
+            '${req.method} ${req.url} host=${req.headers['host']}' +
+                (body.isNotEmpty ? ' body=$body' : ''),
+          );
+          res.writeHead(200, {'Content-Type': 'text/plain'});
+          res.end('upstream-ok');
+        });
+      });
+      upstream.listen(0, '127.0.0.1');
+      await events.once(upstream, 'listening');
+      upstreamPort = (upstream.address() as net.NodeAddress).port;
+    });
 
-    // afterEach(async () => {
-    //   for (const c of closers.splice(0)) await c()
-    //   upstream.close()
-    // })
+    tearDown(() async {
+      for (final c in closers.toList().reversed) {
+        await c();
+      }
+      closers.clear();
+      upstream.close();
+    });
 
-    // const resolve = fakeResolver({
-    //   'rebind.example.com': ['127.0.0.1'],
-    //   'metadata.example.com': ['169.254.169.254'],
-    //   'intranet.example.com': ['127.0.0.1'],
-    //   'devbox.example.com': ['127.0.0.1'],
-    //   localhost: ['127.0.0.1'],
-    // })
+    final resolve = fakeResolver({
+      'rebind.example.com': ['127.0.0.1'],
+      'metadata.example.com': ['169.254.169.254'],
+      'intranet.example.com': ['127.0.0.1'],
+      'devbox.example.com': ['127.0.0.1'],
+      'localhost': ['127.0.0.1'],
+    });
 
-    // async function startHttpProxy(
-    //   guard = createResolvedAddressGuard({ resolve }),
-    // ): Promise<number> {
-    //   const proxy = createHttpProxyServer({
-    //     filter: () => true,
-    //     lookupFor: recordingLookupFor(guard, denials),
-    //   })
-    //   proxy.listen(0, '127.0.0.1')
-    //   await once(proxy, 'listening')
-    //   closers.push(
-    //     () =>
-    //       new Promise(r => {
-    //         proxy.closeAllConnections?.()
-    //         proxy.close(() => r(undefined))
-    //       }),
-    //   )
-    //   return (proxy.address() as { port: number }).port
-    // }
+    Future<int> startHttpProxy([guard.ResolvedAddressGuard? g]) async {
+      g ??= guard.createResolvedAddressGuard(resolve: resolve.resolve);
+      final proxy = createHttpProxyServer(
+        _HttpOptions(lookupFor: recordingLookupFor(g, denials)),
+      );
+      proxy.listen(0, '127.0.0.1');
+      await events.once(proxy, 'listening');
+      closers.add(() {
+        final done = Completer<void>();
+        proxy.closeAllConnections();
+        proxy.close(() => done.complete());
+        return done.future;
+      });
+      return (proxy.address() as net.NodeAddress).port;
+    }
 
-    // /** One request over a raw socket; resolves once the response is complete (Content-Length) or the socket closes. */
-    // async function rawExchange(
-    //   proxyPort: number,
-    //   payload: string,
-    // ): Promise<string> {
-    //   const sock = connect({ host: '127.0.0.1', port: proxyPort })
-    //   await once(sock, 'connect')
-    //   sock.write(payload)
-    //   let buf = ''
-    //   await new Promise<void>(resolve => {
-    //     sock.on('data', d => {
-    //       buf += d.toString('latin1')
-    //       const headEnd = buf.indexOf('\r\n\r\n')
-    //       if (headEnd === -1) return
-    //       const length = /content-length: (\d+)/i.exec(buf.slice(0, headEnd))
-    //       if (length && buf.length - headEnd - 4 >= Number(length[1])) resolve()
-    //     })
-    //     sock.on('end', resolve)
-    //     sock.on('close', resolve)
-    //   })
-    //   sock.destroy()
-    //   return buf
-    // }
+    /** One request over a raw socket; resolves once the response is complete (Content-Length) or the socket closes. */
+    Future<String> rawExchange(int proxyPort, String payload) async {
+      final sock = net.connect({'host': '127.0.0.1', 'port': proxyPort});
+      await events.once(sock, 'connect');
+      sock.write(payload);
+      var buf = '';
+      final done = Completer<void>();
+      void resolveDone() {
+        if (!done.isCompleted) done.complete();
+      }
+
+      sock.on('data', (Object? d) {
+        buf += _latin1(d);
+        final headEnd = buf.indexOf('\r\n\r\n');
+        if (headEnd == -1) return;
+        final length = RegExp(
+          r'content-length: (\d+)',
+          caseSensitive: false,
+        ).firstMatch(buf.substring(0, headEnd));
+        if (length != null &&
+            buf.length - headEnd - 4 >= int.parse(length.group(1)!)) {
+          resolveDone();
+        }
+      });
+      sock.on('end', resolveDone);
+      sock.on('close', resolveDone);
+      await done.future;
+      sock.destroy();
+      return buf;
+    }
 
     test(
       'plain HTTP: allow-listed name resolving to loopback is refused with 403, upstream untouched',
       () async {
-        // const proxyPort = await startHttpProxy()
-        // const resp = await rawExchange(
-        //   proxyPort,
-        //   `GET http://rebind.example.com:${upstreamPort}/secret HTTP/1.1\r\n` +
-        //     `Host: rebind.example.com:${upstreamPort}\r\nConnection: close\r\n\r\n`,
-        // )
-        // expect(resp.startsWith('HTTP/1.1 403')).toBe(true)
-        // expect(resp).toContain('X-Proxy-Error: blocked-by-sandbox-runtime')
-        // expect(resp).toContain(
-        //   'Connection to rebind.example.com blocked: resolved to a loopback address',
-        // )
-        // expect(upstreamHits).toEqual([])
-        // expect(denials).toEqual([
-        //   {
-        //     host: 'rebind.example.com',
-        //     port: upstreamPort,
-        //     reason: 'resolved to a loopback address',
-        //   },
-        // ])
+        final proxyPort = await startHttpProxy();
+        final resp = await rawExchange(
+          proxyPort,
+          'GET http://rebind.example.com:$upstreamPort/secret HTTP/1.1\r\n'
+          'Host: rebind.example.com:$upstreamPort\r\nConnection: close\r\n\r\n',
+        );
+        expect(resp.startsWith('HTTP/1.1 403'), isTrue);
+        expect(resp, contains('X-Proxy-Error: blocked-by-sandbox-runtime'));
+        expect(
+          resp,
+          contains(
+            'Connection to rebind.example.com blocked: resolved to a loopback address',
+          ),
+        );
+        expect(upstreamHits, isEmpty);
+        expect(denials, [
+          (
+            host: 'rebind.example.com',
+            port: upstreamPort,
+            reason: 'resolved to a loopback address',
+          ),
+        ]);
       },
-      skip: 'pending port: src/sandbox/http-proxy.ts',
     );
 
     test('plain HTTP: an allow-listed IP literal is still dialed', () async {
-      // const proxyPort = await startHttpProxy()
-      // const resp = await rawExchange(
-      //   proxyPort,
-      //   `GET http://127.0.0.1:${upstreamPort}/ok HTTP/1.1\r\n` +
-      //     `Host: 127.0.0.1:${upstreamPort}\r\nConnection: close\r\n\r\n`,
-      // )
-      // expect(resp.startsWith('HTTP/1.1 200')).toBe(true)
-      // expect(resp).toContain('upstream-ok')
-      // expect(denials).toEqual([])
-    }, skip: 'pending port: src/sandbox/http-proxy.ts');
+      final proxyPort = await startHttpProxy();
+      final resp = await rawExchange(
+        proxyPort,
+        'GET http://127.0.0.1:$upstreamPort/ok HTTP/1.1\r\n'
+        'Host: 127.0.0.1:$upstreamPort\r\nConnection: close\r\n\r\n',
+      );
+      expect(resp.startsWith('HTTP/1.1 200'), isTrue);
+      expect(resp, contains('upstream-ok'));
+      expect(denials, isEmpty);
+    });
 
     test('plain HTTP: "localhost" may resolve to loopback', () async {
-      // const proxyPort = await startHttpProxy()
-      // const resp = await rawExchange(
-      //   proxyPort,
-      //   `GET http://localhost:${upstreamPort}/ok HTTP/1.1\r\n` +
-      //     `Host: localhost:${upstreamPort}\r\nConnection: close\r\n\r\n`,
-      // )
-      // expect(resp.startsWith('HTTP/1.1 200')).toBe(true)
-      // expect(upstreamHits).toEqual([`GET /ok host=localhost:${upstreamPort}`])
-    }, skip: 'pending port: src/sandbox/http-proxy.ts');
+      final proxyPort = await startHttpProxy();
+      final resp = await rawExchange(
+        proxyPort,
+        'GET http://localhost:$upstreamPort/ok HTTP/1.1\r\n'
+        'Host: localhost:$upstreamPort\r\nConnection: close\r\n\r\n',
+      );
+      expect(resp.startsWith('HTTP/1.1 200'), isTrue);
+      expect(upstreamHits, ['GET /ok host=localhost:$upstreamPort']);
+    });
 
     test(
       'plain HTTP: a permitted resolution dials the resolved address with the Host header preserved',
       () async {
-        // const proxyPort = await startHttpProxy(
-        //   createResolvedAddressGuard({
-        //     resolve,
-        //     allowedDomains: [`127.0.0.1:${upstreamPort}`],
-        //   }),
-        // )
-        // const resp = await rawExchange(
-        //   proxyPort,
-        //   `GET http://devbox.example.com:${upstreamPort}/app HTTP/1.1\r\n` +
-        //     `Host: devbox.example.com:${upstreamPort}\r\nConnection: close\r\n\r\n`,
-        // )
-        // expect(resp.startsWith('HTTP/1.1 200')).toBe(true)
-        // expect(upstreamHits).toEqual([
-        //   `GET /app host=devbox.example.com:${upstreamPort}`,
-        // ])
-        // expect(resolve.calls).toContain('devbox.example.com')
+        final proxyPort = await startHttpProxy(
+          guard.createResolvedAddressGuard(
+            resolve: resolve.resolve,
+            allowedDomains: ['127.0.0.1:$upstreamPort'],
+          ),
+        );
+        final resp = await rawExchange(
+          proxyPort,
+          'GET http://devbox.example.com:$upstreamPort/app HTTP/1.1\r\n'
+          'Host: devbox.example.com:$upstreamPort\r\nConnection: close\r\n\r\n',
+        );
+        expect(resp.startsWith('HTTP/1.1 200'), isTrue);
+        expect(upstreamHits, [
+          'GET /app host=devbox.example.com:$upstreamPort',
+        ]);
+        expect(resolve.calls, contains('devbox.example.com'));
       },
-      skip: 'pending port: src/sandbox/http-proxy.ts',
     );
 
     test(
       'plain HTTP: a permitted resolution forwards a streamed request body intact, exactly once',
       () async {
-        // const proxyPort = await startHttpProxy(
-        //   createResolvedAddressGuard({
-        //     resolve,
-        //     allowedDomains: [`127.0.0.1:${upstreamPort}`],
-        //   }),
-        // )
-        // // Chunked from the client, so the proxy re-frames the upstream body.
-        // const body = '{"password":"hunter2"}'
-        // const resp = await rawExchange(
-        //   proxyPort,
-        //   `POST http://devbox.example.com:${upstreamPort}/submit HTTP/1.1\r\n` +
-        //     `Host: devbox.example.com:${upstreamPort}\r\n` +
-        //     `Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n` +
-        //     `${body.length.toString(16)}\r\n${body}\r\n0\r\n\r\n`,
-        // )
-        // expect(resp.startsWith('HTTP/1.1 200')).toBe(true)
-        // expect(upstreamHits).toEqual([
-        //   `POST /submit host=devbox.example.com:${upstreamPort} body=${body}`,
-        // ])
+        final proxyPort = await startHttpProxy(
+          guard.createResolvedAddressGuard(
+            resolve: resolve.resolve,
+            allowedDomains: ['127.0.0.1:$upstreamPort'],
+          ),
+        );
+        // Chunked from the client, so the proxy re-frames the upstream body.
+        const body = '{"password":"hunter2"}';
+        final resp = await rawExchange(
+          proxyPort,
+          'POST http://devbox.example.com:$upstreamPort/submit HTTP/1.1\r\n'
+          'Host: devbox.example.com:$upstreamPort\r\n'
+          'Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n'
+          '${body.length.toRadixString(16)}\r\n$body\r\n0\r\n\r\n',
+        );
+        expect(resp.startsWith('HTTP/1.1 200'), isTrue);
+        expect(upstreamHits, [
+          'POST /submit host=devbox.example.com:$upstreamPort body=$body',
+        ]);
       },
-      skip: 'pending port: src/sandbox/http-proxy.ts',
     );
 
     test('plain HTTP: an embedder-configured range is refused too', () async {
-      // const proxyPort = await startHttpProxy(
-      //   createResolvedAddressGuard({
-      //     resolve: fakeResolver({ 'intranet.example.com': ['10.20.30.40'] }),
-      //     deniedResolvedAddresses: ['10.0.0.0/8'],
-      //   }),
-      // )
-      // const resp = await rawExchange(
-      //   proxyPort,
-      //   `GET http://intranet.example.com/ HTTP/1.1\r\nHost: intranet.example.com\r\nConnection: close\r\n\r\n`,
-      // )
-      // expect(resp.startsWith('HTTP/1.1 403')).toBe(true)
-      // expect(denials[0]?.reason).toBe('resolved to a listed address')
-    }, skip: 'pending port: src/sandbox/http-proxy.ts');
+      final proxyPort = await startHttpProxy(
+        guard.createResolvedAddressGuard(
+          resolve: fakeResolver({
+            'intranet.example.com': ['10.20.30.40'],
+          }).resolve,
+          deniedResolvedAddresses: ['10.0.0.0/8'],
+        ),
+      );
+      final resp = await rawExchange(
+        proxyPort,
+        'GET http://intranet.example.com/ HTTP/1.1\r\nHost: intranet.example.com\r\nConnection: close\r\n\r\n',
+      );
+      expect(resp.startsWith('HTTP/1.1 403'), isTrue);
+      expect(
+        denials.isEmpty ? null : denials[0].reason,
+        'resolved to a listed address',
+      );
+    });
 
     test(
       'CONNECT: allow-listed name resolving to loopback gets 403 instead of a tunnel',
       () async {
-        // const proxyPort = await startHttpProxy()
-        // const resp = await rawExchange(
-        //   proxyPort,
-        //   `CONNECT rebind.example.com:${upstreamPort} HTTP/1.1\r\nHost: rebind.example.com:${upstreamPort}\r\n\r\n`,
-        // )
-        // // The class is the status phrase too: few clients show the body.
-        // expect(resp).toStartWith('HTTP/1.1 403 resolved to a loopback address\r\n')
-        // expect(resp).toContain('X-Proxy-Error: blocked-by-sandbox-runtime')
-        // expect(resp).toEndWith(
-        //   '\r\n\r\nConnection to rebind.example.com blocked: resolved to a loopback address',
-        // )
-        // expect(resp).not.toContain('127.0.0.1')
-        // expect(denials.map(d => `${d.host}:${d.port}`)).toEqual([
-        //   `rebind.example.com:${upstreamPort}`,
-        // ])
+        final proxyPort = await startHttpProxy();
+        final resp = await rawExchange(
+          proxyPort,
+          'CONNECT rebind.example.com:$upstreamPort HTTP/1.1\r\nHost: rebind.example.com:$upstreamPort\r\n\r\n',
+        );
+        // The class is the status phrase too: few clients show the body.
+        expect(
+          resp,
+          startsWith('HTTP/1.1 403 resolved to a loopback address\r\n'),
+        );
+        expect(resp, contains('X-Proxy-Error: blocked-by-sandbox-runtime'));
+        expect(
+          resp,
+          endsWith(
+            '\r\n\r\nConnection to rebind.example.com blocked: resolved to a loopback address',
+          ),
+        );
+        expect(resp, isNot(contains('127.0.0.1')));
+        expect(denials.map((d) => '${d.host}:${d.port}').toList(), [
+          'rebind.example.com:$upstreamPort',
+        ]);
       },
-      skip: 'pending port: src/sandbox/http-proxy.ts',
     );
 
     test('CONNECT: link-local (metadata-style) resolution is refused', () async {
-      // const proxyPort = await startHttpProxy()
-      // const resp = await rawExchange(
-      //   proxyPort,
-      //   `CONNECT metadata.example.com:80 HTTP/1.1\r\nHost: metadata.example.com:80\r\n\r\n`,
-      // )
-      // expect(resp.startsWith('HTTP/1.1 403')).toBe(true)
-      // expect(denials[0]?.reason).toBe('resolved to a link-local address')
-    }, skip: 'pending port: src/sandbox/http-proxy.ts');
+      final proxyPort = await startHttpProxy();
+      final resp = await rawExchange(
+        proxyPort,
+        'CONNECT metadata.example.com:80 HTTP/1.1\r\nHost: metadata.example.com:80\r\n\r\n',
+      );
+      expect(resp.startsWith('HTTP/1.1 403'), isTrue);
+      expect(
+        denials.isEmpty ? null : denials[0].reason,
+        'resolved to a link-local address',
+      );
+    });
 
     test('CONNECT: an allow-listed IP literal still tunnels', () async {
-      // const proxyPort = await startHttpProxy()
-      // const sock = connect({ host: '127.0.0.1', port: proxyPort })
-      // await once(sock, 'connect')
-      // sock.write(
-      //   `CONNECT 127.0.0.1:${upstreamPort} HTTP/1.1\r\nHost: 127.0.0.1:${upstreamPort}\r\n\r\n`,
-      // )
-      // const [first] = (await once(sock, 'data')) as [Buffer]
-      // expect(first.toString()).toContain('200 Connection Established')
-      // sock.write(
-      //   `GET /tunnelled HTTP/1.1\r\nHost: 127.0.0.1:${upstreamPort}\r\nConnection: close\r\n\r\n`,
-      // )
-      // let buf = ''
-      // sock.on('data', d => (buf += d.toString()))
-      // await once(sock, 'close')
-      // expect(buf).toContain('upstream-ok')
-      // expect(denials).toEqual([])
-    }, skip: 'pending port: src/sandbox/http-proxy.ts');
+      final proxyPort = await startHttpProxy();
+      final sock = net.connect({'host': '127.0.0.1', 'port': proxyPort});
+      await events.once(sock, 'connect');
+      sock.write(
+        'CONNECT 127.0.0.1:$upstreamPort HTTP/1.1\r\nHost: 127.0.0.1:$upstreamPort\r\n\r\n',
+      );
+      final first = await events.once(sock, 'data');
+      expect(_utf8(first[0]), contains('200 Connection Established'));
+      sock.write(
+        'GET /tunnelled HTTP/1.1\r\nHost: 127.0.0.1:$upstreamPort\r\nConnection: close\r\n\r\n',
+      );
+      var buf = '';
+      sock.on('data', (Object? d) => buf += _utf8(d));
+      await events.once(sock, 'close');
+      expect(buf, contains('upstream-ok'));
+      expect(denials, isEmpty);
+    });
 
-    // // --- SOCKS -------------------------------------------------------------
+    // --- SOCKS -------------------------------------------------------------
 
-    // async function startSocks(
-    //   guard = createResolvedAddressGuard({ resolve }),
-    // ): Promise<number> {
-    //   const wrapper = createSocksProxyServer({
-    //     filter: () => true,
-    //     lookupFor: recordingLookupFor(guard, denials),
-    //   })
-    //   const tcp: TcpServer = createTcpServer((s: Socket) =>
-    //     wrapper.handleConnection(s),
-    //   )
-    //   tcp.listen(0, '127.0.0.1')
-    //   await once(tcp, 'listening')
-    //   closers.push(async () => {
-    //     await wrapper.close()
-    //     tcp.close()
-    //   })
-    //   return (tcp.address() as { port: number }).port
-    // }
+    Future<int> startSocks([guard.ResolvedAddressGuard? g]) async {
+      g ??= guard.createResolvedAddressGuard(resolve: resolve.resolve);
+      final wrapper = createSocksProxyServer(
+        _SocksOptions(lookupFor: recordingLookupFor(g, denials)),
+      );
+      final tcp = net.createServer((net.NodeSocket s) {
+        wrapper.handleConnection(s);
+      });
+      tcp.listen(0, '127.0.0.1');
+      await events.once(tcp, 'listening');
+      closers.add(() async {
+        await wrapper.close();
+        tcp.close();
+      });
+      return (tcp.address() as net.NodeAddress).port;
+    }
 
-    // /** No-auth greeting, then CONNECT; resolves with the reply's REP byte. */
-    // async function socksConnect(
-    //   socksPort: number,
-    //   dest:
-    //     | { type: 'domain'; host: string; port: number }
-    //     | { type: 'ipv4'; host: string; port: number },
-    // ): Promise<{ rep: number; sock: Socket }> {
-    //   const sock = connect({ host: '127.0.0.1', port: socksPort })
-    //   await once(sock, 'connect')
-    //   sock.write(Buffer.from([0x05, 0x01, 0x00]))
-    //   const [method] = (await once(sock, 'data')) as [Buffer]
-    //   expect([...method]).toEqual([0x05, 0x00])
-    //   const portBytes = Buffer.from([(dest.port >> 8) & 0xff, dest.port & 0xff])
-    //   const addr =
-    //     dest.type === 'domain'
-    //       ? Buffer.concat([
-    //           Buffer.from([0x03, dest.host.length]),
-    //           Buffer.from(dest.host, 'utf8'),
-    //         ])
-    //       : Buffer.from([0x01, ...dest.host.split('.').map(Number)])
-    //   sock.write(
-    //     Buffer.concat([Buffer.from([0x05, 0x01, 0x00]), addr, portBytes]),
-    //   )
-    //   const [reply] = (await once(sock, 'data')) as [Buffer]
-    //   return { rep: reply[1]!, sock }
-    // }
+    /** No-auth greeting, then CONNECT; resolves with the reply's REP byte. */
+    Future<({int rep, net.NodeSocket sock})> socksConnect(
+      int socksPort,
+      ({String type, String host, int port}) dest,
+    ) async {
+      final sock = net.connect({'host': '127.0.0.1', 'port': socksPort});
+      await events.once(sock, 'connect');
+      sock.write(Uint8List.fromList([0x05, 0x01, 0x00]));
+      final method = await events.once(sock, 'data');
+      expect(List<int>.from(method[0] as List<int>), [0x05, 0x00]);
+      final portBytes = [(dest.port >> 8) & 0xff, dest.port & 0xff];
+      final addr = dest.type == 'domain'
+          ? [0x03, dest.host.length, ...utf8.encode(dest.host)]
+          : [0x01, ...dest.host.split('.').map(int.parse)];
+      sock.write(Uint8List.fromList([0x05, 0x01, 0x00, ...addr, ...portBytes]));
+      final reply = await events.once(sock, 'data');
+      return (rep: (reply[0] as List<int>)[1], sock: sock);
+    }
 
     test(
       'SOCKS: allow-listed name resolving to loopback gets "not allowed by ruleset"',
       () async {
-        // const socksPort = await startSocks()
-        // const { rep, sock } = await socksConnect(socksPort, {
-        //   type: 'domain',
-        //   host: 'rebind.example.com',
-        //   port: upstreamPort,
-        // })
-        // sock.destroy()
-        // expect(rep).toBe(0x02)
-        // expect(denials).toEqual([
-        //   {
-        //     host: 'rebind.example.com',
-        //     port: upstreamPort,
-        //     reason: 'resolved to a loopback address',
-        //   },
-        // ])
+        final socksPort = await startSocks();
+        final r = await socksConnect(socksPort, (
+          type: 'domain',
+          host: 'rebind.example.com',
+          port: upstreamPort,
+        ));
+        r.sock.destroy();
+        expect(r.rep, 0x02);
+        expect(denials, [
+          (
+            host: 'rebind.example.com',
+            port: upstreamPort,
+            reason: 'resolved to a loopback address',
+          ),
+        ]);
       },
-      skip: 'pending port: src/sandbox/socks-proxy.ts',
     );
 
     test('SOCKS: an IP-literal destination is still granted', () async {
-      // const socksPort = await startSocks()
-      // const { rep, sock } = await socksConnect(socksPort, {
-      //   type: 'ipv4',
-      //   host: '127.0.0.1',
-      //   port: upstreamPort,
-      // })
-      // expect(rep).toBe(0x00)
-      // sock.write(
-      //   `GET /via-socks HTTP/1.1\r\nHost: 127.0.0.1:${upstreamPort}\r\nConnection: close\r\n\r\n`,
-      // )
-      // let buf = ''
-      // sock.on('data', d => (buf += d.toString()))
-      // await once(sock, 'close')
-      // expect(buf).toContain('upstream-ok')
-      // expect(denials).toEqual([])
-    }, skip: 'pending port: src/sandbox/socks-proxy.ts');
+      final socksPort = await startSocks();
+      final r = await socksConnect(socksPort, (
+        type: 'ipv4',
+        host: '127.0.0.1',
+        port: upstreamPort,
+      ));
+      expect(r.rep, 0x00);
+      r.sock.write(
+        'GET /via-socks HTTP/1.1\r\nHost: 127.0.0.1:$upstreamPort\r\nConnection: close\r\n\r\n',
+      );
+      var buf = '';
+      r.sock.on('data', (Object? d) => buf += _utf8(d));
+      await events.once(r.sock, 'close');
+      expect(buf, contains('upstream-ok'));
+      expect(denials, isEmpty);
+    });
 
     test(
       'SOCKS: a permitted resolution is dialed at the resolved address',
       () async {
-        // const socksPort = await startSocks(
-        //   createResolvedAddressGuard({ resolve, allowedDomains: ['127.0.0.1'] }),
-        // )
-        // const { rep, sock } = await socksConnect(socksPort, {
-        //   type: 'domain',
-        //   host: 'devbox.example.com',
-        //   port: upstreamPort,
-        // })
-        // expect(rep).toBe(0x00)
-        // sock.write(
-        //   `GET /via-socks-name HTTP/1.1\r\nHost: devbox.example.com\r\nConnection: close\r\n\r\n`,
-        // )
-        // let buf = ''
-        // sock.on('data', d => (buf += d.toString()))
-        // await once(sock, 'close')
-        // expect(buf).toContain('upstream-ok')
-        // expect(upstreamHits).toEqual([
-        //   'GET /via-socks-name host=devbox.example.com',
-        // ])
+        final socksPort = await startSocks(
+          guard.createResolvedAddressGuard(
+            resolve: resolve.resolve,
+            allowedDomains: ['127.0.0.1'],
+          ),
+        );
+        final r = await socksConnect(socksPort, (
+          type: 'domain',
+          host: 'devbox.example.com',
+          port: upstreamPort,
+        ));
+        expect(r.rep, 0x00);
+        r.sock.write(
+          'GET /via-socks-name HTTP/1.1\r\nHost: devbox.example.com\r\nConnection: close\r\n\r\n',
+        );
+        var buf = '';
+        r.sock.on('data', (Object? d) => buf += _utf8(d));
+        await events.once(r.sock, 'close');
+        expect(buf, contains('upstream-ok'));
+        expect(upstreamHits, ['GET /via-socks-name host=devbox.example.com']);
       },
-      skip: 'pending port: src/sandbox/socks-proxy.ts',
     );
   });
 
@@ -1121,208 +1195,226 @@ void main() {
   // `servername` rather than the address — true for Node and Bun >= 1.3.11.
   // ---------------------------------------------------------------------------
   group('resolved-address-guard: TLS-terminated upstream leg', () {
-    // Upstream setup, kept as written until src/sandbox/tls-terminate-proxy.ts are ported.
-    // // Every case runs a TLS-terminating proxy: skipped where none can run.
-    // const it = testWithTls
-    // const ca = createMitmCA({ caCertPath: CA_CERT, caKeyPath: CA_KEY })
-    // const UP_HOST = 'devbox.example.com'
-    // let upstream: ReturnType<typeof createHttpsServer>
-    // let upstreamPort: number
-    // let upstreamHits: string[]
-    // let denials: Denial[]
-    // const closers: Array<() => Promise<unknown>> = []
+    // Every case runs a TLS-terminating proxy: skipped where none can run.
+    final ca = createMitmCA(caCertPath: CA_CERT, caKeyPath: CA_KEY);
+    const UP_HOST = 'devbox.example.com';
+    late https.Server upstream;
+    late int upstreamPort;
+    late List<String> upstreamHits;
+    late List<Denial> denials;
+    final closers = <Future<void> Function()>[];
 
-    // beforeEach(async () => {
-    //   upstreamHits = []
-    //   denials = []
-    //   // Leaf for the HOSTNAME, served on 127.0.0.1: a request that reaches it
-    //   // verified proves the upstream leg dialed the resolved address while
-    //   // keeping SNI/verification on the name.
-    //   const leaf = mintLeafCert(ca, UP_HOST)
-    //   const leafOnly = leaf.certPem.match(
-    //     /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----\r?\n?/,
-    //   )![0]
-    //   upstream = createHttpsServer(
-    //     { cert: leafOnly, key: leaf.keyPem },
-    //     (req, res) => {
-    //       let body = ''
-    //       req.setEncoding('utf8').on('data', c => (body += c))
-    //       req.on('end', () => {
-    //         upstreamHits.push(
-    //           `${req.method} ${req.url}` + (body ? ` body=${body}` : ''),
-    //         )
-    //         res.writeHead(200, { 'x-upstream-host': String(req.headers.host) })
-    //         res.end('tls-upstream-ok')
-    //       })
-    //     },
-    //   )
-    //   await new Promise<void>(r => upstream.listen(0, '127.0.0.1', () => r()))
-    //   upstreamPort = (upstream.address() as AddressInfo).port
-    //   closers.push(() => new Promise(r => upstream.close(() => r(undefined))))
-    // })
+    setUp(() async {
+      upstreamHits = [];
+      denials = [];
+      // Leaf for the HOSTNAME, served on 127.0.0.1: a request that reaches it
+      // verified proves the upstream leg dialed the resolved address while
+      // keeping SNI/verification on the name.
+      final leaf = mintLeafCert(ca, UP_HOST);
+      final leafOnly = RegExp(
+        r'-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----\r?\n?',
+      ).firstMatch(leaf.certPem)!.group(0)!;
+      upstream = https.createServer({'cert': leafOnly, 'key': leaf.keyPem}, (
+        http.IncomingMessage req,
+        http.ServerResponse res,
+      ) {
+        var body = '';
+        req.setEncoding('utf8').on('data', (Object? c) => body += _utf8(c));
+        req.on('end', () {
+          upstreamHits.add(
+            '${req.method} ${req.url}' + (body.isNotEmpty ? ' body=$body' : ''),
+          );
+          res.writeHead(200, {'x-upstream-host': '${req.headers['host']}'});
+          res.end('tls-upstream-ok');
+        });
+      });
+      final listening = Completer<void>();
+      upstream.listen(0, '127.0.0.1', () => listening.complete());
+      await listening.future;
+      upstreamPort = (upstream.address() as net.NodeAddress).port;
+      closers.add(() {
+        final done = Completer<void>();
+        upstream.close(() => done.complete());
+        return done.future;
+      });
+    });
 
-    // afterEach(async () => {
-    //   for (const c of closers.splice(0)) await c()
-    // })
+    tearDown(() async {
+      for (final c in closers.toList().reversed) {
+        await c();
+      }
+      closers.clear();
+    });
 
-    // async function startTerminatingProxy(
-    //   guard: ResolvedAddressGuard,
-    // ): Promise<number> {
-    //   const proxy = createHttpProxyServer({
-    //     filter: () => true,
-    //     mitmCA: ca,
-    //     tlsTerminateUpstreamCA: CA_PEM,
-    //     lookupFor: recordingLookupFor(guard, denials),
-    //   })
-    //   await new Promise<void>(r => proxy.listen(0, '127.0.0.1', () => r()))
-    //   closers.push(
-    //     () =>
-    //       new Promise(r => {
-    //         proxy.closeAllConnections?.()
-    //         proxy.close(() => r(undefined))
-    //       }),
-    //   )
-    //   return (proxy.address() as AddressInfo).port
-    // }
+    Future<int> startTerminatingProxy(guard.ResolvedAddressGuard g) async {
+      final proxy = createHttpProxyServer(
+        _HttpOptions(
+          mitmCA: ca,
+          tlsTerminateUpstreamCA: CA_PEM,
+          lookupFor: recordingLookupFor(g, denials),
+        ),
+      );
+      final listening = Completer<void>();
+      proxy.listen(0, '127.0.0.1', () => listening.complete());
+      await listening.future;
+      closers.add(() {
+        final done = Completer<void>();
+        proxy.closeAllConnections();
+        proxy.close(() => done.complete());
+        return done.future;
+      });
+      return (proxy.address() as net.NodeAddress).port;
+    }
 
-    // async function curl(
-    //   proxyPort: number,
-    //   url: string,
-    //   data?: string,
-    // ): Promise<{ exit: number; out: string }> {
-    //   const child = spawn('curl', [
-    //     '-sS',
-    //     '--proxy',
-    //     `http://127.0.0.1:${proxyPort}`,
-    //     // An empty list overrides NO_PROXY, which would send curl around
-    //     // the proxy under test for 127.0.0.1.
-    //     '--noproxy',
-    //     '',
-    //     '--cacert',
-    //     CA_CERT,
-    //     '--max-time',
-    //     '10',
-    //     '-D',
-    //     '-',
-    //     ...(data === undefined ? [] : ['--data-binary', data]),
-    //     url,
-    //   ])
-    //   let out = ''
-    //   child.stdout.setEncoding('utf8').on('data', c => (out += c))
-    //   child.stderr.resume()
-    //   await new Promise<void>(r => child.stdout.once('end', () => r()))
-    //   const exit = await new Promise<number>(r =>
-    //     child.on('close', code => r(code ?? 1)),
-    //   )
-    //   return { exit, out }
-    // }
+    Future<({int exit, String out})> curl(
+      int proxyPort,
+      String url, [
+      String? data,
+    ]) async {
+      final child = await Process.start('curl', [
+        '-sS',
+        '--proxy',
+        'http://127.0.0.1:$proxyPort',
+        // An empty list overrides NO_PROXY, which would send curl around
+        // the proxy under test for 127.0.0.1.
+        '--noproxy',
+        '',
+        '--cacert',
+        CA_CERT,
+        '--max-time',
+        '10',
+        '-D',
+        '-',
+        if (data != null) ...['--data-binary', data],
+        url,
+      ]);
+      child.stderr.drain<void>();
+      final out = await utf8.decodeStream(child.stdout);
+      final exit = await child.exitCode;
+      return (exit: exit, out: out);
+    }
 
     test(
       'hostname resolving to loopback: 403 inside the terminated session, upstream untouched',
       () async {
-        // const proxyPort = await startTerminatingProxy(
-        //   createResolvedAddressGuard({
-        //     resolve: fakeResolver({ [UP_HOST]: ['127.0.0.1'] }),
-        //   }),
-        // )
-        // const r = await curl(proxyPort, `https://${UP_HOST}:${upstreamPort}/secret`)
-        // expect(r.out).toContain('HTTP/1.1 403')
-        // expect(r.out.toLowerCase()).toContain(
-        //   'x-proxy-error: blocked-by-sandbox-runtime',
-        // )
-        // expect(r.out).not.toContain('tls-upstream-ok')
-        // expect(denials).toEqual([
-        //   {
-        //     host: UP_HOST,
-        //     port: upstreamPort,
-        //     reason: 'resolved to a loopback address',
-        //   },
-        // ])
+        final proxyPort = await startTerminatingProxy(
+          guard.createResolvedAddressGuard(
+            resolve: fakeResolver({
+              UP_HOST: ['127.0.0.1'],
+            }).resolve,
+          ),
+        );
+        final r = await curl(
+          proxyPort,
+          'https://$UP_HOST:$upstreamPort/secret',
+        );
+        expect(r.out, contains('HTTP/1.1 403'));
+        expect(
+          r.out.toLowerCase(),
+          contains('x-proxy-error: blocked-by-sandbox-runtime'),
+        );
+        expect(r.out, isNot(contains('tls-upstream-ok')));
+        expect(denials, [
+          (
+            host: UP_HOST,
+            port: upstreamPort,
+            reason: 'resolved to a loopback address',
+          ),
+        ]);
       },
-      skip: 'pending port: src/sandbox/tls-terminate-proxy.ts',
+      skip: _tlsSkip,
     );
 
     test(
       'non-TLS bytes after the sniff path already answered 200: denied dial closes the tunnel and records the violation',
       () async {
-        // const proxyPort = await startTerminatingProxy(
-        //   createResolvedAddressGuard({
-        //     resolve: fakeResolver({ [UP_HOST]: ['127.0.0.1'] }),
-        //   }),
-        // )
-        // const sock = connect({ host: '127.0.0.1', port: proxyPort })
-        // await once(sock, 'connect')
-        // sock.write(
-        //   `CONNECT ${UP_HOST}:${upstreamPort} HTTP/1.1\r\nHost: ${UP_HOST}:${upstreamPort}\r\n\r\n`,
-        // )
-        // let buf = ''
-        // sock.on('data', d => {
-        //   buf += d.toString('latin1')
-        //   if (buf.includes('Connection Established') && !buf.includes('sent')) {
-        //     buf += 'sent'
-        //     sock.write('SSH-2.0-OpenSSH_9.7\r\n')
-        //   }
-        // })
-        // await Promise.race([
-        //   once(sock, 'close'),
-        //   new Promise(r => setTimeout(r, 3000)),
-        // ])
-        // expect(buf.startsWith('HTTP/1.1 200')).toBe(true)
-        // expect(buf).not.toContain('403') // a status line now would land inside the tunnel
-        // expect(sock.destroyed || sock.readableEnded).toBe(true)
-        // expect(denials).toEqual([
-        //   {
-        //     host: UP_HOST,
-        //     port: upstreamPort,
-        //     reason: 'resolved to a loopback address',
-        //   },
-        // ])
-        // sock.destroy()
+        final proxyPort = await startTerminatingProxy(
+          guard.createResolvedAddressGuard(
+            resolve: fakeResolver({
+              UP_HOST: ['127.0.0.1'],
+            }).resolve,
+          ),
+        );
+        final sock = net.connect({'host': '127.0.0.1', 'port': proxyPort});
+        await events.once(sock, 'connect');
+        sock.write(
+          'CONNECT $UP_HOST:$upstreamPort HTTP/1.1\r\nHost: $UP_HOST:$upstreamPort\r\n\r\n',
+        );
+        var buf = '';
+        sock.on('data', (Object? d) {
+          buf += _latin1(d);
+          if (buf.contains('Connection Established') && !buf.contains('sent')) {
+            buf += 'sent';
+            sock.write('SSH-2.0-OpenSSH_9.7\r\n');
+          }
+        });
+        await Future.any([
+          events.once(sock, 'close'),
+          Future<void>.delayed(const Duration(milliseconds: 3000)),
+        ]);
+        expect(buf.startsWith('HTTP/1.1 200'), isTrue);
+        expect(
+          buf,
+          isNot(contains('403')),
+        ); // a status line now would land inside the tunnel
+        expect(sock.destroyed || sock.readableEnded, isTrue);
+        expect(denials, [
+          (
+            host: UP_HOST,
+            port: upstreamPort,
+            reason: 'resolved to a loopback address',
+          ),
+        ]);
+        sock.destroy();
       },
-      skip: 'pending port: src/sandbox/tls-terminate-proxy.ts',
+      skip: _tlsSkip,
     );
 
     test(
       'permitted resolution: dials the resolved address, verifies the certificate against the name',
       () async {
-        // const resolve = fakeResolver({ [UP_HOST]: ['127.0.0.1'] })
-        // const proxyPort = await startTerminatingProxy(
-        //   createResolvedAddressGuard({
-        //     resolve,
-        //     allowedDomains: [`127.0.0.1:${upstreamPort}`],
-        //   }),
-        // )
-        // const r = await curl(proxyPort, `https://${UP_HOST}:${upstreamPort}/app`)
-        // expect(r.exit).toBe(0)
-        // expect(r.out).toContain('HTTP/1.1 200')
-        // expect(r.out).toContain('tls-upstream-ok')
-        // expect(r.out).toContain(`x-upstream-host: ${UP_HOST}:${upstreamPort}`)
-        // expect(resolve.calls).toContain(UP_HOST)
-        // expect(denials).toEqual([])
+        final resolve = fakeResolver({
+          UP_HOST: ['127.0.0.1'],
+        });
+        final proxyPort = await startTerminatingProxy(
+          guard.createResolvedAddressGuard(
+            resolve: resolve.resolve,
+            allowedDomains: ['127.0.0.1:$upstreamPort'],
+          ),
+        );
+        final r = await curl(proxyPort, 'https://$UP_HOST:$upstreamPort/app');
+        expect(r.exit, 0);
+        expect(r.out, contains('HTTP/1.1 200'));
+        expect(r.out, contains('tls-upstream-ok'));
+        expect(r.out, contains('x-upstream-host: $UP_HOST:$upstreamPort'));
+        expect(resolve.calls, contains(UP_HOST));
+        expect(denials, isEmpty);
       },
-      skip: 'pending port: src/sandbox/tls-terminate-proxy.ts',
+      skip: _tlsSkip,
     );
 
     test(
       'permitted resolution: a request body reaches the upstream intact, exactly once',
       () async {
-        // const proxyPort = await startTerminatingProxy(
-        //   createResolvedAddressGuard({
-        //     resolve: fakeResolver({ [UP_HOST]: ['127.0.0.1'] }),
-        //     allowedDomains: [`127.0.0.1:${upstreamPort}`],
-        //   }),
-        // )
-        // const body = 'command=ls-refs'
-        // const r = await curl(
-        //   proxyPort,
-        //   `https://${UP_HOST}:${upstreamPort}/upload`,
-        //   body,
-        // )
-        // expect(r.exit).toBe(0)
-        // expect(r.out).toContain('HTTP/1.1 200')
-        // expect(upstreamHits).toEqual([`POST /upload body=${body}`])
+        final proxyPort = await startTerminatingProxy(
+          guard.createResolvedAddressGuard(
+            resolve: fakeResolver({
+              UP_HOST: ['127.0.0.1'],
+            }).resolve,
+            allowedDomains: ['127.0.0.1:$upstreamPort'],
+          ),
+        );
+        const body = 'command=ls-refs';
+        final r = await curl(
+          proxyPort,
+          'https://$UP_HOST:$upstreamPort/upload',
+          body,
+        );
+        expect(r.exit, 0);
+        expect(r.out, contains('HTTP/1.1 200'));
+        expect(upstreamHits, ['POST /upload body=$body']);
       },
-      skip: 'pending port: src/sandbox/tls-terminate-proxy.ts',
+      skip: _tlsSkip,
     );
   });
 }
