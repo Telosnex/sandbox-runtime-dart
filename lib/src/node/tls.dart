@@ -11,6 +11,7 @@ import 'package:crypto/crypto.dart' as crypto;
 import 'package:pointycastle/export.dart' as pc;
 
 import 'errno.dart';
+import 'fd_io.dart' show isFdSocket;
 import 'mozilla_roots.dart';
 import 'net.dart' as net;
 import 'stream.dart' as stream;
@@ -114,7 +115,7 @@ class TLSSocket extends net.NodeSocket {
       final SecureSocket secured;
       try {
         secured = await SecureSocket.secureServer(
-          raw,
+          isFdSocket(raw) ? await _bridgeSocket(raw) : raw,
           context,
           bufferedData: buffered,
           supportedProtocols: protocols,
@@ -693,6 +694,33 @@ bool _sameBytes(List<int> left, List<int> right) =>
 /// A loopback dart:io socket whose far end is [duplex], so dart:io can run
 /// TLS over any Node stream. Bytes the duplex emits go in; bytes written out
 /// go to the duplex.
+/// A loopback dart:io socket standing for [raw], a descriptor socket that
+/// dart:io's TLS cannot take over: bytes are pumped both ways.
+Future<Socket> _bridgeSocket(Socket raw) async {
+  final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+  final accepted = server.first;
+  final client = await Socket.connect(
+    InternetAddress.loopbackIPv4,
+    server.port,
+  );
+  final far = await accepted;
+  unawaited(server.close());
+  far.setOption(SocketOption.tcpNoDelay, true);
+  raw.listen(
+    far.add,
+    onDone: () => unawaited(far.close()),
+    onError: (Object _) => far.destroy(),
+    cancelOnError: true,
+  );
+  far.listen(
+    raw.add,
+    onDone: () => unawaited(raw.close()),
+    onError: (Object _) => raw.destroy(),
+    cancelOnError: true,
+  );
+  return client;
+}
+
 Future<Socket> _bridgeDuplex(stream.Duplex duplex) async {
   final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
   final accepted = server.first;

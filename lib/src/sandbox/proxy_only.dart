@@ -490,10 +490,14 @@ String readPemFromFd(int fd) {
  * times out. The writer is opened on first write, so an fd used only for
  * input (the lifeline) gets none.
  */
-({stream.Readable input, stream.Writable output}) openFdStreams(int fd) {
+({stream.Readable input, stream.Writable output}) openFdStreams(
+  int fd, {
+  bool readable = true,
+  bool writable = true,
+}) {
   if (isBunRuntime()) {
     throw UnimplementedError('Bun only');
   }
-  final sock = net.NodeSocket(fd: fd, readable: true, writable: true);
+  final sock = net.NodeSocket(fd: fd, readable: readable, writable: writable);
   return (input: sock, output: sock);
 }
