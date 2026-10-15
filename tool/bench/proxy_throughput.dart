@@ -9,6 +9,7 @@ import 'package:sandbox_runtime/src/node/fs.dart' show readFileSync;
 import 'package:sandbox_runtime/src/node/http.dart' as http;
 import 'package:sandbox_runtime/src/node/https.dart' as https;
 import 'package:sandbox_runtime/src/node/net.dart' as net;
+import 'package:sandbox_runtime/src/node/tls.dart' as tls;
 import 'package:sandbox_runtime/src/sandbox/http_proxy.dart';
 import 'package:sandbox_runtime/src/sandbox/mitm_ca.dart';
 import 'package:sandbox_runtime/src/sandbox/mitm_leaf.dart';
@@ -154,6 +155,105 @@ Future<void> main(List<String> args) async {
     client.close(force: true);
   }
 
+  Future<void> runShim(String name, int? proxyPort) async {
+    Future<Object?> conn() async {
+      net.NodeSocket raw;
+      if (proxyPort == null) {
+        raw = net.connect({'host': '127.0.0.1', 'port': originPort});
+      } else {
+        // Hand-rolled CONNECT: write the request, read to the blank line.
+        final c = Completer<void>();
+        raw = net.connect({'host': '127.0.0.1', 'port': proxyPort});
+        final acc = StringBuffer();
+        void onData(Object? d) {
+          acc.write(String.fromCharCodes(d as Uint8List));
+          if (acc.toString().contains('\r\n\r\n') && !c.isCompleted) {
+            c.complete();
+          }
+        }
+
+        raw.on('data', onData);
+        raw.write(
+          'CONNECT 127.0.0.1:$originPort HTTP/1.1\r\nHost: 127.0.0.1:$originPort\r\n\r\n',
+        );
+        await c.future;
+        raw.removeListener('data', onData);
+      }
+      return tls.connect({
+        'socket': raw,
+        'servername': '127.0.0.1',
+        'ca': caPem,
+      });
+    }
+
+    Future<http.IncomingMessage> req(
+      String method,
+      void Function(http.ClientRequest) body,
+    ) async {
+      final sock = await conn();
+      final c = Completer<http.IncomingMessage>();
+      final r = https.request({
+        'host': '127.0.0.1',
+        'port': originPort,
+        'method': method,
+        'path': '/x',
+        'agent': false,
+        'createConnection': () => sock,
+        'headers': {if (method == 'PUT') 'content-length': '$total'},
+      }, (Object? res) => c.complete(res as http.IncomingMessage));
+      r.on('error', (Object? e) {
+        if (!c.isCompleted) c.completeError(e!);
+      });
+      body(r);
+      return c.future;
+    }
+
+    var sw = Stopwatch()..start();
+    final res = await req('GET', (r) => r.end());
+    var n = 0;
+    final done = Completer<void>();
+    res.on('data', (Object? c) => n += (c as Uint8List).length);
+    res.on('end', (Object? _) => done.complete());
+    await done.future;
+    final down = mb / (sw.elapsedMicroseconds / 1e6);
+    if (n != total) throw StateError('down got $n');
+    sw = Stopwatch()..start();
+    final res2 = await req('PUT', (r) {
+      var i = 0;
+      void pump() {
+        while (i < total) {
+          i += block.length;
+          if (!r.write(block)) {
+            r.once('drain', (Object? _) => pump());
+            return;
+          }
+        }
+        r.end();
+      }
+
+      pump();
+    });
+    final sb = StringBuffer();
+    final d2 = Completer<void>();
+    res2.on(
+      'data',
+      (Object? c) => sb.write(String.fromCharCodes(c as Uint8List)),
+    );
+    res2.on('end', (Object? _) => d2.complete());
+    await d2.future;
+    final up = mb / (sw.elapsedMicroseconds / 1e6);
+    if (sb.toString() != '$total') throw StateError('up got $sb');
+    print(
+      '${name.padRight(12)} down ${down.toStringAsFixed(1)} MB/s   up ${up.toStringAsFixed(1)} MB/s',
+    );
+  }
+
+  if (args.contains('--shim-client')) {
+    await runShim('direct', null);
+    await runShim('terminated', (term.address() as net.NodeAddress).port);
+    await runShim('plain-tunnel', (plain.address() as net.NodeAddress).port);
+    exit(0);
+  }
   await run('direct', null);
   await run(
     'terminated',
