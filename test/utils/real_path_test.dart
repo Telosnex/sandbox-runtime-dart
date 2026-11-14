@@ -284,7 +284,7 @@ void main() {
     ]) {
       test('the way to $to leads as far as $real and leaves $rest', () {
         final way = wayTo(_at(to));
-        expect((way.real, way.rest), (_at(real), rest));
+        expect([way.real, way.rest], [_at(real), rest]);
       });
     }
     // root searches a directory of any mode.
@@ -296,7 +296,7 @@ void main() {
         'the way to $to stops at the directory that is shut and leaves $rest',
         () {
           final way = wayTo(_at(to));
-          expect((way.real, way.rest), (_at(r'shut\'), rest));
+          expect([way.real, way.rest], [_at(r'shut\'), rest]);
           expect((way.notThere as NodeError).code, 'EACCES');
         },
         skip: isRoot ? 'root searches a directory of any mode.' : false,

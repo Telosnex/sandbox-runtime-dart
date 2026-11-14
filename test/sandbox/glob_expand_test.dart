@@ -60,6 +60,8 @@ import 'package:sandbox_runtime/src/sandbox/sandbox_utils.dart'
 import 'package:sandbox_runtime/src/sandbox/windows_sandbox_utils.dart'
     show
         WindowsSandboxError,
+        MappedDriveCwdError,
+        SeclogonDisabledError,
         containsGlobCharsWin,
         expandWindowsFsPaths,
         isUncPath,
@@ -2695,7 +2697,7 @@ void main() {
       expect(err, isA<WindowsSandboxError>());
       expect(err?.code, 'mapped_drive_cwd');
       expect(err?.subcommand, 'exec');
-      expect(err?.drive, 'Z:\\');
+      expect((err as MappedDriveCwdError).drive, 'Z:\\');
       expect(err?.message, contains('DRIVE_REMOTE'));
     });
 
@@ -2708,10 +2710,11 @@ void main() {
       expect(err, isA<WindowsSandboxError>());
       expect(err?.code, 'seclogon_disabled');
       expect(err?.subcommand, 'exec');
-      expect((err as dynamic).state, 'disabled');
+      expect((err as SeclogonDisabledError).state, 'disabled');
       expect(err?.message, contains('seclogon is disabled'));
       expect(
-        (parseWindowsSandboxError(line('missing')) as dynamic).state,
+        (parseWindowsSandboxError(line('missing')) as SeclogonDisabledError)
+            .state,
         'missing',
       );
       // No message from srt-win → the actionable default.
