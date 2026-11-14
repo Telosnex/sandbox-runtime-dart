@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/utils/ripgrep.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/utils/ripgrep.test.ts @ 0bbebed.
 
 import 'dart:io';
 

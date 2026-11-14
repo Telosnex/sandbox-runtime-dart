@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/deny-late-body.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/deny-late-body.test.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names
 import 'dart:async';
 

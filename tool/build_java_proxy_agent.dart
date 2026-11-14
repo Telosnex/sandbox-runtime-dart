@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime vendor/java-proxy-agent/build.ts @ 24eb39e.
+// Ported from sandbox-runtime vendor/java-proxy-agent/build.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments, dangling_library_doc_comments
 
 /**

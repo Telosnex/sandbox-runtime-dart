@@ -518,8 +518,8 @@ class ForgeRsaKeyPair {
         ),
       );
     final pair = generator.generateKeyPair();
-    final pub = pair.publicKey as pc.RSAPublicKey;
-    final priv = pair.privateKey as pc.RSAPrivateKey;
+    final pub = pair.publicKey;
+    final priv = pair.privateKey;
     return ForgeRsaKeyPair(
       ForgeRsaPublicKey(pub.modulus!, pub.exponent!),
       ForgeRsaPrivateKey(

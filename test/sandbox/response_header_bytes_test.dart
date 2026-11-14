@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/response-header-bytes.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/response-header-bytes.test.ts @ 0bbebed.
 library;
 
 // ignore_for_file: slash_for_doc_comments, constant_identifier_names, non_constant_identifier_names, curly_braces_in_flow_control_structures

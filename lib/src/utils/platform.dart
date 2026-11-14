@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/utils/platform.ts @ 24eb39e.
+// Ported from sandbox-runtime src/utils/platform.ts @ 0bbebed.
 // ignore_for_file: dangling_library_doc_comments, slash_for_doc_comments
 
 /**

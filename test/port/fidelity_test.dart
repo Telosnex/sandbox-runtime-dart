@@ -21,6 +21,14 @@ _intendedTitles = {
   ],
   // Upstream is a standalone script with no titles; it runs as one test.
   'test/utils/which_node_test.dart': (up) => ['which-node-test'],
+  // Upstream names G5 through a multi-line conditional alias
+  // (knownMxcFailure) that the title reader does not see; the Dart alias is
+  // seen. The test itself is the same.
+  'test/sandbox/mxc_test.dart': (up) => [
+    ...up.take(32),
+    'G5: Git Bash runs (known failure under mxc: 0xC0000005)',
+    ...up.skip(32),
+  ],
 };
 
 void main() {

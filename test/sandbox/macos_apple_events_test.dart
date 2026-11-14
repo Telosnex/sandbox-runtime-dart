@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/macos-apple-events.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/macos-apple-events.test.ts @ 0bbebed.
 import 'dart:convert';
 import 'dart:io';
 

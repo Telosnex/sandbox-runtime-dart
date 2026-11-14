@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/sandbox/credential-sentinel.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/credential-sentinel.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, dangling_library_doc_comments, slash_for_doc_comments
 
 import '../node/http.dart' show IncomingHttpHeaders;

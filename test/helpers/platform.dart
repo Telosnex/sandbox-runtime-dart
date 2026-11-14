@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/helpers/platform.ts @ 24eb39e.
+// Ported from sandbox-runtime test/helpers/platform.ts @ 0bbebed.
 
 import 'package:sandbox_runtime/src/utils/platform.dart';
 

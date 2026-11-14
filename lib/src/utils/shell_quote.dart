@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/utils/shell-quote.ts @ 24eb39e.
+// Ported from sandbox-runtime src/utils/shell-quote.ts @ 0bbebed.
 
 /// Shell-escape an array of arguments into a single string that, when parsed
 /// by a POSIX shell (`sh -c`, `bash -c`, `zsh -c`), yields exactly the

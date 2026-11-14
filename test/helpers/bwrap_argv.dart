@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/helpers/bwrap-argv.ts @ 24eb39e.
+// Ported from sandbox-runtime test/helpers/bwrap-argv.ts @ 0bbebed.
 import 'package:sandbox_runtime/src/utils/shell_quote.dart' show quote;
 
 /** The $0 renderBwrapInvocation gives the shell that opens an over-long

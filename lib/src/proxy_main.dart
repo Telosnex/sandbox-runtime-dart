@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/proxy-main.ts @ 24eb39e.
+// Ported from sandbox-runtime src/proxy-main.ts @ 0bbebed.
 // Standalone entry for the proxy-only mode: `srt-proxy <flags>`.
 import 'proxy_cli.dart' show runProxyCli;
 

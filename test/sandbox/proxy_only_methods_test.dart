@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/proxy-only-methods.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/proxy-only-methods.test.ts @ 0bbebed.
 // ignore_for_file: slash_for_doc_comments, curly_braces_in_flow_control_structures
 import 'dart:async';
 import 'dart:convert';

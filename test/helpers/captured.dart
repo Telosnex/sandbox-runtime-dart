@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/helpers/captured.ts @ 24eb39e.
+// Ported from sandbox-runtime test/helpers/captured.ts @ 0bbebed.
 class Captured<T> {
   Captured() : value = null;
   T? value;

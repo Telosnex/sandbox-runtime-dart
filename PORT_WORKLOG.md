@@ -1,7 +1,69 @@
 # Port worklog
 
 Upstream: https://github.com/anthropics/sandbox-runtime, checked out at
-`~/dev/sandbox-runtime`. Port baseline: v0.0.79, commit `24eb39e`.
+`~/dev/sandbox-runtime`. Port baseline: v0.0.83, commit `0bbebed` (synced 2026-11-14 from v0.0.79, `24eb39e`).
+
+## Sync to v0.0.83 (2026-11-14)
+
+The port follows upstream `0bbebed` (v0.0.83). Six agents synced it on the
+branches `port/sync-{paths,linux,proxy,front,win,cli}`, merged in
+`port/sync-all`. Every header names `0bbebed`.
+
+- New upstream files ported: `glob-pattern.ts`, `mxc-sandbox-utils.ts`, and
+  their tests, and the new Linux, proxy and path tests.
+- **Windows.** srt-win stays unsupported: `windows_sandbox_utils.dart` ports
+  the pure helpers, and functions that run srt-win throw. The **MXC backend
+  is ported in full**. Rule 3 for `@microsoft/mxc-sdk`, an optional peer of
+  upstream: the port depends on no MXC package. `isMxcSdkInstalled()` is
+  false and `loadMxcSdk()` throws; an embedder passes `windowsMxcSdk` to
+  `initialize()`. Telosnex passes an adapter over `mxc_sdk_dart`. The MXC
+  boundary tests skip with the Windows reason; the tests through a fake SDK
+  run everywhere.
+- Shims: `fs` (native realpath, byte paths, `statfsSync`, spy variables),
+  `process` (cwd through libc `getcwd`, stdio streams), `path` (resolve
+  reads the cwd only for a relative path), new `util` (`isDeepStrictEqual`)
+  and `stream_promises` (`finished`), `commander` (repeatable options,
+  defaults), `http` (a read no longer asks for more bytes than are
+  buffered, which had cut throughput to about 1 MB/s), `structured_clone`
+  (new config fields).
+- `pointycastle` ^4.0.0, which Telosnex resolves.
+- The Linux VM needs `kernel.apparmor_restrict_unprivileged_userns=0` (as
+  upstream CI sets) and, on Ubuntu 26.04, the `bwrap-userns-restrict`
+  AppArmor profile unloaded, for the tests that run the seccomp helper
+  inside bwrap. Before the sync, the helper lookup depended on the cwd, so
+  those tests ran without the helper and passed.
+
+New skips (title and body kept):
+- `linux_nested_userns_test`: two cases cast `'yes'` and `1` to a boolean
+  option; Dart types reject them at compile time.
+- `read_deny_glob_test`: one case depends on Bun resolving `/proc/self/cwd`
+  beneath an unsearchable folder; libc `realpath` and Node return EACCES.
+- `tunnel_ends_test` (from `test/fixtures/tunnel-ends.mjs`): five cases, three
+  runs each, need TLS `close_notify`, which `dart:io` does not send.
+- `tls_terminate_destroy_soon_test`: a destroy after a finished end cannot
+  discard the native socket queue of `dart:io`.
+- One case needs an unref'd socket; Dart has no unref.
+
+Suspected upstream bugs, ported as they are:
+- `spawnSandboxed()` joins per-command `allowWrite` with session
+  `denyWrite` without ranking. MXC lets the most specific path win, so a
+  per-command write grant beneath a session write deny overrides the deny.
+- `cli.ts`: the MXC branch removes the signal handlers before it awaits
+  `spawnSandboxed()`, and adds the forwarding handlers after. A signal during
+  the await has no handler.
+
+## Deviations from upstream
+
+Each one is marked `TELOSNEX DEVIATION` in the code and has a test in
+`test/deviations/`.
+
+- `mxc_sandbox_utils.dart`, `buildMxcRequest`: upstream sends every
+  `denyWrite` path as an MXC denied path, which also blocks reads. Here an
+  existing `denyWrite` path outside every `denyRead` is a read-only path:
+  MXC then blocks writes, renames into it and deletes, and keeps reads
+  (tested on Windows 11 26H2, 2026-11-14). A denied `.git/config` breaks
+  git. A missing path stays denied, because a read-only path does not stop
+  its creation. Telosnex may propose this upstream.
 
 ## State (2026-10-13, after the test fidelity pass)
 

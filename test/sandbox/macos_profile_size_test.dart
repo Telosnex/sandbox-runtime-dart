@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/macos-profile-size.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/macos-profile-size.test.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, slash_for_doc_comments
 import 'dart:convert';
 import 'dart:io';

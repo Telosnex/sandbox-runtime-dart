@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/helpers/socks-noauth-pipe.ts @ 24eb39e.
+// Ported from sandbox-runtime test/helpers/socks-noauth-pipe.ts @ 0bbebed.
 /**
  * Minimal no-auth SOCKS5 CONNECT pipe for tests: connects to the proxy,
  * offers ONLY the no-auth method (like BSD `nc -X 5`), issues CONNECT for

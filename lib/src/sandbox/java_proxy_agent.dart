@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/sandbox/java-proxy-agent.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/java-proxy-agent.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names
 // ignore_for_file: curly_braces_in_flow_control_structures, slash_for_doc_comments
 

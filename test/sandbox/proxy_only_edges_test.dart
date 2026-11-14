@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/proxy-only-edges.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/proxy-only-edges.test.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, prefer_interpolation_to_compose_strings, slash_for_doc_comments
 import 'dart:async';
 import 'dart:convert';

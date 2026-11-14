@@ -13,7 +13,7 @@
  * entry more than once, and the disk may change in between.
  */
 
-// Ported from sandbox-runtime src/sandbox/path-entries.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/path-entries.ts @ 0bbebed.
 // ignore_for_file: slash_for_doc_comments, dangling_library_doc_comments
 // ignore_for_file: constant_identifier_names
 

@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/macos-pty.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/macos-pty.test.ts @ 0bbebed.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';

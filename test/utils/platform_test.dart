@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/utils/platform.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/utils/platform.test.ts @ 0bbebed.
 
 import 'package:test/test.dart';
 import 'package:sandbox_runtime/src/node/process.dart' as process;

@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/sandbox/address.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/address.ts @ 0bbebed.
 // ignore_for_file: slash_for_doc_comments, dangling_library_doc_comments,
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names
 // ignore_for_file: library_private_types_in_public_api

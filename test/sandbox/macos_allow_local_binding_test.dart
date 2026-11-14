@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/macos-allow-local-binding.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/macos-allow-local-binding.test.ts @ 0bbebed.
 import 'dart:io';
 
 import 'package:test/test.dart';

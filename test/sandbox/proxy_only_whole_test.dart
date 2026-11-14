@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/proxy-only-whole.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/proxy-only-whole.test.ts @ 0bbebed.
 library;
 
 // ignore_for_file: library_prefixes, slash_for_doc_comments, prefer_interpolation_to_compose_strings

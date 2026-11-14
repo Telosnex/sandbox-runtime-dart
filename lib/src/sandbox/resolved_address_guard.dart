@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/sandbox/resolved-address-guard.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/resolved-address-guard.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, dangling_library_doc_comments
 // ignore_for_file: slash_for_doc_comments
 // ignore_for_file: non_constant_identifier_names

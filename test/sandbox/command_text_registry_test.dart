@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/command-text-registry.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/command-text-registry.test.ts @ 0bbebed.
 import 'package:sandbox_runtime/src/sandbox/linux_violation_monitor.dart';
 import 'package:sandbox_runtime/src/sandbox/macos_sandbox_utils.dart';
 import 'package:sandbox_runtime/src/sandbox/sandbox_config.dart';

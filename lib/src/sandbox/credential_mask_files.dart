@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/sandbox/credential-mask-files.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/credential-mask-files.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, dangling_library_doc_comments, slash_for_doc_comments
 
 import 'dart:convert';

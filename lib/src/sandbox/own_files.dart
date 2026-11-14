@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/sandbox/own-files.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/own-files.ts @ 0bbebed.
 // ignore_for_file: slash_for_doc_comments
 
 import 'dart:isolate';

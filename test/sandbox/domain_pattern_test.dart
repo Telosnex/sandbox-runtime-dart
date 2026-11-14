@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/domain-pattern.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/domain-pattern.test.ts @ 0bbebed.
 import 'package:sandbox_runtime/src/sandbox/domain_pattern.dart';
 import 'package:test/test.dart';
 
