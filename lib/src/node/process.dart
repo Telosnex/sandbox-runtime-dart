@@ -244,7 +244,14 @@ String _cwd() {
       if (getcwd(buffer, size) == nullptr) {
         final errno = errnoLocation().value;
         if (errno == 34) continue; // ERANGE: the name needs a larger buffer.
-        throw nodeError(codeForErrno(errno), 'uv_cwd');
+        final error = nodeError(codeForErrno(errno), 'uv_cwd', '');
+        // Unlike a file call, uv_cwd has no path argument in Node's error.
+        throw NodeError(
+          error.message.replaceFirst(RegExp(r" ''$"), ''),
+          code: error.code,
+          syscall: 'uv_cwd',
+          errno: -errno,
+        );
       }
       var length = 0;
       while (buffer[length] != 0) {
