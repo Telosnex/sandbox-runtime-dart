@@ -2,11 +2,10 @@
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names
 // ignore_for_file: curly_braces_in_flow_control_structures, slash_for_doc_comments
 
-import 'dart:isolate';
-
 import 'package:path/path.dart' as path;
 
 import '../node/fs.dart' as fs;
+import '../node/url.dart' show resolveOwnPackageFile;
 import '../utils/debug.dart';
 import 'generate_seccomp_filter.dart' show getGlobalNpmPathsAsync;
 
@@ -73,11 +72,11 @@ Future<String?> _findLocalJar([String? explicitPath]) async {
       level: 'warn',
     );
   }
-  final moduleUri = await Isolate.resolvePackageUri(
-    Uri.parse('package:sandbox_runtime/src/sandbox/java_proxy_agent.dart'),
+  final moduleFile = resolveOwnPackageFile(
+    'package:sandbox_runtime/src/sandbox/java_proxy_agent.dart',
   );
-  if (moduleUri == null) return null;
-  final baseDir = path.dirname(moduleUri.toFilePath());
+  if (moduleFile == null) return null;
+  final baseDir = path.dirname(moduleFile);
   final candidates = [
     path.join(baseDir, _JAR_REL_PATH),
     path.join(baseDir, '..', '..', '..', _JAR_REL_PATH),
