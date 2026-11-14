@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/execute-only-binary.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/execute-only-binary.test.ts @ 0bbebed.
 // ignore_for_file: slash_for_doc_comments, prefer_adjacent_string_concatenation
 import 'dart:async';
 import 'dart:io' as io;
@@ -149,15 +149,17 @@ void main() {
         },
       );
 
-      test(
-        'preserves dumpable for a readable copy (save/restore, not force-0)',
-        () async {
-          expect(
-            await procOwnerDuringRun(0x1ED /* 0o755 */),
-            process.getuid!(),
-          );
-        },
-      );
+      test('is non-dumpable after setup for a readable copy as well', () async {
+        // Not only a matter of hiding an execute-only binary's pages. Where the
+        // fresh /proc cannot be mounted (enableWeakerNestedSandbox) the command
+        // still sees the helper's outer half, and could write a dumpable one
+        // through /proc/<pid>/mem. So the helper clears the flag before its
+        // first fork, whatever it was on entry.
+        expect(
+          await procOwnerDuringRun(0x1ED /* 0o755 */),
+          isNot(process.getuid!()),
+        );
+      });
     },
     skip: (isLinux && isUnprivileged)
         ? null

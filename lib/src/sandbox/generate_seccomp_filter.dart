@@ -1,7 +1,7 @@
-// Ported from sandbox-runtime src/sandbox/generate-seccomp-filter.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/generate-seccomp-filter.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, slash_for_doc_comments
 
-import 'dart:convert';
+import 'dart:isolate';
 import 'dart:io';
 
 import 'package:path/path.dart' as path;
@@ -175,27 +175,19 @@ List<String> _getLocalSeccompPaths(String filename) {
   final arch = _getVendorArchitecture();
   if (arch == null) return [];
 
-  // Dart libraries do not expose their own file URL. Resolve this package's
-  // root from the active package_config, the closest synchronous equivalent
-  // of import.meta.url for this source package.
-  final packageConfig = Platform.packageConfig;
+  // Dart libraries do not expose their own file URL. The isolate's package
+  // resolver supplies the equivalent of import.meta.url without consulting
+  // the current directory (which a caller may have changed since loading).
+  final moduleUri = Isolate.resolvePackageUriSync(
+    Uri.parse(
+      'package:sandbox_runtime/src/sandbox/generate_seccomp_filter.dart',
+    ),
+  );
   String? packageRoot;
-  if (packageConfig != null) {
-    final configFile = File(packageConfig);
-    if (configFile.existsSync()) {
-      final config =
-          jsonDecode(configFile.readAsStringSync()) as Map<String, dynamic>;
-      for (final entry in config['packages'] as List<dynamic>) {
-        final packageEntry = entry as Map<String, dynamic>;
-        if (packageEntry['name'] == 'sandbox_runtime') {
-          final rootUri = Uri.file(
-            packageConfig,
-          ).resolve(packageEntry['rootUri'] as String);
-          if (rootUri.scheme == 'file') packageRoot = path.fromUri(rootUri);
-          break;
-        }
-      }
-    }
+  if (moduleUri != null && moduleUri.scheme == 'file') {
+    packageRoot = path.normalize(
+      path.join(path.dirname(path.fromUri(moduleUri)), '..', '..', '..'),
+    );
   }
   // A source checkout launched without package_config is still rooted at cwd.
   final currentDirectory = Directory.current.path;

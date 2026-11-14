@@ -22,7 +22,7 @@ import '../helpers/bwrap_namespace.dart';
 // upstream: import { basename, dirname, join } from 'node:path'
 // upstream: import { tmpdir } from 'node:os'
 
-final REPO_ROOT = process.cwd();
+late final String REPO_ROOT;
 const V9FS_MAGIC = 0x01021997;
 
 // The originals, for the stand-ins below to fall through to.
@@ -60,6 +60,7 @@ bool names(Object? spelling, String target) {
  */
 
 void main() {
+  REPO_ROOT = process.cwd();
   group('A placeholder where no mount point can be made', () {
     late String BASE;
     late String ROOT; // the allowed write path
@@ -266,7 +267,7 @@ void main() {
           // The parent is pinned either way, beneath the allow bind.
           expect(mountsOf(command).indexOf('--ro-bind ${DIR} ${DIR}'), 1);
           // And the question is asked without a trace.
-          expect(fs.readdirSync(DIR), []);
+          expect(fs.readdirSync(DIR).map((entry) => entry.name).toList(), []);
         });
       }
 
@@ -289,7 +290,10 @@ void main() {
           expect(result.stdout, 'BOOTED\n');
           expect(result.stderr, matches(RegExp(r'mv: .*busy')));
           expect(result.stderr, matches(RegExp(r'rmdir: .*busy')));
-          expect((fs.readdirSync(ROOT)..sort()), ['dir', 'new']);
+          expect(
+            (fs.readdirSync(ROOT).map((entry) => entry.name).toList()..sort()),
+            ['dir', 'new'],
+          );
         },
         skip: (!CAN_RUN) ? 'skipped when !CAN_RUN' : false,
       );
@@ -507,7 +511,8 @@ void main() {
     group('on a Windows drive under WSL 2', () {
       setUp(onWindowsDrive);
 
-      final listing = () => (fs.readdirSync(DIR)..sort());
+      final listing = () =>
+          (fs.readdirSync(DIR).map((entry) => entry.name).toList()..sort());
 
       test(
         'makes the mount point itself, and the clean-up removes it',
@@ -524,7 +529,13 @@ void main() {
           expect(listing(), ['absent', 'policy.json']);
           expect(fs.statSync(leaf).size, 0);
           expect(fs.statSync(leaf).mode & 511, 292);
-          expect(fs.readdirSync(join(DIR, 'absent')), []);
+          expect(
+            fs
+                .readdirSync(join(DIR, 'absent'))
+                .map((entry) => entry.name)
+                .toList(),
+            [],
+          );
           cleanupBwrapMountPoints();
           expect(listing(), []);
         },
@@ -659,7 +670,13 @@ void main() {
                 [emptyDirectoryAt(join(DIR, 'absent'))],
               );
               expect(listing(), ['absent']);
-              expect(fs.readdirSync(join(DIR, 'absent')), []);
+              expect(
+                fs
+                    .readdirSync(join(DIR, 'absent'))
+                    .map((entry) => entry.name)
+                    .toList(),
+                [],
+              );
             });
           }
         });
@@ -781,7 +798,9 @@ void main() {
             expect(result.stderr, isNot(contains('bwrap:')));
             expect(result.stdout, 'BOOTED\n');
             expect(dests.where((dest) => fs.existsSync(dest)).toList(), []);
-            expect(fs.readdirSync(DIR), ['new']);
+            expect(fs.readdirSync(DIR).map((entry) => entry.name).toList(), [
+              'new',
+            ]);
           },
           skip: (!CAN_RUN) ? 'skipped when !CAN_RUN' : false,
         );
@@ -857,6 +876,9 @@ void main() {
         ],
         {'encoding': 'utf8', 'timeout': 60000},
       );
+      print(
+        'outer status=${outer.status} err=${outer.stderr} out=${outer.stdout}',
+      );
       final data =
           jsonDecode((outer.stdout as String).trim().split('\n').last)
               as Map<String, dynamic>;
@@ -867,8 +889,11 @@ void main() {
       expect(stderr, isNot(contains('bwrap:')));
       expect(stdout, 'BOOTED\n');
       expect(mountsAt(command, denied), []);
-      expect(fs.readdirSync(DIR), []);
-      expect((fs.readdirSync(ROOT)..sort()), ['dir', 'new']);
+      expect(fs.readdirSync(DIR).map((entry) => entry.name).toList(), []);
+      expect(
+        (fs.readdirSync(ROOT).map((entry) => entry.name).toList()..sort()),
+        ['dir', 'new'],
+      );
     }, skip: (!CAN_RUN) ? 'skipped when !CAN_RUN' : false);
   }, skip: (isLinux) ? false : 'requires isLinux');
 }

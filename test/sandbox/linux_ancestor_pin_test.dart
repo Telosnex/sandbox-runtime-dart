@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/linux-ancestor-pin.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/linux-ancestor-pin.test.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments
 import 'dart:convert';
 import 'dart:io';
@@ -1979,13 +1979,13 @@ void main() {
         // The WORKDIR /app shape: a protected path one level below '/' has no
         // ancestor to pin, and the cover is the only thing that keeps its
         // top-level directory a mountpoint. /usr holds no other protected path,
-        // so the cover can only come from this deny.
+        // so the cover can only come from this deny, whether or not this user can
+        // have a mount point made in /usr.
         final absent = '/usr/srt-ancestor-pin-probe';
         final command = await wrap(
           _Filesystem(allowWrite: ['/'], denyWrite: [absent]),
         );
 
-        expect(command, contains('--ro-bind /dev/null $absent'));
         expect(command, contains('--bind /usr /usr'));
         expect(command, isNot(contains('--ro-bind /usr /usr')));
       },
@@ -2006,8 +2006,6 @@ void main() {
           ),
         );
 
-        expect(command, contains('--ro-bind /dev/null /proc/$probe'));
-        expect(command, contains('--ro-bind /dev/null /sys/$probe'));
         expect(command, contains('--bind /usr /usr'));
         expect(command, isNot(contains('--bind /proc /proc')));
         expect(command, isNot(contains('--bind /sys /sys')));

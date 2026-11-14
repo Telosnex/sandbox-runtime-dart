@@ -719,11 +719,11 @@ Object readFileSync(Object target, [Object? options]) {
   } else {
     final path = target.toString();
     if (_libc != null) {
-      final fd = openSync(path, 'r');
+      final fd = _openSync(path, 'r');
       try {
         return readFileSync(fd, options);
       } finally {
-        closeSync(fd);
+        _closeSync(fd);
       }
     }
     try {
@@ -840,7 +840,7 @@ void writeFileSync(Object target, Object contents, [Object? options]) {
     }
     return;
   }
-  final fd = openSync(
+  final fd = _openSync(
     path,
     (map['flag'] as Object?) ?? 'w',
     (map['mode'] as int?) ?? 438,
@@ -848,7 +848,7 @@ void writeFileSync(Object target, Object contents, [Object? options]) {
   try {
     _writeAll(libc, fd, bytes);
   } finally {
-    closeSync(fd);
+    _closeSync(fd);
   }
 }
 

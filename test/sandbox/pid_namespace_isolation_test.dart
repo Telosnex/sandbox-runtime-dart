@@ -1,4 +1,5 @@
-// Ported from sandbox-runtime test/sandbox/pid-namespace-isolation.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/pid-namespace-isolation.test.ts @ 0bbebed.
+// ignore_for_file: prefer_adjacent_string_concatenation
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments
 import 'dart:io' show Process;
 
@@ -357,6 +358,9 @@ void main() {
               ),
               allowAllUnixSockets:
                   true, // we invoke apply-seccomp ourselves here
+              // ... and it makes a user namespace of its own, which a wrap with no
+              // helper in it otherwise has bubblewrap refuse (--disable-userns).
+              allowNestedUserNamespaces: true,
             ),
           );
 

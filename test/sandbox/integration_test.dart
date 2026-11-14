@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/integration.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/integration.test.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments, prefer_interpolation_to_compose_strings, prefer_adjacent_string_concatenation
 import 'dart:async';
 import 'dart:io' as io;
@@ -1512,7 +1512,7 @@ void main() {
         final wrapped = await SandboxManager.wrapWithSandbox(command, shell);
         // Only the script that bridges the network carries the trap.
         expect(wrapped, contains('--unshare-net'));
-        expect(wrapped, contains('TCP-LISTEN:3128'));
+        expect(wrapped, contains('TCP6-LISTEN:3128'));
         final result = await spawnAsync(
           wrapped,
           const RunOpts(shell: true, encoding: 'utf8', timeout: 10000),

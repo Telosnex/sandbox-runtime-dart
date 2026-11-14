@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/readonly-deny-dir-stubs.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/readonly-deny-dir-stubs.test.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments, unintended_html_in_doc_comment, prefer_adjacent_string_concatenation
 import 'dart:io';
 
@@ -65,7 +65,9 @@ void main() {
       final BWRAP_CAN_NAMESPACE = isLinux && bwrapCanNamespace();
 
       setUp(() {
-        BASE = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), 'ro-deny-stub-')));
+        BASE = fs.realpathSyncNative(
+          fs.mkdtempSync(join(tmpdir(), 'ro-deny-stub-')),
+        );
         AREA = join(BASE, 'area');
         PROJ = join(AREA, 'proj');
         fs.mkdirSync(PROJ, {'recursive': true});
@@ -1071,7 +1073,7 @@ void main() {
       ]) async {
         const probe = '/srt-unresolvable-probe';
         final realReaddirSync = fs.readdirSync;
-        final realRealpathSync = fs.realpathSync;
+        final realRealpathSync = fs.realpathSyncNative;
         var probeLookups = 0;
         // Dart: readdirSync always returns Dirents, so the probe is one too.
         fs.readdirSync = (String p, {bool withFileTypes = false}) {
@@ -1083,7 +1085,7 @@ void main() {
                 ]
               : real;
         };
-        fs.realpathSync = (String p) {
+        fs.realpathSyncNative = (String p) {
           if (p == probe) {
             probeLookups++;
             if (probeLookups <= failures) {
@@ -1102,7 +1104,7 @@ void main() {
           );
         } finally {
           fs.readdirSync = realReaddirSync;
-          fs.realpathSync = realRealpathSync;
+          fs.realpathSyncNative = realRealpathSync;
         }
       }
 
@@ -1148,9 +1150,9 @@ void main() {
           expect(countMounts(usable, ['--tmpfs', build]), greaterThan(0));
           expect(usable, isNot(contains(stub)));
 
-          final realRealpathSync = fs.realpathSync;
+          final realRealpathSync = fs.realpathSyncNative;
           var spyCalls = 0;
-          fs.realpathSync = (String p) {
+          fs.realpathSyncNative = (String p) {
             spyCalls++;
             if (p == build) {
               throw NodeError('EACCES: cannot resolve', code: 'EACCES');
@@ -1169,7 +1171,7 @@ void main() {
             );
             expect(unusable, contains(stub));
           } finally {
-            fs.realpathSync = realRealpathSync;
+            fs.realpathSyncNative = realRealpathSync;
           }
         },
       );
