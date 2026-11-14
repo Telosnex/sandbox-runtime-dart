@@ -43,10 +43,17 @@ bool isDeepStrictEqual(Object? left, Object? right) {
             Iterable<int>.generate(a.length).every((i) => equal(a[i], b[i]));
       }
       if (a is Map && b is Map) {
-        return a.length == b.length &&
-            a.entries.every(
-              (e) => b.containsKey(e.key) && equal(e.value, b[e.key]),
-            );
+        if (a.length != b.length) return false;
+        final rest = b.entries.toList();
+        for (final entry in a.entries) {
+          final at = rest.indexWhere(
+            (other) =>
+                equal(entry.key, other.key) && equal(entry.value, other.value),
+          );
+          if (at < 0) return false;
+          rest.removeAt(at);
+        }
+        return true;
       }
       if (a is Set && b is Set) {
         if (a.length != b.length) return false;
