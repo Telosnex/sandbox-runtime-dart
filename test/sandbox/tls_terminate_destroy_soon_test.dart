@@ -110,16 +110,9 @@ void main() {
       ),
       ('destroySoon()', (t) => t.destroySoon()),
     ]) {
-      test(
-        '$how: the client gets every byte, then the end',
-        () async {
-          expect(await lateClientOf(close), (read: SIZE, ended: true));
-        },
-        skip: how == 'end(), and destroy() once it has finished'
-            ? 'dart:io TLS flush completes only after bytes reach the native socket; a subsequent destroy cannot discard that native queue'
-            : false,
-        timeout: const Timeout(Duration(seconds: 60)),
-      );
+      test('$how: the client gets every byte, then the end', () async {
+        expect(await lateClientOf(close), (read: SIZE, ended: true));
+      }, timeout: const Timeout(Duration(seconds: 60)));
     }
     // As the back-stops do, a while after an end that a client does not answer.
     for (final (how, cut) in <(String, void Function(tls.TLSSocket))>[
@@ -136,10 +129,17 @@ void main() {
         },
       ),
     ]) {
-      test('$how: cut at once', () async {
-        // Long before the client reads its first byte.
-        expect((await lateClientOf(cut)).read, lessThan(SIZE));
-      }, timeout: const Timeout(Duration(seconds: 60)));
+      test(
+        '$how: cut at once',
+        () async {
+          // Long before the client reads its first byte.
+          expect((await lateClientOf(cut)).read, lessThan(SIZE));
+        },
+        skip: how == 'end(), and destroy() once it has finished'
+            ? 'dart:io TLS flush completes only after bytes reach the native socket; a subsequent destroy cannot discard that native queue'
+            : false,
+        timeout: const Timeout(Duration(seconds: 60)),
+      );
     }
   });
 }
