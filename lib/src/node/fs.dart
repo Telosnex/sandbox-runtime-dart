@@ -298,7 +298,9 @@ DynamicLibrary _requireLibc(String call) {
 }
 
 /// Reproduce `fs.fstatSync(fd)`.
-Stats fstatSync(int fd) {
+Stats Function(int fd) fstatSync = _fstatSync;
+
+Stats _fstatSync(int fd) {
   final libc = _libc;
   if (libc == null) throw UnsupportedError('fs.fstatSync needs a POSIX libc');
   final buffer = calloc<Uint8>(512);
@@ -1098,7 +1100,9 @@ void rmdirSync(String path) {
   }
 }
 
-void chmodSync(String path, int mode) {
+void Function(String path, int mode) chmodSync = _chmodSync;
+
+void _chmodSync(String path, int mode) {
   final libc = _requireLibc('chmodSync');
   final chmod = libc.lookupFunction<_PathModeN, _PathModeD>('chmod');
   if (_withPath(path, (p) => chmod(p, mode)) != 0) {
@@ -1106,7 +1110,9 @@ void chmodSync(String path, int mode) {
   }
 }
 
-void accessSync(String path, [int mode = 0]) {
+void Function(String path, [int mode]) accessSync = _accessSync;
+
+void _accessSync(String path, [int mode = 0]) {
   final libc = _libc;
   if (libc == null) {
     if (FileSystemEntity.typeSync(path) == FileSystemEntityType.notFound) {
@@ -1122,7 +1128,9 @@ void accessSync(String path, [int mode = 0]) {
 
 /// Reproduce `fs.openSync(path, flags, mode)`; [flags] is a number or a
 /// Node flag string such as `'r'`.
-int openSync(String path, [Object flags = 'r', int mode = 438]) {
+int Function(String path, [Object flags, int mode]) openSync = _openSync;
+
+int _openSync(String path, [Object flags = 'r', int mode = 438]) {
   final libc = _requireLibc('openSync');
   final open = libc.lookupFunction<_OpenN, _OpenD>('open');
   final fd = _withPath(path, (p) => open(p, _flagsFor(flags), mode));
@@ -1130,7 +1138,9 @@ int openSync(String path, [Object flags = 'r', int mode = 438]) {
   return fd;
 }
 
-void closeSync(int fd) {
+void Function(int fd) closeSync = _closeSync;
+
+void _closeSync(int fd) {
   final libc = _requireLibc('closeSync');
   if (libc.lookupFunction<_CloseN, _CloseD>('close')(fd) != 0) {
     throw _errnoError('close');
@@ -1188,5 +1198,36 @@ List<String> readdirNamesSync(String path) {
       path,
       message: error.message,
     );
+  }
+}
+
+/// Node's `fs.StatFs`, with the filesystem type used by sandbox mount planning.
+class StatFs {
+  const StatFs({required this.type});
+  final int type;
+}
+
+/// Node's `fs.statfsSync`: inspect the filesystem containing `path`.
+StatFs Function(String path) statfsSync = _statfsSync;
+
+StatFs _statfsSync(String path) {
+  final libc = _libc;
+  if (libc == null) throw UnsupportedError('fs.statfsSync needs a POSIX libc');
+  final nativePath = path.toNativeUtf8();
+  final buf = calloc<Uint8>(256);
+  try {
+    final statfs = libc.lookupFunction<_LstatNative, _LstatDart>('statfs');
+    if (statfs(nativePath.cast(), buf.cast()) != 0) {
+      throw _errnoError('statfs', path);
+    }
+    // Linux struct statfs starts with a native signed long f_type. Darwin's
+    // struct statfs puts its uint32_t f_type after the fsid and owner at 60.
+    final type = Platform.isMacOS
+        ? (buf + 60).cast<Uint32>().value
+        : buf.cast<IntPtr>().value;
+    return StatFs(type: type);
+  } finally {
+    calloc.free(nativePath);
+    calloc.free(buf);
   }
 }
