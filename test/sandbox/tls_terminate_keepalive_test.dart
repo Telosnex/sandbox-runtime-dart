@@ -1,8 +1,10 @@
-// Ported from sandbox-runtime test/sandbox/tls-terminate-keepalive.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/tls-terminate-keepalive.test.ts @ 0bbebed.
 library;
 
 // ignore_for_file: non_constant_identifier_names
 import 'dart:async';
+import 'package:sandbox_runtime/src/sandbox/tls_terminate_proxy.dart'
+    show PartialTunnelTimeouts;
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -187,6 +189,10 @@ class _HttpProxyServerOptions implements HttpProxyServerOptions {
   String? get denyHeader => null;
   @override
   bool? get requestTargetAsSpelled => null;
+  @override
+  String? get ambiguousRequestTarget => null;
+  @override
+  PartialTunnelTimeouts? get tunnelTimeouts => null;
   @override
   bool? get requireAsciiHost => null;
   @override
