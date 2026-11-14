@@ -441,6 +441,7 @@ Future<void> main() async {
             }();
             // A tunnel to the allowed host, terminated with a leaf of the handed CA,
             // and a request the decider denies.
+            final clientEvents = <String>[];
             final reply = await () {
               final completer = Completer<String>();
               late final net.NodeSocket c;
@@ -458,6 +459,9 @@ Future<void> main() async {
               void onData(Object? x) {
                 head += latin1.decode(x as List<int>);
                 if (!head.contains('\r\n\r\n')) return;
+                clientEvents.add(
+                  'CONNECT response: ${head.split('\r\n').first}',
+                );
                 c.off('data', onData);
                 final t = tls.connect({
                   'socket': c,
@@ -466,14 +470,22 @@ Future<void> main() async {
                   'ALPNProtocols': ['http/1.1'],
                 });
                 var out = '';
-                t.on(
-                  'secureConnect',
-                  (_) => t.write(
-                    'GET /x HTTP/1.1\r\nHost: allowed.test\r\nConnection: close\r\n\r\n',
-                  ),
-                );
+                t.on('secureConnect', (_) {
+                  clientEvents.add('secureConnect');
+                  // Dart regression: application data must still be read
+                  // when it arrives after the final TLS handshake packet.
+                  globals.setTimeout(() {
+                    final accepted = t.write(
+                      'GET /x HTTP/1.1\r\nHost: allowed.test\r\nConnection: close\r\n\r\n',
+                    );
+                    clientEvents.add('request write: $accepted');
+                  }, 50);
+                });
                 t.on('data', (Object? y) => out += utf8.decode(y as List<int>));
                 t.on('close', (_) {
+                  clientEvents.add(
+                    'TLS close: read=${t.bytesRead}, written=${t.bytesWritten}, queued=${t.writableLength}',
+                  );
                   if (!completer.isCompleted) completer.complete(out);
                 });
                 t.on('error', (Object e) {
@@ -484,7 +496,12 @@ Future<void> main() async {
               c.on('data', onData);
               return completer.future;
             }();
-            expect(reply, startsWith('HTTP/1.1 403'), reason: stderr);
+            expect(
+              reply,
+              startsWith('HTTP/1.1 403'),
+              reason:
+                  '$stderr\nClient events: $clientEvents\nDecider requests: $asked',
+            );
             expect(reply, contains('denied by the test decider'));
             expect(asked, hasLength(1));
             expect(asked[0], containsPair('t', 'req'));

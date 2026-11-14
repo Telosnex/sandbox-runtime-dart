@@ -315,6 +315,7 @@ class NodeSocket extends stream.Duplex {
   bool _handedOver = false;
   NodeSocket? _wrapper;
   NodeSocket? _under;
+  bool _pumpingUnder = false;
   bool _securing = false;
 
   /// While a server handshake runs: shuts the connection under it down
@@ -957,6 +958,7 @@ class NodeSocket extends stream.Duplex {
   ) {
     final sub = _under?._subscription;
     if (sub == null) return;
+    _pumpingUnder = true;
     sub.onData(onData);
     sub.onDone(onDone);
     sub.onError((Object e) => onError(e));
@@ -989,10 +991,14 @@ class NodeSocket extends stream.Duplex {
         secured = await secure(raw, buffered);
       } finally {
         _abortHandshake = null;
-        // dart:io has detached the connection from [raw]; the subscription
-        // on [raw] gets nothing more.
-        unawaited(under._subscription?.cancel());
-        under._subscription = null;
+        // Native dart:io TLS detaches the connection from raw. A descriptor
+        // socket instead keeps its encrypted read pump feeding a loopback
+        // TLS bridge after the handshake. Cancelling that pump here loses
+        // application records that arrive after the final handshake bytes.
+        if (!_pumpingUnder) {
+          unawaited(under._subscription?.cancel());
+          under._subscription = null;
+        }
       }
       if (destroyed) {
         secured.destroy();
