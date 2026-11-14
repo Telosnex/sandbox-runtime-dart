@@ -62,11 +62,16 @@ typedef _WriteN = IntPtr Function(Int32, Pointer<Uint8>, IntPtr);
 typedef _WriteD = int Function(int, Pointer<Uint8>, int);
 typedef _LstatNative = Int32 Function(Pointer<Uint8>, Pointer<Void>);
 typedef _LstatDart = int Function(Pointer<Uint8>, Pointer<Void>);
-typedef _ReadlinkNative =
-    IntPtr Function(Pointer<Uint8>, Pointer<Uint8>, IntPtr);
+typedef _ReadlinkNative = IntPtr Function(
+  Pointer<Uint8>,
+  Pointer<Uint8>,
+  IntPtr,
+);
 typedef _ReadlinkDart = int Function(Pointer<Uint8>, Pointer<Uint8>, int);
-typedef _RealpathNative =
-    Pointer<Uint8> Function(Pointer<Uint8>, Pointer<Uint8>);
+typedef _RealpathNative = Pointer<Uint8> Function(
+  Pointer<Uint8>,
+  Pointer<Uint8>,
+);
 typedef _RealpathDart = Pointer<Uint8> Function(Pointer<Uint8>, Pointer<Uint8>);
 typedef _ErrnoLocationNative = Pointer<Int32> Function();
 typedef _ErrnoLocationDart = Pointer<Int32> Function();
@@ -387,9 +392,9 @@ List<Dirent> _readdirSync(String path, {bool withFileTypes = false}) {
   try {
     if (!withFileTypes) {
       // Statically callers read `.name`; use readdirNamesSync for Strings.
-      return readdirNamesSync(
-        path,
-      ).map((n) => Dirent(n, FileSystemEntityType.file)).toList();
+      return readdirNamesSync(path)
+          .map((n) => Dirent(n, FileSystemEntityType.file))
+          .toList();
     }
     return Directory(path).listSync(followLinks: false).map((entity) {
       final type = FileSystemEntity.typeSync(entity.path, followLinks: false);
@@ -827,9 +832,9 @@ int readvSync(int fd, List<List<int>> buffers, [int? position]) {
 String mkdtempSync(String prefix) {
   final libc = _libc;
   if (libc == null) {
-    return Directory(
-      path_utils.dirname(prefix),
-    ).createTempSync(path_utils.basename(prefix)).path;
+    return Directory(path_utils.dirname(prefix))
+        .createTempSync(path_utils.basename(prefix))
+        .path;
   }
   final template = '${prefix}XXXXXX';
   return _withPath(template, (p) {
@@ -1075,5 +1080,34 @@ List<String> readdirNamesSync(String path) {
       path,
       message: error.message,
     );
+  }
+}
+
+/// Node's `fs.StatFs`, with the filesystem type used by sandbox mount planning.
+class StatFs {
+  const StatFs({required this.type});
+  final int type;
+}
+
+/// Node's `fs.statfsSync`: inspect the filesystem containing `path`.
+StatFs statfsSync(String path) {
+  final libc = _libc;
+  if (libc == null) throw UnsupportedError('fs.statfsSync needs a POSIX libc');
+  final nativePath = path.toNativeUtf8();
+  final buf = calloc<Uint8>(256);
+  try {
+    final statfs = libc.lookupFunction<_LstatNative, _LstatDart>('statfs');
+    if (statfs(nativePath.cast(), buf.cast()) != 0) {
+      throw _errnoError('statfs', path);
+    }
+    // Linux struct statfs starts with a native signed long f_type. Darwin's
+    // struct statfs puts its uint32_t f_type after the fsid and owner at 60.
+    final type = Platform.isMacOS
+        ? (buf + 60).cast<Uint32>().value
+        : buf.cast<IntPtr>().value;
+    return StatFs(type: type);
+  } finally {
+    calloc.free(nativePath);
+    calloc.free(buf);
   }
 }
