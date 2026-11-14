@@ -2,7 +2,6 @@
 // ignore_for_file: constant_identifier_names, slash_for_doc_comments
 
 import 'dart:isolate';
-import 'dart:io';
 
 import 'package:path/path.dart' as path;
 
@@ -190,7 +189,7 @@ List<String> _getLocalSeccompPaths(String filename) {
     );
   }
   // A source checkout launched without package_config is still rooted at cwd.
-  final currentDirectory = Directory.current.path;
+  final currentDirectory = packageRoot == null ? process.cwd() : '';
   if (packageRoot == null &&
       fs.existsSync(
         path.join(
