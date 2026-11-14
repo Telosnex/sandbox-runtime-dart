@@ -1,6 +1,7 @@
-// Ported from sandbox-runtime src/cli.ts @ 24eb39e.
+// Ported from sandbox-runtime src/cli.ts @ 0bbebed.
 // ignore_for_file: slash_for_doc_comments, constant_identifier_names, non_constant_identifier_names, prefer_interpolation_to_compose_strings
 import 'dart:convert';
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'utils/shell_quote.dart' show quote;
@@ -8,7 +9,7 @@ import 'node/commander.dart' show Command, InvalidArgumentError;
 import 'index.dart' show SandboxManager;
 import 'sandbox/sandbox_config.dart'
     show SandboxRuntimeConfig, SrtWinConfig, WindowsConfig;
-import 'node/child_process.dart' show spawn, NodeChildProcess;
+import 'node/child_process.dart' show spawn;
 import 'utils/debug.dart' show logForDebugging;
 import 'utils/config_loader.dart'
     show
@@ -21,6 +22,7 @@ import 'node/readline.dart' as readline;
 import 'node/fs.dart' as fs;
 import 'node/net.dart' as net;
 import 'package:path/path.dart' as path;
+import 'node/stream_promises.dart' show finished;
 import 'node/os.dart' as os;
 import 'node/abort.dart' show AbortController;
 import 'node/console.dart' as console;
@@ -34,7 +36,7 @@ import 'sandbox/windows_sandbox_utils.dart' as windows_sandbox_utils;
 import 'proxy_cli.dart' as proxy_cli;
 
 // Dart has no JSON import: package.json's version, kept equal to pubspec.yaml.
-const _pkg = (version: '0.0.79');
+const _pkg = (version: '0.0.83');
 
 /**
  * Get default config path
@@ -205,7 +207,12 @@ Future<void> _main(List<String> argv) async {
       .command('windows-install')
       .description(
         'Windows: provision the `srt-sandbox` user account + install WFP '
-        'filters (one UAC prompt). No logout needed.',
+        'filters (one UAC prompt), then make your user profile readable '
+        'to sandboxed commands, except for credential stores (no '
+        'elevation; minutes on a large profile the first time). No '
+        'logout needed. Run it again after upgrading sandbox-runtime '
+        'when a command asks for it, or to bring the profile read grant '
+        'up to date: it upgrades the existing install in place.',
       )
       .option('--sublayer-guid <guid>', 'WFP sublayer GUID')
       .option(
@@ -213,16 +220,45 @@ Future<void> _main(List<String> argv) async {
         'loopback PERMIT port range (e.g. 60080-60089)',
       )
       .option(
+        '--allow-loopback',
+        'let sandboxed commands connect to any localhost port (default: '
+            'off); must match network.allowLocalBinding',
+      )
+      .option(
         '--sandbox-user <name>',
         'name for the sandbox user account (default: srt-sandbox)',
       )
       .option('--force', 'replace an existing install with different config')
+      .option(
+        '--profile-exclude <path>',
+        'a path inside your profile to keep unreadable in addition to the '
+            'built-in exclusions (repeatable)',
+        null,
+        <String>[],
+        (v, acc) => [...(acc as List<String>), v],
+      )
+      .option(
+        '--profile-include <path>',
+        'a directory inside your profile to make readable in addition to '
+            'the built-in list of per-user tool directories (repeatable)',
+        null,
+        <String>[],
+        (v, acc) => [...(acc as List<String>), v],
+      )
+      .option(
+        '--skip-profile-grant',
+        'install the account and the filters only; sandboxed commands '
+            'then read nothing in your profile (use this on a computer other '
+            'people have accounts on)',
+      )
       .action((args) async {
         final o = args[0] as Map<String, Object?>;
-        final installWindowsSandbox =
-            windows_sandbox_utils.installWindowsSandbox;
+        final installWindowsSandboxAsync =
+            windows_sandbox_utils.installWindowsSandboxAsync;
         final resolveSrtWin = windows_sandbox_utils.resolveSrtWin;
         final VENDORED_SRT_WIN_EXE = windows_sandbox_utils.VENDORED_SRT_WIN_EXE;
+        final WINDOWS_ALLOW_LOOPBACK_EFFECT =
+            windows_sandbox_utils.WINDOWS_ALLOW_LOOPBACK_EFFECT;
         final range = o['proxyPortRange'] is String
             ? (() {
                 final parts = (o['proxyPortRange'] as String)
@@ -233,11 +269,19 @@ Future<void> _main(List<String> argv) async {
               })()
             : null;
         try {
-          final r = installWindowsSandbox(
+          final r = await installWindowsSandboxAsync(
             sublayerGuid: o['sublayerGuid'] as String?,
             proxyPortRange: range,
+            allowLoopback: o['allowLoopback'] == true,
             sandboxUser: o['sandboxUser'] as String?,
             force: o['force'] == true,
+            skipProfileGrant: o['skipProfileGrant'] == true,
+            profileExclude: o['profileExclude'] as List<String>,
+            profileInclude: o['profileInclude'] as List<String>,
+            // One line on what is about to become readable, and how to
+            // skip or undo it, before the grant is applied.
+            onProfileGrantStart: (notice) => console.error(notice),
+            onProfileGrantProgress: (line) => console.error(line),
             // Our own CLI opts into the packaged exe explicitly —
             // there is no ambient vendor fallback.
             srtWin: resolveSrtWin(SrtWinConfig(path: VENDORED_SRT_WIN_EXE)),
@@ -257,9 +301,28 @@ Future<void> _main(List<String> argv) async {
                 (r.wfp.portRange != null
                     ? ', port range ${r.wfp.portRange!.$1}-${r.wfp.portRange!.$2}'
                     : '') +
+                '\n'
+                    '  profile read grant: ' +
+                (switch (r.profileGrant) {
+                  windows_sandbox_utils.WindowsInstallProfileGrantApplied(
+                    :final result,
+                  ) =>
+                    'applied to ${result.profile} '
+                        '(${result.granted} directories, '
+                        '${result.denied} excluded, '
+                        '${result.skipped.length} skipped)',
+                  windows_sandbox_utils.WindowsInstallProfileGrantSkipped(
+                    :final reason,
+                  ) =>
+                    'NOT applied — $reason',
+                  null => 'NOT applied — unknown',
+                }) +
                 '\n\n'
                     'No logout needed — the WFP filter keys on the dedicated '
-                    "`srt-sandbox` user's SID, so your network is unaffected.",
+                    "`srt-sandbox` user's SID, so your network is unaffected." +
+                (r.wfp.allowLoopback == true
+                    ? '\n\n$WINDOWS_ALLOW_LOOPBACK_EFFECT'
+                    : ''),
           );
         } catch (e) {
           console.error('Error: ${errorMessage(e)}');
@@ -402,6 +465,8 @@ Future<void> _main(List<String> argv) async {
               ignoreViolations: runtimeConfig.ignoreViolations,
               enableWeakerNestedSandbox:
                   runtimeConfig.enableWeakerNestedSandbox,
+              allowNestedUserNamespaces:
+                  runtimeConfig.allowNestedUserNamespaces,
               enableWeakerNetworkIsolation:
                   runtimeConfig.enableWeakerNetworkIsolation,
               allowAppleEvents: runtimeConfig.allowAppleEvents,
@@ -413,6 +478,7 @@ Future<void> _main(List<String> argv) async {
               socatPath: runtimeConfig.socatPath,
               javaAgentJarPath: runtimeConfig.javaAgentJarPath,
               windows: WindowsConfig(
+                backend: w?.backend,
                 sandboxUser: w?.sandboxUser,
                 sublayerGuid: w?.sublayerGuid,
                 wfpSublayerGuid: w?.wfpSublayerGuid,
@@ -425,7 +491,7 @@ Future<void> _main(List<String> argv) async {
 
           // The wrapped command, once it exists: a control channel that
           // dies before it delivers anything takes it down with it.
-          NodeChildProcess? child;
+          ({bool Function([Object signal]) kill})? child;
           var controlChannelFailed = false;
           var receivedAnyLine = false;
           var controlErrorReported = false;
@@ -503,7 +569,14 @@ Future<void> _main(List<String> argv) async {
 
           // Initialize sandbox with config
           logForDebugging('Initializing sandbox...');
-          await SandboxManager.initialize(runtimeConfig);
+          try {
+            await SandboxManager.initialize(runtimeConfig);
+          } catch (err) {
+            // The library's own handler resets on the same signal, which
+            // cancels initialize(): the interrupt is the reason to report.
+            interrupted.signal.throwIfAborted();
+            rethrow;
+          }
 
           // Read config updates only now. The stream has been waiting
           // unread, so nothing the caller wrote meanwhile is lost, and an
@@ -575,43 +648,7 @@ Future<void> _main(List<String> argv) async {
             ).convert(SandboxManager.getNetworkRestrictionConfig()),
           );
 
-          // Wrap the command with sandbox restrictions. On Windows
-          // the wrapper returns an argv array that MUST be spawned
-          // with {shell:false} — that's the boundary keeping the
-          // command bytes off the host shell. On other platforms
-          // we keep the existing shell-string path.
-          if (process.platform == 'win32') {
-            // env carries the proxy vars the sandboxed child must inherit.
-            final (:argv, :env) = await SandboxManager.wrapWithSandboxArgv(
-              command,
-            );
-            // No slot to displace: libuv passes only the stdio array's
-            // entries to the child as CRT descriptors, so the control fd
-            // is not among them (an inheritable HANDLE still reaches the
-            // child, but unnamed — nothing there can find it).
-            aboutToSpawn();
-            child = spawn(argv[0], argv.sublist(1), {
-              'shell': false,
-              'stdio': 'inherit',
-              'env': env,
-            });
-          } else {
-            // The wrap can take seconds over a large tree.
-            final sandboxedCommand = await SandboxManager.wrapWithSandbox(
-              command,
-              null,
-              null,
-              interrupted.signal,
-            );
-            aboutToSpawn();
-            child = spawn(sandboxedCommand, const [], {
-              'shell': true,
-              'stdio': _sandboxedStdio(controlFd),
-            });
-          }
-
-          // Handle process exit
-          child.on('exit', (int? code, String? signal) {
+          void onCommandExit(int? code, String? signal) {
             // Clean up bwrap mount point artifacts before exiting.
             // On Linux, bwrap creates empty files on the host when protecting
             // non-existent deny paths. This removes them.
@@ -632,12 +669,119 @@ Future<void> _main(List<String> argv) async {
               }
             }
             process.exit(code ?? 0);
-          });
+          }
 
-          child.on('error', (Object error) {
-            console.error('Failed to execute command: ${errorMessage(error)}');
-            process.exit(1);
-          });
+          // Wrap the command with sandbox restrictions. On Windows
+          // the wrapper returns an argv array that MUST be spawned
+          // with {shell:false} — that's the boundary keeping the
+          // command bytes off the host shell. On other platforms
+          // we keep the existing shell-string path.
+          if (process.platform == 'win32' &&
+              SandboxManager.getWindowsBackend?.call()?.backend == 'mxc') {
+            // The MXC SDK starts the command itself; there is no argv.
+            final spawnSandboxed = SandboxManager.spawnSandboxed;
+            if (spawnSandboxed == null) {
+              throw NodeException('spawnSandboxed() is not available');
+            }
+            aboutToSpawn();
+            final proc = await spawnSandboxed(command);
+            // MXC has no signals: any kill ends the whole tree. Remember
+            // which signal asked, so the exit reads as it does elsewhere.
+            String? killedBy;
+            child = (
+              kill: ([Object signal = 'SIGTERM']) {
+                killedBy = signal is String ? signal : 'SIGTERM';
+                proc.kill();
+                return true;
+              },
+            );
+            proc.stdout?.pipe(process.stdout, end: false);
+            proc.stderr?.pipe(process.stderr, end: false);
+            final stdin = proc.stdin;
+            if (stdin != null) {
+              // The command may exit without reading its input.
+              stdin.on('error', () {});
+              process.stdin.pipe(stdin);
+            }
+            // Exit only once the command's output has been read to the
+            // end and written out: a pipe on Windows is asynchronous,
+            // and process.exit() would drop what is still queued.
+            final drained = Future.wait(
+              [proc.stdout, proc.stderr].map(
+                (s) => s != null
+                    ? finished(s).catchError((Object _) {})
+                    : Future<void>.value(),
+              ),
+            );
+            Future<void> flushed(process.WriteStream out) {
+              final completer = Completer<void>();
+              out.write('', () => completer.complete());
+              return completer.future;
+            }
+
+            unawaited(
+              proc
+                  .wait()
+                  .then((result) async {
+                    await drained;
+                    await Future.wait([
+                      flushed(process.stdout),
+                      flushed(process.stderr),
+                    ]);
+                    onCommandExit(result.exitCode, killedBy);
+                  })
+                  .catchError((Object error) {
+                    console.error(
+                      'Failed to execute command: ${errorMessage(error)}',
+                    );
+                    process.exit(1);
+                  }),
+            );
+          } else if (process.platform == 'win32') {
+            // env carries the proxy vars the sandboxed child must inherit.
+            final (:argv, :env) = await SandboxManager.wrapWithSandboxArgv(
+              command,
+            );
+            // No slot to displace: libuv passes only the stdio array's
+            // entries to the child as CRT descriptors, so the control fd
+            // is not among them (an inheritable HANDLE still reaches the
+            // child, but unnamed — nothing there can find it).
+            aboutToSpawn();
+            final spawned = spawn(argv[0], argv.sublist(1), {
+              'shell': false,
+              'stdio': 'inherit',
+              'env': env,
+            });
+            child = (kill: spawned.kill);
+            spawned.on('exit', onCommandExit);
+            spawned.on('error', (Object error) {
+              console.error(
+                'Failed to execute command: ${errorMessage(error)}',
+              );
+              process.exit(1);
+            });
+          } else {
+            // The wrap can take seconds over a large tree.
+            final sandboxedCommand = await SandboxManager.wrapWithSandbox(
+              command,
+              null,
+              null,
+              interrupted.signal,
+            );
+            aboutToSpawn();
+            final spawned = spawn(sandboxedCommand, const [], {
+              'shell': true,
+              'stdio': _sandboxedStdio(controlFd),
+            });
+            child = (kill: spawned.kill);
+            spawned.on('exit', onCommandExit);
+            spawned.on('error', (Object error) {
+              console.error(
+                'Failed to execute command: ${errorMessage(error)}',
+              );
+              process.exit(1);
+            });
+          }
 
           // Handle cleanup on interrupt
           process.on('SIGINT', () {
