@@ -1,8 +1,9 @@
-// Ported from sandbox-runtime src/sandbox/linux-sandbox-utils.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/linux-sandbox-utils.ts @ 0bbebed.
 // ignore_for_file: slash_for_doc_comments, constant_identifier_names
 // ignore_for_file: doc_directive_unknown, non_constant_identifier_names
 // ignore_for_file: curly_braces_in_flow_control_structures
 // ignore_for_file: prefer_interpolation_to_compose_strings
+// ignore_for_file: prefer_adjacent_string_concatenation, unintended_html_in_doc_comment
 
 import 'package:path/path.dart' as path;
 
@@ -17,7 +18,7 @@ import '../node/os.dart' show endianness, tmpdir;
 import '../node/process.dart' as process;
 import '../utils/shell_quote.dart' show quote;
 import '../utils/debug.dart' show logForDebugging;
-import '../utils/real_path.dart' show realPathOf;
+import '../utils/real_path.dart' show realPathOf, wayTo;
 import '../utils/which.dart' show whichSync;
 import '../utils/ripgrep.dart' show ripGrep, RipgrepError, RipgrepConfig;
 import 'java_proxy_agent.dart' show buildJavaToolOptions;
@@ -35,6 +36,7 @@ import 'sandbox_utils.dart'
         isAbsenceErrno,
         isAtOrUnder,
         isStrictlyUnder,
+        properAncestors,
         nameLocation,
         getDangerousDirectories,
         workingDirectory;
@@ -103,6 +105,8 @@ class LinuxSandboxParams {
    */
   final String? maskedFileStoreDir;
   final bool? enableWeakerNestedSandbox;
+  /** Lets the command undo the write denies: see {@link NESTED_USERNS_ENV}. */
+  final bool? allowNestedUserNamespaces;
   final bool? allowAllUnixSockets;
   final String? binShell;
   final RipgrepConfig? ripgrepConfig;
@@ -159,6 +163,7 @@ class LinuxSandboxParams {
     this.maskedFileBinds,
     this.maskedFileStoreDir,
     this.enableWeakerNestedSandbox,
+    this.allowNestedUserNamespaces,
     this.allowAllUnixSockets,
     this.binShell,
     this.ripgrepConfig,
@@ -212,8 +217,8 @@ String? _findSymlinkInPath(String targetPath, List<String> allowedWritePaths) {
   return null;
 }
 
-/** Bounded depth for chasing dangling symlink chains (kernel ELOOP limit). */
-const _MAX_SYMLINK_RESOLUTION_DEPTH = 40;
+/** As many missing names as one way is followed up from again. */
+const _MAX_MISSING_NAMES_PASSED = 40;
 
 /**
  * Canonicalize a deny path through symlinks before any mask or bind is
@@ -224,11 +229,24 @@ const _MAX_SYMLINK_RESOLUTION_DEPTH = 40;
  * directory" for relative link targets, ENOENT for absolute ones.
  *
  * Resolution: realpath when the full path exists; otherwise canonicalize the
- * deepest existing ancestor and re-join the missing components. A dangling
- * symlink along the way is chain-walked (bounded) so the deny lands where a
- * write through the link would actually create the file. Returns null when
- * the path cannot be canonicalized (e.g. a symlink cycle); callers should
- * skip such paths rather than emit a mask bwrap will reject.
+ * deepest existing ancestor and re-join the missing components.
+ *
+ * A dangling symlink along the way is followed as the kernel follows it, name
+ * by name, to the first name that is not there. What lies beyond that name is
+ * undecided, since whoever makes it decides where the way goes on. So the
+ * answer ends with it, and with the name that follows it if one does, which
+ * makes a directory of it: the caller's placeholder on the first missing
+ * component then keeps the whole way from coming about.
+ *
+ * A way that goes up again at once from the missing name is let pass by a
+ * directory put there as a placeholder. So that name goes to `alsoDenied`, to
+ * be denied for itself, and the way is followed on from where it would lead.
+ *
+ * A directory on the way that cannot be searched is the answer itself: what
+ * lies in it cannot be told, and denied whole it keeps its place and its mode.
+ *
+ * Returns null when the path cannot be canonicalized (a symlink cycle, a name
+ * that is no text). Callers fail closed on it.
  *
  * Unlike normalizePathForSandbox, this intentionally applies no
  * isSymlinkOutsideBoundary check: that check exists so allow paths can't
@@ -236,67 +254,84 @@ const _MAX_SYMLINK_RESOLUTION_DEPTH = 40;
  * removes access, and the mask must land on the inode that writes through
  * the symlink actually reach.
  */
-String? _resolveSymlinkedDenyPath(String targetPath) {
-  var current = targetPath;
-  for (var i = 0; i < _MAX_SYMLINK_RESOLUTION_DEPTH; i++) {
-    try {
-      return realPathOf(current);
-    } catch (_) {
-      // Some component is missing or dangling — canonicalize manually below.
-    }
+String? _resolveSymlinkedDenyPath(
+  String targetPath, [
+  List<String>? alsoDenied,
+]) {
+  try {
+    return realPathOf(targetPath);
+  } catch (_) {
+    // Some component is missing or dangling — canonicalize manually below.
+  }
 
-    // Find the deepest ancestor that fully resolves, collecting the missing
-    // suffix components (leaf first, so unshift keeps them in path order).
-    var ancestor = current;
-    final remainder = <String>[];
-    String? resolvedAncestor;
-    while (resolvedAncestor == null) {
-      final parent = path.dirname(ancestor);
-      if (parent == ancestor) {
-        return null; // reached the root without resolving anything
-      }
-      remainder.insert(0, path.basename(ancestor));
-      ancestor = parent;
-      try {
-        resolvedAncestor = realPathOf(ancestor);
-      } catch (_) {
-        // Keep walking up.
-      }
+  // Find the deepest ancestor that fully resolves, collecting the missing
+  // suffix components (leaf first, so unshift keeps them in path order).
+  var ancestor = targetPath;
+  final remainder = <String>[];
+  String? resolvedAncestor;
+  while (resolvedAncestor == null) {
+    final parent = path.dirname(ancestor);
+    if (parent == ancestor) {
+      return null; // reached the root without resolving anything
     }
-
-    // The first missing component may be a dangling symlink (lstat succeeds,
-    // realpath fails). Follow it and loop to re-canonicalize; otherwise the
-    // remainder is genuinely non-existent and the re-joined path is final.
-    final firstMissing = path.normalize(
-      path.join(resolvedAncestor, remainder[0]),
-    );
-    String? linkTarget;
+    remainder.insert(0, path.basename(ancestor));
+    ancestor = parent;
     try {
-      linkTarget = fs.readlinkSync(firstMissing);
+      resolvedAncestor = realPathOf(ancestor);
     } catch (_) {
-      // Not a symlink — nothing left to resolve.
+      // Keep walking up.
     }
-    if (linkTarget == null) {
-      return path.normalize(path.joinAll([resolvedAncestor, ...remainder]));
+  }
+
+  // The first missing component may be a dangling symlink (lstat succeeds,
+  // realpath fails); otherwise the remainder is genuinely non-existent and
+  // the re-joined path is final.
+  final rejoined = path.normalize(
+    path.joinAll([resolvedAncestor, ...remainder]),
+  );
+  try {
+    fs.readlinkSync(path.join(resolvedAncestor, remainder[0]));
+  } catch (_) {
+    return rejoined; // Not a symlink — nothing left to resolve.
+  }
+  Object? why = 'it goes up from too many names that are not there';
+  try {
+    var onward = rejoined;
+    for (var i = 0; i < _MAX_MISSING_NAMES_PASSED; i++) {
+      final way = wayTo(onward);
+      final real = way.real;
+      final rest = way.rest;
+      final notThere = way.notThere;
+      if (notThere is NodeError && notThere.code == 'EACCES') {
+        return real.isNotEmpty ? real : '/';
+      }
+      final names = rest.where((name) => name != '' && name != '.').toList();
+      if (names.length < 2 || names[1] != '..') {
+        final result = [real, ...names.take(2)].join('/');
+        return result.isNotEmpty ? result : '/';
+      }
+      alsoDenied?.add('$real/${names[0]}');
+      onward = [real, ...names.skip(2)].join('/');
     }
-    current = path.normalize(
-      path.joinAll([
-        path.normalize(path.join(path.dirname(firstMissing), linkTarget)),
-        ...remainder.sublist(1),
-      ]),
+  } catch (err) {
+    why = err;
+  }
+  // Said by the pass that acts on it, not by the one that gathers.
+  if (alsoDenied == null) {
+    logForDebugging(
+      '[Sandbox Linux] Where a write to $targetPath would land cannot be settled: $why. The link on the way is masked instead, which can keep the sandbox from starting.',
+      level: 'warn',
     );
   }
-  return null; // symlink chain too long or cyclic
+  return null;
 }
 
 /**
- * Check if any existing component in the path is a file (not a directory).
- * If so, the target path can never be created because you can't mkdir under a file.
- *
- * This handles the git worktree case: .git is a file, so .git/hooks can never
- * exist and there's nothing to deny.
+ * The first existing component of the path that is not a directory, if there
+ * is one. Nothing can be created below it for as long as it is there: a git
+ * worktree's `.git` is a file, so there is no `.git/hooks`.
  */
-bool _hasFileAncestor(String targetPath) {
+String? _fileOnTheWay(String targetPath) {
   final parts = targetPath.split(path.separator);
   var currentPath = '';
 
@@ -304,11 +339,7 @@ bool _hasFileAncestor(String targetPath) {
     if (part.isEmpty) continue; // Skip empty parts (leading /)
     final nextPath = currentPath + path.separator + part;
     try {
-      final stat = fs.statSync(nextPath);
-      if (stat.isFile()) {
-        // This component exists as a file — nothing below it can be created
-        return true;
-      }
+      if (!fs.statSync(nextPath).isDirectory()) return nextPath;
     } catch (_) {
       // Path doesn't exist — stop checking
       break;
@@ -316,7 +347,7 @@ bool _hasFileAncestor(String targetPath) {
     currentPath = nextPath;
   }
 
-  return false;
+  return null;
 }
 
 /**
@@ -343,10 +374,137 @@ String _findFirstNonExistentComponent(String targetPath) {
   return targetPath; // Shouldn't reach here if called correctly
 }
 
+/** What the placeholder for an absent deny path is mounted on. */
+abstract final class _MountPointKind {
+  /** A file made on the host for it, which /dev/null goes on. */
+  static const File = 'file';
+  /** A directory made on the host for it, which an empty one goes on. */
+  static const Directory = 'directory';
+  /** The file above the path, which goes on itself. Nothing is made. */
+  static const Held = 'held';
+  /** None can be made. Nothing is mounted; what lies above is still pinned. */
+  static const Unmakeable = 'unmakeable';
+}
+
+/** The kinds that are made on the host. */
+typedef _MadeMountPointKind = String; // 'file' | 'directory'
+
+/** open(2)'s O_PATH on x86-64 and arm64; node:fs does not name it. Where the
+ * bit means something else the open is an ordinary one or fails, and a failure
+ * keeps the placeholder. */
+const _O_PATH = 2097152;
+/** statfs(2)'s type for 9p, which is how WSL 2 mounts a Windows drive. */
+const _V9FS_MAGIC = 0x01021997;
+
+/**
+ * The kind of mount point that can be made at `dest`, an absent path whose
+ * parent is there: `wanted`, a directory where only a file is refused, or
+ * unmakeable. bubblewrap makes it on the host as this user, before the command
+ * runs, and exits if it cannot.
+ *
+ * Unmakeable only where the refusal is not this user's to lift, so that the
+ * command cannot create `dest` either; `wanted` on any doubt (see
+ * mountPointFor).
+ */
+String _makeableMountPoint(String dest, _MadeMountPointKind wanted) {
+  /** The errno `attempt` is refused with. Any other failure is a doubt. */
+  String? refusalOf(void Function() attempt) {
+    try {
+      attempt();
+      return null;
+    } catch (err) {
+      final code = err is NodeError ? err.code : null;
+      if (code == 'EACCES' || code == 'EPERM' || code == 'EROFS') return code;
+      rethrow;
+    }
+  }
+
+  int? fd;
+  try {
+    // One descriptor answers every question, through /proc: a command still
+    // running could put another directory at the path between two of them.
+    // Its link differs from the path when a symlink was followed on the way.
+    fd = fs.openSync(
+      path.dirname(dest),
+      _O_PATH | fs.constants.O_NOFOLLOW | fs.constants.O_DIRECTORY,
+    );
+    final parent = '/proc/self/fd/$fd';
+    if (fs.readlinkSync(parent) != path.dirname(dest)) return wanted;
+    final stat = fs.fstatSync(fd);
+    final uid = stat.uid;
+    final mode = stat.mode;
+    // What the kernel asks of a directory before it creates anything in it.
+    final refusal = refusalOf(
+      () => fs.accessSync(parent, fs.constants.W_OK | fs.constants.X_OK),
+    );
+
+    if (fs.statfsSync(parent).type != _V9FS_MAGIC) {
+      // EACCES is the word of the mode or an ACL, which the owner can change,
+      // and bubblewrap's user namespace overrides it for the owner. A
+      // read-only file system (EROFS) and an immutable directory (EPERM)
+      // refuse whoever asks from in there.
+      return refusal == null ||
+              (refusal == 'EACCES' && uid == process.geteuid?.call())
+          ? wanted
+          : _MountPointKind.Unmakeable;
+    }
+
+    // On a Windows drive the Windows ACL decides, and nothing on this side
+    // tells it: every directory there is this user's, with a mode that lets it
+    // write, also one that takes subfolders and no files. So the mount point
+    // is made here instead of by bubblewrap, which finds it there.
+    if (refusal == null) {
+      final entry = '$parent/${path.basename(dest)}';
+      if (wanted == _MountPointKind.File &&
+          refusalOf(() => fs.closeSync(fs.openSync(entry, 'wx', 292))) ==
+              null) {
+        return _MountPointKind.File;
+      }
+      if (refusalOf(() => fs.mkdirSync(entry)) == null) {
+        return _MountPointKind.Directory;
+      }
+    }
+    // The name may be refused for a reason that passes. The folder is beyond
+    // this user when it may not even be given the mode it has.
+    return refusalOf(() => fs.chmodSync(parent, mode & 4095)) == null
+        ? wanted
+        : _MountPointKind.Unmakeable;
+  } catch (_) {
+    return wanted;
+  } finally {
+    if (fd != null) fs.closeSync(fd);
+  }
+}
+
+/** What the `.git` of a directory is, and so what is denied there. */
+abstract final class _DotGitKind {
+  /** A repository: its hooks and config are denied. */
+  static const Directory = 'directory';
+  /**
+   * The pointer of a worktree or a submodule ("gitdir: /path/..."). There are
+   * no .git/hooks for as long as it is a file, so the file is denied, which
+   * keeps it one.
+   */
+  static const File = 'file';
+  /** Nothing is denied: a mount at .git would keep `git init` from making it. */
+  static const Absent = 'absent';
+}
+
+String _dotGitKindAt(String dotGitPath) {
+  try {
+    return fs.statSync(dotGitPath).isDirectory()
+        ? _DotGitKind.Directory
+        : _DotGitKind.File;
+  } catch (_) {
+    return _DotGitKind.Absent;
+  }
+}
+
 /**
  * The part of the mandatory deny set that follows from the cwd alone: the
  * dangerous files and directories resolved against it, plus `.git/hooks` and
- * (unless the caller allows git config) `.git/config`.
+ * (unless the caller allows git config) `.git/config`, or a `.git` that is a
+ * file.
  * {@link linuxGetMandatoryDenyPaths} adds the nested matches its ripgrep scan
  * finds on top of these. Split out so a consumer that must not scan — the
  * violation monitor, which needs the same denies to judge a write bwrap
@@ -362,20 +520,15 @@ List<String> linuxGetCwdMandatoryDenyPaths([bool allowGitConfig = false]) {
     ...getDangerousDirectories().map((d) => path.normalize(path.join(cwd, d))),
   ];
 
-  // Git hooks and config are only denied when .git exists as a directory.
-  // In git worktrees, .git is a file (e.g., "gitdir: /path/..."), so
-  // .git/hooks can never exist — denying it would cause bwrap to fail.
-  // When .git doesn't exist at all, mounting at .git would block its
-  // creation and break git init.
+  // Only the cwd's own: a .git file below it is git's to rewrite and remove
+  // (a checkout that recurses into submodules does).
   final dotGitPath = path.normalize(path.join(cwd, '.git'));
-  var dotGitIsDirectory = false;
-  try {
-    dotGitIsDirectory = fs.statSync(dotGitPath).isDirectory();
-  } catch (_) {
-    // .git doesn't exist
-  }
+  final dotGit = _dotGitKindAt(dotGitPath);
 
-  if (dotGitIsDirectory) {
+  if (dotGit == _DotGitKind.File) {
+    denyPaths.add(dotGitPath);
+  }
+  if (dotGit == _DotGitKind.Directory) {
     // Git hooks always blocked for security
     denyPaths.add(path.normalize(path.join(cwd, '.git/hooks')));
 
@@ -693,7 +846,9 @@ BigInt? boundingCapabilitiesFromStatus(String status) {
  * a creator holding CAP_SETFCAP. Under the helper a uid-0 caller's command
  * therefore has a full set inside that nested namespace, which is
  * identity-mapped to the caller's uid 0, and the filesystem policy there
- * rests on the nested namespace's mount copies being locked. Without the
+ * rests on the helper's namespaces filter refusing the calls that change a
+ * mount tree: the nested namespace's locked mount copies refuse the unmount
+ * of any one of them, not the whole tree being moved aside. Without the
  * helper (`allowAllUnixSockets`, or no usable helper binary) the command runs
  * in bwrap's own namespaces and `--cap-drop ALL` is what stops it unmounting
  * a deny.
@@ -1185,7 +1340,20 @@ class SandboxDependencyCheck {
   final List<String> warnings;
   final List<String> errors;
 
-  const SandboxDependencyCheck({required this.warnings, required this.errors});
+  /** Windows: the error in `errors` that asks for the install to be re-run. */
+  final String? reinstallRequired;
+  /**
+   * Windows: the error in `errors` that says the installed loopback mode
+   * is not the configured `network.allowLocalBinding`.
+   */
+  final String? loopbackMismatch;
+
+  const SandboxDependencyCheck({
+    required this.warnings,
+    required this.errors,
+    this.reinstallRequired,
+    this.loopbackMismatch,
+  });
 }
 
 /**
@@ -1608,6 +1776,64 @@ Future<LinuxNetworkBridgeContext> initializeLinuxNetworkBridge(
 }
 
 /**
+ * Read by the seccomp helper, never by this process. The write denies are
+ * read-only binds, and a bind protects a path only in the mount namespace it
+ * was made in. Creating a user namespace takes no capability and gives a full
+ * set over a private copy of the mount tree, from which the binds can be
+ * detached all at once; a directory opened beforehand then reaches the denied
+ * names. So by default the helper refuses the calls with a seccomp filter and
+ * sets user.max_user_namespaces to zero in the namespace it made. `1` lifts
+ * both. A wrap with no helper gives bubblewrap --disable-userns instead.
+ */
+const _NESTED_USERNS_ENV = 'SRT_ALLOW_NESTED_USERNS';
+
+/**
+ * The assignment the helper's command line starts with, so that the variable
+ * holds what the configuration says: the wrap reaches the helper through a
+ * shell, whose start-up files (BASH_ENV) could set it after bubblewrap cleared
+ * it, and an assignment before a command is made after those.
+ */
+String _helperEnvironmentPrefix(bool allowNestedUserNamespaces) {
+  return '$_NESTED_USERNS_ENV=${allowNestedUserNamespaces ? '1' : '0'} ';
+}
+
+// Keyed by path, like the uid-0 probe. Only an answer is kept: a probe that
+// failed is made again the next time.
+final _disableUsernsProbes = <String, bool>{};
+
+/**
+ * Whether this bubblewrap lists --disable-userns (0.8.0 and later) and can
+ * honour it: a setuid bubblewrap refuses the option outright.
+ */
+bool bwrapCanDisableUserns(String bwrap) {
+  final cached = _disableUsernsProbes[bwrap];
+  if (cached != null) return cached;
+  var can = false;
+  try {
+    if ((fs.statSync(bwrap).mode & 2048) == 0) {
+      final help = spawnSync(
+        bwrap,
+        ['--help'],
+        {
+          'timeout': 5000,
+          'stdio': ['ignore', 'pipe', 'pipe'],
+          'encoding': 'utf8',
+        },
+      );
+      final text = '${help.stdout ?? ''}${help.stderr ?? ''}';
+      if (help.error != null || text.trim().isEmpty) return false;
+      can = text.contains('--disable-userns');
+    }
+  } catch (_) {
+    return false;
+  }
+  _disableUsernsProbes[bwrap] = can;
+  return can;
+}
+
+var _noUsernsLimitLogged = false;
+
+/**
  * Resolve how to invoke apply-seccomp: either a standalone binary path, or a
  * multicall-binary prefix that dispatches on the ARGV0 env var.
  *
@@ -1692,10 +1918,22 @@ String _buildSandboxCommand(
   // Host filesystem is bind-mounted into the sandbox, so an explicit
   // socatPath resolves to the same binary inside bwrap.
   final socat = quote([socatPath ?? 'socat']);
+  // socat's own backlog is 5. A connection that finds the queue full is
+  // dropped, and tried again after 1 s, then 2 s, 4 s and so on: of a package
+  // installer's burst, some wait for a minute. The kernel caps the number.
+  const listen = 'fork,reuseaddr,backlog=4096';
+  // Which family a plain TCP-LISTEN takes is socat's choice, and differs by
+  // version. One that takes IPv6 exits at once on a kernel that has none, and
+  // nothing listens; one that takes IPv4 refuses a client to which `localhost`
+  // is ::1 and that tries no second address. So the family is named: IPv6 with
+  // IPv4 mapped in, which serves both, and IPv4 alone where that fails.
+  String relay(int port, String socketPath) =>
+      '{ $socat TCP6-LISTEN:$port,ipv6only=0,$listen UNIX-CONNECT:$socketPath || ' +
+      'exec $socat TCP4-LISTEN:$port,$listen UNIX-CONNECT:$socketPath; } >/dev/null 2>&1 &';
   final socatCommands = [
-    '$socat TCP-LISTEN:3128,fork,reuseaddr UNIX-CONNECT:$httpSocketPath >/dev/null 2>&1 &',
+    relay(3128, httpSocketPath),
     r'_srt_http=$!',
-    '$socat TCP-LISTEN:1080,fork,reuseaddr UNIX-CONNECT:$socksSocketPath >/dev/null 2>&1 &',
+    relay(1080, socksSocketPath),
     r'_srt_socks=$!',
     // The trap saves the status the script is exiting with and exits with
     // it. A bare `exit` inside an EXIT trap is not portable: bash and dash
@@ -2087,6 +2325,10 @@ Future<({List<String> args, int mandatoryDenyArgs})> _generateFilesystemArgs(
   // spellings. Landings and allowed write paths are canonical, so the extra
   // spelling can only match more of them, never fewer.
   final denyWriteRawDests = <String, String>{};
+  // Placeholder dests where no mount point can be made (see mountPointFor).
+  // Planned like the others, so that their ancestors are pinned and counted
+  // alike, and left out at emission.
+  final unmakeableDenyDests = <String>{};
   // The shared empty directory this call's placeholders bind from, resolved at
   // most once per wrap: resolving again mid-wrap (the cached path having been
   // tampered with in between) would leave the binds already emitted pointing
@@ -2120,7 +2362,13 @@ Future<({List<String> args, int mandatoryDenyArgs})> _generateFilesystemArgs(
       } catch (err) {
         canonical = p; // vanished or unresolvable: the recorded form stands
         canonicalFormUnresolved.add(p);
-        if (!isAbsenceErrno(err)) canonicalFormGuesses.add(p);
+        if (!isAbsenceErrno(err)) {
+          canonicalFormGuesses.add(p);
+          logForDebugging(
+            '[Sandbox Linux] Where $p really is cannot be told, so what is mounted for it is mounted on this spelling, which bubblewrap may refuse: $err',
+            level: 'warn',
+          );
+        }
       }
       canonicalFormCache[p] = canonical!;
     }
@@ -2529,10 +2777,8 @@ Future<({List<String> args, int mandatoryDenyArgs})> _generateFilesystemArgs(
     // --ro-bind /dev/null <dest> hits a char device on the second pass and
     // bwrap's ensure_file() falls through to creat() on a read-only mount.
     final seenDenyWrite = <String>{};
-    // Placeholder destination -> the index of its source in denyWriteArgs, so
-    // a later deny reaching the same destination can upgrade a /dev/null
-    // placeholder to the directory form in place (see the emission below).
-    final placeholderSourceArgIndex = <String, int>{};
+    // Every directory a deny path lies beneath, there or not.
+    final denyPathAncestors = <String>{};
     // PRE-PASS (order-independent): record the directories the loop below
     // re-binds read-only, BEFORE any stub decision, so the read-only
     // conclusion does not depend on where an enclosing directory appears in
@@ -2551,14 +2797,18 @@ Future<({List<String> args, int mandatoryDenyArgs})> _generateFilesystemArgs(
     // where the loop masks that component and emits no bind for the
     // directory (the re-check below); an emitted one missing from the record
     // only costs a spurious abort.
-    for (final pathPattern in denyPaths) {
+    for (var preIndex = 0; preIndex < denyPaths.length; preIndex++) {
+      final pathPattern = denyPaths[preIndex];
       final rawPath = normalizePathForSandbox(pathPattern, literal: true);
       if (rawPath.startsWith('/dev/')) {
         continue;
       }
-      final resolvedPath = _resolveSymlinkedDenyPath(rawPath);
+      final resolvedPath = _resolveSymlinkedDenyPath(rawPath, denyPaths);
       if (resolvedPath == null || resolvedPath.startsWith('/dev/')) {
         continue;
+      }
+      for (final above in properAncestors(resolvedPath)) {
+        denyPathAncestors.add(above);
       }
       // Same defense-in-depth re-check as the loop: there the --ro-bind is
       // replaced by a symlink mask, so such a directory must not be recorded
@@ -2718,6 +2968,119 @@ Future<({List<String> args, int mandatoryDenyArgs})> _generateFilesystemArgs(
       return covered;
     }
 
+    // The placeholder dests decided so far.
+    final decidedMountPoints = <String>{};
+    String? decidedMountPointOver(String p) => [
+      p,
+      ...properAncestors(p),
+    ].where((at) => decidedMountPoints.contains(at)).firstOrNull;
+    /**
+     * The placeholder an absent deny path adds to the plan: where, which is
+     * its first missing component or the file above it, and on what kind of
+     * mount point. Undefined where the path adds nothing.
+     *
+     * INVARIANT: a placeholder is left out only where the sandboxed command
+     * cannot create the path either; each branch says why it cannot. On any
+     * doubt the placeholder stays: at worst bubblewrap cannot make its mount
+     * point and nothing starts, which loses no deny.
+     */
+    ({String dest, String kind})? mountPointFor(String absentPath) {
+      ({String dest, String kind})? none(String why) {
+        logForDebugging(
+          '[Sandbox Linux] No placeholder for non-existent deny path $absentPath: $why',
+        );
+        return null;
+      }
+
+      // One mount point per destination. Deny paths are deduplicated on the
+      // deny path, but a placeholder lands on the first MISSING component, so
+      // two denies can share one: denyWrite '<cwd>/.claude' together with the
+      // mandatory '<cwd>/.claude/commands', in a project with no `.claude/`.
+      // Asked of the record, not of the host, where the component may be
+      // there by now (see makeableMountPoint).
+      final decided = decidedMountPointOver(absentPath);
+      if (decided != null) return none('decided with $decided');
+
+      // Read-only in the sandbox, where bwrap could not creat() a mount point
+      // either. No allowed write path holds it, which leaves it to the initial
+      // --ro-bind / /, or only covered ones do (see uncoveredWritePaths); or a
+      // recorded deny directory covers it and survives the
+      // coveringDirIsUnsafe vetoes (see the INVARIANT at its definition). The
+      // pre-pass has recorded every such directory, wherever it appears in
+      // denyPaths; recorded directories exist, so one that covers the path is
+      // at or above its deepest existing ancestor.
+      if (!uncoveredWritePaths.any(
+            (allowedPath) => isAtOrUnder(absentPath, allowedPath),
+          ) ||
+          coveredBySafeReadOnlyDenyDir(absentPath)) {
+        return none('it is read-only there');
+      }
+      // Nothing can be created under a file (a git worktree's .git is one),
+      // for as long as the file is there. So it is kept there, where the
+      // command may write the directory that holds it. Where it may write the
+      // file alone, that stays where it is and writable. It is not tracked
+      // for removal: it is the caller's own, or another sandbox's mount point.
+      // Asked of what lies above the path, not of the path: another sandbox's
+      // bubblewrap may have made a mount point at it since it was found
+      // absent, and a file there is no reason to leave it unbound.
+      final file = _fileOnTheWay(path.dirname(absentPath));
+      if (file != null) {
+        if (seenDenyWrite.contains(file)) return none('$file is denied itself');
+        if (!uncoveredWritePaths.any(
+          (allowedPath) => isAtOrUnder(path.dirname(file), allowedPath),
+        )) {
+          return none('$file is a file, in a directory that is read-only');
+        }
+        seenDenyWrite.add(file);
+        decidedMountPoints.add(file);
+        return (dest: file, kind: _MountPointKind.Held);
+      }
+
+      // A component with a deny path beneath it is covered by an empty
+      // read-only directory, which blocks creating it and everything below it
+      // exactly as /dev/null does and stays traversable; as a file it breaks
+      // tools that expect a directory there. Whatever the order of denyPaths.
+      final dest = _findFirstNonExistentComponent(absentPath);
+      decidedMountPoints.add(dest);
+      final kind = _makeableMountPoint(
+        dest,
+        denyPathAncestors.contains(dest)
+            ? _MountPointKind.Directory
+            : _MountPointKind.File,
+      );
+      if (kind == _MountPointKind.Unmakeable) {
+        // The directories above it are pinned all the same: a command that
+        // may write one of THEM could otherwise move the refusing one aside.
+        unmakeableDenyDests.add(dest);
+      } else {
+        // INVARIANT: only a path found absent here is tracked, for
+        // cleanupBwrapMountPoints() to remove. An existing file that looks
+        // like a mount point may be the caller's own, or that of another
+        // process's sandbox still running, whose deny goes with it.
+        _bwrapMountPoints.add(dest);
+        _registerExitCleanupHandler();
+      }
+      return (dest: dest, kind: kind);
+    }
+
+    /** What goes on it. The empty directory is made when first asked for. */
+    String mountSourceFor(({String dest, String kind}) placeholder) {
+      final (:dest, :kind) = placeholder;
+      switch (kind) {
+        case _MountPointKind.Held:
+          return dest;
+        case _MountPointKind.Directory:
+          return emptySource ??= _ensureEmptyMountSourceDir();
+        case _MountPointKind.File:
+          return '/dev/null';
+        case _MountPointKind.Unmakeable:
+          // Never mounted: unmakeableDenyDests keeps it out of what is emitted.
+          return '/dev/null';
+        default:
+          throw StateError('Unknown mount point kind: $kind');
+      }
+    }
+
     for (final (index, pathPattern) in denyPaths.indexed) {
       if (index == configuredDenyPaths.length) {
         mandatoryDenyArgsStart = denyWriteArgs.length;
@@ -2802,118 +3165,22 @@ Future<({List<String> args, int mandatoryDenyArgs})> _generateFilesystemArgs(
       // Handle non-existent paths by mounting /dev/null to block creation.
       // Without this, a sandboxed process could mkdir+write a denied path that
       // doesn't exist yet, bypassing the deny rule entirely.
-      //
-      // bwrap creates empty files on the host as mount points for these binds.
-      // We track them in bwrapMountPoints so cleanupBwrapMountPoints() can
-      // remove them after the command exits.
-      //
-      // INVARIANT: only a path found absent here is tracked. An existing file
-      // that looks like such a mount point may be the caller's own, or that of
-      // another process's sandbox still running, whose deny goes with it.
-      if (!fs.existsSync(normalizedPath)) {
-        // Fix 1 (worktree): If any existing component above the deny path is
-        // a file (not a directory), skip the deny entirely. You can't mkdir
-        // under a file, so the deny path can never be created. This handles
-        // git worktrees where .git is a file. Asked of what lies above the
-        // path, not of the path: another sandbox's bubblewrap may have made a
-        // mount point at it since the look above, and a file there is no
-        // reason to leave it unbound.
-        if (_hasFileAncestor(path.dirname(normalizedPath))) {
-          logForDebugging(
-            '[Sandbox Linux] Skipping deny path with file ancestor (cannot create paths under a file): $normalizedPath',
-          );
-          continue;
-        }
-
-        // Find the deepest existing ancestor directory
-        var ancestorPath = path.dirname(normalizedPath);
-        while (ancestorPath != '/' && !fs.existsSync(ancestorPath)) {
-          ancestorPath = path.dirname(ancestorPath);
-        }
-
-        // Only protect if the existing ancestor is within an allowed write path.
-        // If not, the path is already read-only from --ro-bind / /.
-        // (Equality on the absent normalizedPath itself is unreachable, and
-        // so is an allow entry beneath it — allow entries exist, the deny
-        // path does not.)
-        final ancestorIsWithinAllowedPath =
-            isWithinAnyAllowedWritePath(ancestorPath) ||
-            isWithinAnyAllowedWritePath(normalizedPath);
-
-        // An ancestor inside a directory that an earlier deny re-bound
-        // read-only (e.g. an explicit denyWrite on the project dir) is
-        // already read-only in the sandbox: the deny path cannot be created
-        // there, and stubbing it would make bwrap creat() a mount point
-        // inside that read-only mount and abort. The order-independent
-        // pre-pass above has already recorded every directory the loop
-        // re-binds read-only, so a covering directory deny is visible here
-        // regardless of where it appears in denyPaths. A recorded covering
-        // directory is evidence for skipping only if it survives the
-        // coveringDirIsUnsafe vetoes (see the INVARIANT at its definition).
-        // (Tested on the absent path itself: a recorded directory that
-        // covers it is at-or-above its deepest existing ancestor, since
-        // recorded directories exist.) So is a path that only covered write
-        // paths hold (see uncoveredWritePaths).
-        final ancestorIsWithinReadOnlyDeny =
-            coveredBySafeReadOnlyDenyDir(normalizedPath) ||
-            !uncoveredWritePaths.any(
-              (allowedPath) => isAtOrUnder(normalizedPath, allowedPath),
-            );
-
-        if (ancestorIsWithinAllowedPath && !ancestorIsWithinReadOnlyDeny) {
-          final firstNonExistent = _findFirstNonExistentComponent(
-            normalizedPath,
-          );
-
-          // Fix 2: If firstNonExistent is an intermediate component (not the
-          // leaf deny path itself), mount a read-only empty directory instead
-          // of /dev/null. This prevents the component from appearing as a file
-          // which breaks tools that expect to traverse it as a directory.
-          final isIntermediate = firstNonExistent != normalizedPath;
-          final source = isIntermediate
-              ? (emptySource ??= _ensureEmptyMountSourceDir())
-              : '/dev/null';
-
-          // One mount point per destination. Deny paths are deduplicated on
-          // the deny path, but a placeholder lands on the first MISSING
-          // component, so two denies sharing one arrive here with a single
-          // destination — denyWrite '<cwd>/.claude' together with the
-          // mandatory '<cwd>/.claude/commands', in a project with no
-          // `.claude/`. Two binds there make bwrap refuse to start when they
-          // disagree about the destination's kind ("Can't mkdir <dest>: Not a
-          // directory"). The directory form wins the disagreement: an empty
-          // read-only directory blocks creating the destination and everything
-          // below it exactly as /dev/null does, and stays traversable for the
-          // deeper deny that asked for a directory.
-          final placeholderAt = placeholderSourceArgIndex[firstNonExistent];
-          if (placeholderAt != null) {
-            if (isIntermediate) denyWriteArgs[placeholderAt] = source;
-            logForDebugging(
-              '[Sandbox Linux] Reusing the mount point at $firstNonExistent to block creation of $normalizedPath',
-            );
-            continue;
-          }
-          denyWriteArgs.addAll(['--ro-bind', source, firstNonExistent]);
-          placeholderSourceArgIndex[firstNonExistent] =
-              denyWriteArgs.length - 2;
-          // First writer wins for a destination several denies share (the
-          // reuse branch above returns before reaching this), and the record
-          // is purely additive: it only gives the tmpfs and mask comparisons
+      if (decidedMountPointOver(normalizedPath) != null ||
+          !fs.existsSync(normalizedPath)) {
+        final placeholder = mountPointFor(normalizedPath);
+        if (placeholder != null) {
+          final (:dest, :kind) = placeholder;
+          final source = mountSourceFor(placeholder);
+          denyWriteArgs.addAll(['--ro-bind', source, dest]);
+          // The first of the denies that share the destination. The record is
+          // purely additive: it only gives the tmpfs and mask comparisons
           // below a second spelling to test, and `dest` itself is always
           // tested.
-          denyWriteRawDests[firstNonExistent] = rawPath;
-          _bwrapMountPoints.add(firstNonExistent);
-          _registerExitCleanupHandler();
+          denyWriteRawDests[dest] = rawPath;
           logForDebugging(
-            '[Sandbox Linux] Mounted ${isIntermediate ? 'empty dir' : '/dev/null'} at $firstNonExistent to block creation of $normalizedPath',
-          );
-        } else if (ancestorIsWithinReadOnlyDeny) {
-          logForDebugging(
-            '[Sandbox Linux] Skipping non-existent deny path inside a read-only denied directory (already uncreatable): $normalizedPath',
-          );
-        } else {
-          logForDebugging(
-            '[Sandbox Linux] Skipping non-existent deny path not within allowed paths: $normalizedPath',
+            kind == _MountPointKind.Unmakeable
+                ? '[Sandbox Linux] No mount point at $dest, which neither bubblewrap nor the command can create, for $normalizedPath'
+                : '[Sandbox Linux] Mounted $source at $dest to block creation of $normalizedPath',
           );
         }
         continue;
@@ -3253,6 +3520,7 @@ Future<({List<String> args, int mandatoryDenyArgs})> _generateFilesystemArgs(
   final restoredReadOnlyWritePaths = <String>{};
   for (var i = 0; i < denyWriteArgs.length; i += 3) {
     final dest = denyWriteArgs[i + 2];
+    if (unmakeableDenyDests.contains(dest)) continue;
     final rawDest = denyWriteRawDests[dest] ?? dest;
     // A mask's landing, not its dest: the landing is where the mask's bind
     // actually sits, and this deny's dest is canonical, so the two are
@@ -3378,7 +3646,7 @@ Future<({List<String> args, int mandatoryDenyArgs})> _generateFilesystemArgs(
   // process on the host can still swap the source between wrap and run, which
   // is outside what this library defends against.
   if (emptySource != null) {
-    args.addAll(['--ro-bind', emptySource, emptySource]);
+    args.addAll(['--ro-bind', emptySource!, emptySource!]);
   }
 
   return (args: args, mandatoryDenyArgs: mandatoryDenyArgs);
@@ -3446,6 +3714,7 @@ Future<String> wrapCommandWithSandboxLinux(LinuxSandboxParams params) async {
   final maskedFileBinds = params.maskedFileBinds;
   final maskedFileStoreDir = params.maskedFileStoreDir;
   final enableWeakerNestedSandbox = params.enableWeakerNestedSandbox;
+  final allowNestedUserNamespaces = params.allowNestedUserNamespaces;
   final allowAllUnixSockets = params.allowAllUnixSockets;
   final binShell = params.binShell;
   final ripgrepConfig = params.ripgrepConfig ?? RipgrepConfig(command: 'rg');
@@ -3523,6 +3792,9 @@ Future<String> wrapCommandWithSandboxLinux(LinuxSandboxParams params) async {
           level: 'warn',
         );
       } else {
+        applySeccompPrefix =
+            _helperEnvironmentPrefix(allowNestedUserNamespaces == true) +
+            applySeccompPrefix;
         logForDebugging(
           '[Sandbox Linux] Applying seccomp filter for Unix socket blocking',
         );
@@ -3737,6 +4009,32 @@ Future<String> wrapCommandWithSandboxLinux(LinuxSandboxParams params) async {
       // --ro-bind / / leaves /proc read-only and those writes EROFS; a
       // fresh proc mount is what an unprivileged container refuses.
       bwrapArgs.addAll(['--bind', '/proc', '/proc']);
+    }
+
+    // The caller's environment decides nothing about the command's namespaces:
+    // the variable is cleared after every other environment operation, which
+    // bubblewrap applies in argument order, and helperEnvironmentPrefix sets it.
+    bwrapArgs.addAll(['--unsetenv', _NESTED_USERNS_ENV]);
+
+    // With no helper to refuse user namespaces, bubblewrap is asked to. Never
+    // beside the helper, which makes one of its own, and not under
+    // enableWeakerNestedSandbox: bubblewrap does it by writing a sysctl, and
+    // dies on the read-only /proc/sys of an unprivileged container.
+    if (applySeccompPrefix == null && allowNestedUserNamespaces != true) {
+      final bwrap = enableWeakerNestedSandbox == true
+          ? null
+          : (bwrapPath ?? whichSync('bwrap'));
+      if (bwrap != null && bwrapCanDisableUserns(bwrap)) {
+        bwrapArgs.add('--disable-userns');
+      } else if (!_noUsernsLimitLogged) {
+        _noUsernsLimitLogged = true;
+        logForDebugging(
+          '[Sandbox Linux] no seccomp helper in use, and bubblewrap cannot disable user namespaces ' +
+              '(needs 0.8.0 or later, not setuid, and no enableWeakerNestedSandbox) - ' +
+              'a sandboxed command that creates one can undo the write denies',
+          level: 'warn',
+        );
+      }
     }
 
     // apply-seccomp obtains CAP_SYS_ADMIN for its nested PID+mount unshare
