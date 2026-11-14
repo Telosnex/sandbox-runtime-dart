@@ -16,6 +16,7 @@ import 'package:path/path.dart' as path_utils;
 import 'buffer.dart';
 import 'errno.dart';
 import 'fd_io.dart';
+import 'path.dart' as node_path;
 import 'stream.dart' as stream;
 
 final DynamicLibrary? _libc = _loadLibc();
@@ -547,7 +548,7 @@ String _realpathSync(String path) {
   _observe('realpathSync', path);
   // Node folds dot segments in the supplied path before touching the file
   // system (`link/..` means the directory holding link, even if link is bad).
-  final resolvedPath = path_utils.normalize(path_utils.absolute(path));
+  final resolvedPath = node_path.resolve(path);
   final libc = _libc;
   if (libc != null) {
     final realpath = libc.lookupFunction<_RealpathNative, _RealpathDart>(
@@ -974,7 +975,7 @@ String? _mkdirSync(Object path, [Map<String, Object?> options = const {}]) {
     } on FileSystemException catch (error) {
       throw nodeError(_codeFromIoError(error), 'mkdir', path);
     }
-    return recursive && !existed ? path_utils.absolute(path) : null;
+    return recursive && !existed ? node_path.resolve(path) : null;
   }
   final mkdir = libc.lookupFunction<_PathModeN, _PathModeD>('mkdir');
   int make(String p) => _withPath(p, (n) => mkdir(n, mode));
@@ -982,7 +983,7 @@ String? _mkdirSync(Object path, [Map<String, Object?> options = const {}]) {
     if (make(path) != 0) throw _errnoError('mkdir', path);
     return null;
   }
-  final absolute = path_utils.normalize(path_utils.absolute(path));
+  final absolute = node_path.resolve(path);
   final missing = <String>[];
   var current = absolute;
   while (true) {

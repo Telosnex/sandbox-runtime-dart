@@ -196,7 +196,7 @@ void main() {
               ['elsewhere/file'],
             );
           },
-          skip: isLinux ? false : 'requires Linux',
+          skip: isLinux ? null : 'requires Linux',
           timeout: const Timeout(Duration(seconds: 60)),
         );
         for (final (entry, kept) in [
@@ -211,7 +211,7 @@ void main() {
                 but(kept),
               );
             },
-            skip: isLinux ? false : 'requires Linux',
+            skip: isLinux ? null : 'requires Linux',
             timeout: const Timeout(Duration(seconds: 60)),
           );
         }
@@ -231,7 +231,7 @@ void main() {
                 files,
               );
             },
-            skip: isLinux ? false : 'requires Linux',
+            skip: isLinux ? null : 'requires Linux',
             timeout: const Timeout(Duration(seconds: 60)),
           );
         }
@@ -447,7 +447,7 @@ void main() {
           }
         },
         skip: process.getuid?.call() != 0
-            ? false
+            ? null
             : 'root searches a directory of any mode.',
         timeout: const Timeout(Duration(seconds: 60)),
       );
@@ -474,7 +474,7 @@ void main() {
               ['here/file'],
             );
           },
-          skip: anothers != null ? false : 'no inaccessible directory',
+          skip: anothers != null ? null : 'no inaccessible directory',
           timeout: const Timeout(Duration(seconds: 60)),
         );
       }
@@ -497,7 +497,7 @@ void main() {
             ['here/file'],
           );
         },
-        skip: anothers != null ? false : 'no inaccessible directory',
+        skip: anothers != null ? null : 'no inaccessible directory',
         timeout: const Timeout(Duration(seconds: 60)),
       );
       test(

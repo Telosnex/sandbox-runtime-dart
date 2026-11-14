@@ -3,6 +3,8 @@ library;
 
 import 'package:path/path.dart' as p;
 
+import 'process.dart' as process;
+
 /// `path.sep`.
 const String sep = '/';
 
@@ -27,7 +29,7 @@ String resolve(String a, [String? b, String? c, String? d]) {
     if (x.startsWith('/')) break;
   }
   return p.posix
-      .normalize(p.posix.absolute(r.isEmpty ? '.' : r))
+      .normalize(r.startsWith('/') ? r : p.posix.join(process.cwd(), r))
       .replaceAllMapped(RegExp(r'(.)/$'), (m) => m[1]!);
 }
 
