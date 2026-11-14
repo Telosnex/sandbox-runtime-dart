@@ -690,7 +690,7 @@ class WindowsSandboxParams {
 // Binary resolution
 // ────────────────────────────────────────────────────────────────────
 
-String repoRoot() {
+String _repoRoot() {
   // src/sandbox/windows-sandbox-utils.ts → repo root (compiled: dist/sandbox/…)
   // Dart: the package root, from the package config (as child_process.dart finds the spawn helper).
   final cfg = Platform.packageConfig;
@@ -708,7 +708,7 @@ String repoRoot() {
   throw StateError('sandbox_runtime not in the package config');
 }
 
-const Map<String, String> nodeArchToDir = {'x64': 'x64', 'arm64': 'arm64'};
+const Map<String, String> _nodeArchToDir = {'x64': 'x64', 'arm64': 'arm64'};
 
 /**
  * The srt-win binary packaged with this module
@@ -721,10 +721,10 @@ const Map<String, String> nodeArchToDir = {'x64': 'x64', 'arm64': 'arm64'};
  * binary outside any grant (e.g. your own signed executable).
  */
 final String VENDORED_SRT_WIN_EXE = path.join(
-  repoRoot(),
+  _repoRoot(),
   'vendor',
   'srt-win',
-  nodeArchToDir[process.arch] ?? process.arch,
+  _nodeArchToDir[process.arch] ?? process.arch,
   'srt-win.exe',
 );
 
@@ -1284,6 +1284,158 @@ const _WFP_RESIDUAL_TEXT = <WindowsWfpResidual, String>{
       'this machine, so no connect under it was observed',
 };
 bool _isWfpResidual(String s) => _WFP_RESIDUAL_TEXT.containsKey(s);
+
+/**
+ * Turn one `srt-win wfp verify` run into a result or a typed error
+ * (pure). An attempt the fence must refuse that got through rejects
+ * whatever the exit code says; a residual never throws.
+ */
+WindowsWfpVerifyResult interpretWindowsWfpVerify(
+  ({int? status, String? signal, String stdout, String stderr}) r, [
+  WindowsInstallContext install = const WindowsInstallContext(),
+]) {
+  late _RawWfpVerify raw;
+  try {
+    raw = jsonDecode(r.stdout) as _RawWfpVerify;
+  } catch (_) {
+    if (_rejectsAllowLoopback((stderr: r.stderr)))
+      throw _srtWinTooOld(r.stderr);
+    // Timeout is thrown as `srt_win_timeout` by `runSrtWinAsync` before this
+    // parse; status=null here means an external signal.
+    throw WindowsSandboxError(
+      'wfp_verify_unparseable',
+      'WFP egress fence could not be verified — `srt-win wfp ' +
+          'verify` exited ${r.status}' +
+          ((r.signal?.isNotEmpty ?? false) ? ' (signal ${r.signal})' : '') +
+          ' with unparseable output ${jsonEncode(r.stdout)} ' +
+          '(stderr: ${jsonEncode(r.stderr)})',
+    );
+  }
+  WindowsWfpProbeOutcome outcome(String? v) => v ?? 'skipped';
+  final probes = (
+    plain: outcome(raw['egress_probe'] as String?),
+    anonymous: outcome(raw['anonymous_probe'] as String?),
+    anonymousLoopback: outcome(raw['anonymous_loopback_probe'] as String?),
+    denyOnly: outcome(raw['deny_only_probe'] as String?),
+    lowIntegrity: outcome(raw['low_integrity_probe'] as String?),
+    lowIntegrityLoopback: outcome(
+      raw['low_integrity_loopback_probe'] as String?,
+    ),
+    untrustedIntegrity: outcome(raw['untrusted_integrity_probe'] as String?),
+    untrustedIntegrityLoopback: outcome(
+      raw['untrusted_integrity_loopback_probe'] as String?,
+    ),
+    openLoopback: raw['allow_loopback'] == true
+        ? outcome(raw['open_loopback_probe'] as String?)
+        : null,
+  );
+  final offLoopback = raw['anonymous_target'] ?? 'no target';
+  // Where the attempts the fence must refuse on loopback went: the
+  // reserved port when loopback is open, else the listener.
+  final blockedTarget = raw['egress_target'] ?? raw['target'];
+  final summary =
+      'plain=${probes.plain} ($blockedTarget), ' +
+      'anonymous=${probes.anonymous} ($offLoopback), ' +
+      'anonymous-loopback=${probes.anonymousLoopback}, ' +
+      'deny-only=${probes.denyOnly}, ' +
+      'low-integrity=${probes.lowIntegrity} ($offLoopback), ' +
+      'low-integrity-loopback=${probes.lowIntegrityLoopback}, ' +
+      'untrusted-integrity=${probes.untrustedIntegrity} ($offLoopback), ' +
+      'untrusted-integrity-loopback=${probes.untrustedIntegrityLoopback}' +
+      (raw['allow_loopback'] == true
+          ? ', open-loopback=${probes.openLoopback} (${raw['target']})'
+          : '');
+  // The reinstall that suits THIS session: its loopback mode, and the
+  // install options it was configured with.
+  final session = WindowsInstallContext(
+    sublayerGuid: install.sublayerGuid,
+    proxyPortRange: install.proxyPortRange,
+    sandboxUser: install.sandboxUser,
+    allowLoopback: raw['allow_loopback'] as bool? ?? install.allowLoopback,
+  );
+  if (r.status == 19 || raw['allow_loopback_mismatch'] == true)
+    throw WindowsSandboxError(
+      'wfp_loopback_mismatch',
+      'WFP egress fence does not match network.allowLocalBinding — ' +
+          (raw['hint'] as String? ??
+              'the installed filter set has a different loopback mode') +
+          '. Through this package: `' +
+          _windowsInstallCommand(session, true) +
+          '`.',
+    );
+  // The attempts the fence must refuse. One getting through rejects
+  // whatever the exit code says.
+  const lowIl = 'the sandbox user under a low-integrity copy of its token';
+  const untrustedIl =
+      'the sandbox user under an untrusted-integrity copy of its token';
+  final which =
+      [
+            (probes.plain, 'the sandbox user', blockedTarget),
+            (probes.lowIntegrity, lowIl, raw['anonymous_target']),
+            (probes.lowIntegrityLoopback, lowIl, blockedTarget),
+            (probes.untrustedIntegrity, untrustedIl, raw['anonymous_target']),
+            (probes.untrustedIntegrityLoopback, untrustedIl, blockedTarget),
+          ]
+          .where((v) => v.$1 == 'connected' || v.$1 == 'refused')
+          .map((v) => 'direct outbound from ${v.$2} to ${v.$3 ?? 'undefined'}')
+          .toList();
+  // With loopback open nothing listens at the plain attempt's port: no
+  // answer in time is no refusal by the filter either.
+  if (raw['allow_loopback'] == true && probes.plain == 'unreachable')
+    which.add(
+      'direct outbound from the sandbox user to $blockedTarget (no ' +
+          'answer where the filter must refuse at once)',
+    );
+  if (r.status == 3 || which.isNotEmpty)
+    throw WindowsSandboxError(
+      'wfp_fence_inactive',
+      'WFP egress fence is not active — ' +
+          "${which.isEmpty ? 'a direct outbound connect' : which.join(' and ')} was not " +
+          'blocked [$summary]. Re-run `' +
+          _windowsInstallCommand(session, false) +
+          '` (one UAC prompt). (${r.stderr})',
+    );
+  if (r.status != 0)
+    throw WindowsSandboxError(
+      'wfp_verify_inconclusive',
+      'WFP egress fence could not be verified — probe to ' +
+          "$blockedTarget was '${raw['egress_probe'] ?? 'undefined'}' (exit " +
+          '${r.status}) [$summary]. The fence may be absent. Re-run ' +
+          '`srt-win install`. (${r.stderr})',
+    );
+  // Exit 0 alone is not a pass: the plain attempt must say `blocked`.
+  if (raw['egress_probe'] != 'blocked')
+    throw WindowsSandboxError(
+      'wfp_verify_inconclusive',
+      'WFP egress fence could not be verified — `srt-win wfp verify` ' +
+          'exited 0 but reported the plain attempt as ' +
+          "'${raw['egress_probe'] ?? 'missing'}' [$summary]. (${r.stderr})",
+    );
+  final residuals = ((raw['residuals'] as List?)?.cast<String>() ?? <String>[])
+      .where(_isWfpResidual)
+      .toList();
+  final warnings = residuals
+      .map((x) => "WFP egress fence residual '$x': ${_WFP_RESIDUAL_TEXT[x]}")
+      .toList();
+  if (probes.lowIntegrity == 'skipped' ||
+      probes.untrustedIntegrity == 'skipped')
+    warnings.add(
+      'WFP egress fence: the off-loopback lowered-integrity attempts ' +
+          'were skipped (no off-loopback address on this machine, or an ' +
+          'srt-win that does not make them)',
+    );
+  // A pass says direct egress is blocked. With loopback open that is
+  // not the whole story, so the result says the rest.
+  if (raw['allow_loopback'] == true)
+    warnings.add(WINDOWS_ALLOW_LOOPBACK_EFFECT);
+  return WindowsWfpVerifyResult(
+    target: raw['target'] as String,
+    stderr: r.stderr,
+    probes: probes,
+    residuals: residuals,
+    warnings: warnings,
+  );
+}
 
 /**
  * Behavioral proof that the WFP egress fence is active for the
@@ -2033,32 +2185,84 @@ List<String> expandWindowsFsPaths(
 }
 
 /**
- * `p` for comparison with another path, as the object `srt-win` opens for it:
- * links, junctions, 8.3 names and the case on disk are resolved by the same
- * final-path lookup the helper makes. On top of that, lower case, `/`
- * separators and none at the end. A path that cannot be opened is compared as
- * spelled, and so is a UNC path, which is never probed (see
- * {@link isUncPath}).
+ * A path that names a network share (`\\\\server\\share\\…`, `\\\\?\\UNC\\…`)
+ * or anything in the device namespace other than a drive (`\\\\.\\pipe\\…`,
+ * `\\\\?\\GLOBALROOT\\…`).
  */
-String _windowsPathKey(String p) {
-  var resolved = p;
-  if (!isUncPath(p)) {
-    try {
-      // The final-path lookup itself, which also resolves 8.3 names and the
-      // case on disk.
-      // eslint-disable-next-line no-restricted-properties
-      resolved = fs.realpathSync(p);
-    } catch (_) {
-      // Not there, so nothing lies beneath it either.
-    }
-  }
-  return normalizeCaseForComparison(
-    path.windows
-        .normalize(stripExtendedPathPrefix(resolved))
-        .replaceAll(r'\', '/')
-        .replaceAll(RegExp(r'/+$'), ''),
-  );
+bool _isUnprobedWindowsPath(String p) =>
+    isUncPath(p) ||
+    RegExp(r'^[\\/]{2}[?.][\\/](?![a-z]:)', caseSensitive: false).hasMatch(p);
+
+/** What the one look at a path on disk found. */
+sealed class _ResolvedWindowsPath {
+  const _ResolvedWindowsPath();
 }
+
+/** The object it names, with links, 8.3 names and case resolved. */
+class _ResolvedWindowsPathResolved extends _ResolvedWindowsPath {
+  final String state = 'resolved';
+  final String path;
+  const _ResolvedWindowsPathResolved(this.path);
+}
+
+/** Nothing is there (or a parent is not a directory). */
+class _ResolvedWindowsPathAbsent extends _ResolvedWindowsPath {
+  final String state = 'absent';
+  const _ResolvedWindowsPathAbsent();
+}
+
+/** Not looked at: see {@link isUnprobedWindowsPath}. */
+class _ResolvedWindowsPathUnprobed extends _ResolvedWindowsPath {
+  final String state = 'unprobed';
+  const _ResolvedWindowsPathUnprobed();
+}
+
+/** Looking failed for another reason: access denied, an I/O error. */
+class _ResolvedWindowsPathError extends _ResolvedWindowsPath {
+  final String state = 'error';
+  final String code;
+  const _ResolvedWindowsPathError(this.code);
+}
+
+/** "Does not exist" as opposed to "could not look". */
+bool _isAbsentError(Object? e) =>
+    e is NodeError && (e.code == 'ENOENT' || e.code == 'ENOTDIR');
+
+/**
+ * The single place a path of a session's configuration is resolved on
+ * disk for comparison: the same final-path lookup `srt-win` makes.
+ */
+_ResolvedWindowsPath _resolveWindowsPath(String p) {
+  if (_isUnprobedWindowsPath(p)) return const _ResolvedWindowsPathUnprobed();
+  try {
+    // eslint-disable-next-line no-restricted-properties
+    return _ResolvedWindowsPathResolved(fs.realpathSync(p));
+  } catch (e) {
+    return _isAbsentError(e)
+        ? const _ResolvedWindowsPathAbsent()
+        : _ResolvedWindowsPathError(e is NodeError ? e.code : 'unknown');
+  }
+}
+
+/**
+ * `p` for comparison with another path: links, junctions, 8.3 names and
+ * the case on disk are resolved, as `srt-win` resolves a path it is given.
+ */
+String _windowsPathKey(String p) =>
+    _windowsPathKeyOf(p, _resolveWindowsPath(p));
+
+/** {@link windowsPathKey} from a look at the path already taken. */
+String _windowsPathKeyOf(String p, _ResolvedWindowsPath resolved) =>
+    normalizeCaseForComparison(
+      path.windows
+          .normalize(
+            stripExtendedPathPrefix(
+              resolved is _ResolvedWindowsPathResolved ? resolved.path : p,
+            ),
+          )
+          .replaceAll(r'\', '/')
+          .replaceAll(RegExp(r'/+$'), ''),
+    );
 
 /** The one of `dirs` that a path is, or lies beneath. */
 String? Function(String) coveringWindowsPath(List<String> dirs) {
@@ -2069,6 +2273,34 @@ String? Function(String) coveringWindowsPath(List<String> dirs) {
     final covering = keys.indexWhere((dir) => isAtOrUnder(key, dir));
     return covering < 0 ? null : dirs[covering];
   };
+}
+
+/**
+ * The ones of `grants` that lie strictly beneath one of `denies`: the
+ * grants that rank above those denies, an allow set further down
+ * being the one that counts.
+ */
+List<String> windowsGrantsBeneathDenies(
+  List<String> grants,
+  List<String> denies,
+) {
+  if (grants.isEmpty || denies.isEmpty) return [];
+  final denyKeys = denies.map(_windowsPathKey);
+  final keyed = grants.map((g) => (path: g, key: _windowsPathKey(g))).toList();
+  // Per deny, the topmost grants strictly beneath THAT deny.
+  final out = <String, String>{};
+  for (final d in denyKeys) {
+    final beneath = keyed
+        .where((g) => g.key != d && isAtOrUnder(g.key, d))
+        .toList();
+    for (final g in beneath) {
+      final covered = beneath.any(
+        (other) => other.key != g.key && isAtOrUnder(g.key, other.key),
+      );
+      if (!covered && !out.containsKey(g.key)) out[g.key] = g.path;
+    }
+  }
+  return out.values.toList();
 }
 
 /** What `srt-win` is handed: see {@link rankWindowsFsAccess}. */
@@ -2320,6 +2552,40 @@ class WindowsAclAceOutcome {
 }
 
 /**
+ * `acl revoke` statuses that show a grant released. An allow-list, so
+ * a status this code does not know fails closed.
+ */
+const _WINDOWS_ACL_GRANT_RELEASED_STATUSES = {
+  'revoked',
+  'stillHeld',
+  'downgraded',
+  'relocated',
+  'noRow',
+  'gone',
+  'missing',
+};
+
+/**
+ * Whether one `acl revoke` outcome shows its grant released. "missing"
+ * comes only from an older srt-win, which also says it of a path it
+ * could not open, so it counts only if the path is really gone.
+ */
+bool _windowsAclGrantReleased(Object? o) {
+  if (o is! WindowsAclAceOutcome && o is! Map) return false;
+  final p = o is WindowsAclAceOutcome ? o.path : (o as Map)['path'];
+  final status = o is WindowsAclAceOutcome ? o.status : (o as Map)['status'];
+  if (p is! String || status is! String) return false;
+  if (!_WINDOWS_ACL_GRANT_RELEASED_STATUSES.contains(status)) return false;
+  if (status != 'missing') return true;
+  try {
+    fs.lstatSync(p);
+    return false;
+  } catch (e) {
+    return e is NodeError && e.code == 'ENOENT';
+  }
+}
+
+/**
  * Release this holder's deny ACEs and remove the sandbox-user ACE
  * on any path whose refcount falls to zero. Best-effort (does not
  * throw on per-path anomalies); returns per-path outcomes for the
@@ -2342,6 +2608,10 @@ class WindowsAclGrantOptions {
   /** Long-lived host PID the holds are tied to. Default: this process. */
   final int? holderPid;
   /** Resolved `srt-win` spawn descriptor — from {@link resolveSrtWin}. */
+  /**
+   * `read` paths that may be granted although the profile read grant
+   * excludes them (`srt-win acl grant --allow-profile-exclusion`).
+   */
   final List<String>? allowProfileExclusions;
   final SrtWinSpawn? srtWin;
 
@@ -2354,6 +2624,13 @@ class WindowsAclGrantOptions {
     this.srtWin,
   });
 }
+
+List<String> _allowProfileExclusionArgs(WindowsAclGrantOptions opts) => [
+  for (final p in opts.allowProfileExclusions ?? <String>[]) ...[
+    '--allow-profile-exclusion',
+    p,
+  ],
+];
 
 /**
  * Apply per-session additive `(OI)(CI)` ALLOW ACEs for the sandbox
@@ -2424,6 +2701,35 @@ WindowsAclRevokeResult revokeWindowsAclChecked({
   int? holderPid,
   SrtWinSpawn? srtWin,
 }) => throw UnsupportedError('Windows is not supported by this port');
+
+/** Judge a revoke that ran to the end and printed JSON. */
+WindowsAclRevokeResult _windowsAclRevokeResult(
+  bool exitedZero,
+  Object? json,
+  String stderr,
+) {
+  final outcomes = json is List
+      ? json
+            .map(
+              (o) => o is WindowsAclAceOutcome
+                  ? o
+                  : WindowsAclAceOutcome(
+                      path: (o as Map)['path'] as String,
+                      status: o['status'] as String,
+                    ),
+            )
+            .toList()
+      : null;
+  final unreleased = (outcomes ?? <WindowsAclAceOutcome>[])
+      .where((o) => !_windowsAclGrantReleased(o))
+      .toList();
+  return WindowsAclRevokeResult(
+    complete: exitedZero && outcomes != null && unreleased.isEmpty,
+    outcomes: outcomes,
+    pending: unreleased.map((o) => o.path).toList(),
+    detail: stderr.trim().isNotEmpty ? stderr.trim() : null,
+  );
+}
 
 /**
  * What `srt-win profile status` reports. Only `current` is a grant a
@@ -2544,6 +2850,16 @@ class WindowsProfileGrantStatus {
   });
 }
 
+typedef _RawProfileStatus = Map<String, dynamic>;
+const _PROFILE_GRANT_STATES = {
+  'none',
+  'current',
+  'outdated',
+  'incomplete',
+  'unknown',
+};
+const _PROFILE_PATH_KINDS = {'container', 'granted', 'file', 'denied'};
+
 /**
  * The variables {@link windowsProfileReadEnv} can return; any other name
  * `srt-win` reports is dropped. `RUSTUP_HOME` and `CARGO_HOME` name
@@ -2557,6 +2873,12 @@ const WINDOWS_PROFILE_READ_ENV_VARS = [
   'RUSTUP_HOME',
   'CARGO_HOME',
 ];
+
+/**
+ * The version of `srt-win profile status`'s record format this library
+ * reads. Any other version is not read: its lists decide what may be granted.
+ */
+const _WINDOWS_PROFILE_RECORD_VERSION = 1;
 
 /**
  * The list versions between which every change only narrows the grant:
@@ -2580,6 +2902,99 @@ bool windowsProfileGrantRefreshable(WindowsProfileGrantStatus status) {
   if (recorded < from || recorded > list || list > to) return false;
   if (status.state == 'outdated') return recorded < list;
   return status.state == 'incomplete' && status.lastOperation == 'grant';
+}
+
+List<String>? _stringList(Object? v) =>
+    v is List && v.every((x) => x is String && x != '')
+    ? v.cast<String>()
+    : null;
+
+/**
+ * Why a status that says `current` cannot be relied on, if so.
+ */
+String? _profileStatusProblem(_RawProfileStatus raw) {
+  if (raw['record_version'] != _WINDOWS_PROFILE_RECORD_VERSION)
+    return 'srt-win reports record format ${raw.containsKey('record_version') ? jsonEncode(raw['record_version']) : 'undefined'}; ' +
+        'this library reads format $_WINDOWS_PROFILE_RECORD_VERSION';
+  final exclusions = _stringList(raw['exclusions']);
+  if (exclusions == null || exclusions.isEmpty)
+    return 'the recorded grant carries no list of excluded paths';
+  if (_stringList(raw['ungranted_only']) == null)
+    return 'the recorded grant carries no list of ungranted directories';
+  return null;
+}
+
+WindowsProfileGrantStatus _mapProfileStatus(_RawProfileStatus raw) {
+  // A state this code does not know is not a usable grant.
+  var state = _PROFILE_GRANT_STATES.contains(raw['state'] ?? '')
+      ? raw['state'] as String
+      : 'unknown';
+  var reason = raw['reason'] as String?;
+  final problem = state == 'current' ? _profileStatusProblem(raw) : null;
+  if (problem != null && problem.isNotEmpty) {
+    state = 'outdated';
+    reason = problem;
+  }
+  final env = <String, String>{};
+  if (state == 'current')
+    for (final name in WINDOWS_PROFILE_READ_ENV_VARS) {
+      final v = (raw['env'] as Map?)?[name];
+      if (v is String && v != '') env[name] = v;
+    }
+  return WindowsProfileGrantStatus(
+    state: state,
+    reason: reason != null && reason.isNotEmpty ? reason : null,
+    profile: (raw['profile'] as String?)?.isNotEmpty == true
+        ? raw['profile'] as String
+        : null,
+    listVersion: raw['list_version'] is num
+        ? (raw['list_version'] as num).toInt()
+        : null,
+    recordedListVersion: raw['recorded_list_version'] is num
+        ? (raw['recorded_list_version'] as num).toInt()
+        : null,
+    lastOperation:
+        raw['last_operation'] == 'grant' || raw['last_operation'] == 'forget'
+        ? raw['last_operation'] as String
+        : null,
+    sameProfile: raw['same_profile'] == true,
+    capabilities: _capabilityList(raw['capabilities']),
+    notGranted: _grantItems(raw['not_granted']),
+    selfClosed: _grantItems(raw['self_closed']),
+    unverifiable: _grantItems(raw['unverifiable']),
+    unprotected: _grantItems(raw['unprotected']),
+    staleAllow: _grantItems(raw['stale_allow']),
+    replacedFiles: _stringList(raw['replaced_files']) ?? [],
+    extraExclusions: (raw['extra_exclusions'] as List?)?.cast<String>() ?? [],
+    // Absent from what an srt-win without `--include` reports: read
+    // as none added. Nothing a session checks depends on it.
+    extraInclusions: _stringList(raw['extra_inclusions']) ?? [],
+    exclusions: _stringList(raw['exclusions']) ?? [],
+    ungrantedOnly: _stringList(raw['ungranted_only']) ?? [],
+    inclusions: _stringList(raw['inclusions']) ?? [],
+    counts: (
+      containers: raw['containers'] as int? ?? 0,
+      granted: raw['granted'] as int? ?? 0,
+      files: raw['files'] as int? ?? 0,
+      denied: raw['denied'] as int? ?? 0,
+    ),
+    env: env,
+    paths: (raw['paths'] as List?)
+        ?.where(
+          (p) =>
+              p is Map &&
+              p['path'] is String &&
+              p['kind'] is String &&
+              _PROFILE_PATH_KINDS.contains(p['kind']),
+        )
+        .map(
+          (p) => WindowsProfileGrantPath(
+            path: p['path'] as String,
+            kind: p['kind'] as String,
+          ),
+        )
+        .toList(),
+  );
 }
 
 /**
@@ -2770,6 +3185,40 @@ class WindowsProfileGrantResult {
   });
 }
 
+const _PROFILE_GRANT_TIMEOUT_MS = 30 * 60000;
+/** How long a retry of stale entries may start new work during a start. */
+const _PROFILE_STALE_RETRY_BUDGET_MS = 3000;
+/** And when it is killed, in case a single tree walk outruns the budget. */
+const _PROFILE_STALE_RETRY_TIMEOUT_MS = 10000;
+
+/** A `[{path, reason}]` list as `srt-win` reports it; anything else is none. */
+List<WindowsProfileGrantItem> _grantItems(Object? v) {
+  if (v is! List) return [];
+  return v.expand((i) {
+    final item = i is Map ? i : const {};
+    final p = item['path'], reason = item['reason'];
+    if (p is! String) return <WindowsProfileGrantItem>[];
+    final reads = item['caller_reads'],
+        cause = item['cause'],
+        protectedExclusion = item['protected_exclusion'],
+        entry = item['entry'];
+    return [
+      WindowsProfileGrantItem(
+        path: p,
+        reason: reason is String ? reason : '',
+        callerReads: reads is bool || reads == 'unknown' ? reads : null,
+        cause: cause is String ? cause : null,
+        protectedExclusion: protectedExclusion is bool
+            ? protectedExclusion
+            : null,
+        entry: entry == 'explicit' || entry == 'inherited'
+            ? entry as String
+            : null,
+      ),
+    ];
+  }).toList();
+}
+
 /**
  * Write or refresh the profile read grant (`srt-win profile grant`), as
  * the user of this process, unelevated. Runs only while no sandbox session
@@ -2778,6 +3227,60 @@ class WindowsProfileGrantResult {
 Future<WindowsProfileGrantResult> grantWindowsProfileRead([
   WindowsProfileGrantOptions opts = const WindowsProfileGrantOptions(),
 ]) async => throw UnsupportedError('Windows is not supported by this port');
+
+List<String> _profileGrantArgs(WindowsProfileGrantOptions opts) {
+  final args = ['profile', 'grant', '--json'];
+  for (final e in opts.exclude ?? <String>[]) args.addAll(['--exclude', e]);
+  if (opts.replaceExclusions == true) args.add('--replace-excludes');
+  for (final i in opts.include ?? <String>[]) args.addAll(['--include', i]);
+  if (opts.replaceInclusions == true) args.add('--replace-includes');
+  return args;
+}
+
+WindowsProfileGrantResult _profileGrantResult(List<String> args, _RunResult r) {
+  final tail = r.stderr.length > 2000
+      ? r.stderr.substring(r.stderr.length - 2000)
+      : r.stderr;
+  logForDebugging('[Sandbox Windows] profile grant exit=${r.status}: $tail');
+  if (r.status != 0)
+    throw WindowsSandboxError(
+      'profile_grant_failed',
+      'srt-win profile grant exited ${r.status}: ' +
+          (tail.isNotEmpty ? tail : r.stdout),
+      'profile',
+    );
+  // stdout carries one JSON object; `--json` puts nothing else there.
+  final raw = _parseSrtWinJson<Map<String, dynamic>>(args, r);
+  return WindowsProfileGrantResult(
+    profile: raw['profile'] as String,
+    containers: raw['containers'] as int,
+    granted: raw['granted'] as int,
+    files: raw['files'] as int,
+    denied: raw['denied'] as int,
+    placeholders: raw['placeholders'] as int,
+    placeholdersRemoved: raw['placeholders_removed'] as int? ?? 0,
+    writes: raw['writes'] as int,
+    unchanged: raw['unchanged'] as int,
+    removed: raw['removed'] as int,
+    skipped:
+        (raw['skipped'] as List?)
+            ?.map(
+              (i) => WindowsProfileGrantItem(
+                path: (i as Map)['path'] as String,
+                reason: i['reason'] as String,
+              ),
+            )
+            .toList() ??
+        [],
+    notGranted: _grantItems(raw['not_granted']),
+    selfClosed: _grantItems(raw['self_closed']),
+    unverifiable: _grantItems(raw['unverifiable']),
+    unprotected: _grantItems(raw['unprotected']),
+    staleAllow: _grantItems(raw['stale_allow']),
+    forgottenRoots: _grantItems(raw['forgotten_roots']),
+    elapsedMs: raw['elapsed_ms'] as int,
+  );
+}
 
 /**
  * Try again to revoke what the last run of the grant could not, on the
@@ -2789,6 +3292,14 @@ Future<WindowsProfileGrantResult> grantWindowsProfileRead([
 Future<({int cleared})> retryWindowsProfileStale({
   required SrtWinSpawn srtWin,
 }) async => throw UnsupportedError('Windows is not supported by this port');
+
+/**
+ * {@link grantWindowsProfileRead} for the synchronous install: blocks
+ * until `srt-win` exits, and hands `onProgress` its lines only then.
+ */
+WindowsProfileGrantResult _grantWindowsProfileReadSync(
+  WindowsProfileGrantOptions opts,
+) => throw UnsupportedError('Windows is not supported by this port');
 
 /**
  * Remove the profile read grant (`srt-win profile forget`). Synchronous:
@@ -2817,6 +3328,39 @@ class WindowsProfileForgetResult {
 
   const WindowsProfileForgetResult({required this.deferred});
 }
+
+WindowsProfileForgetResult _profileForgetResult(_RunResult r) {
+  logForDebugging(
+    '[Sandbox Windows] profile forget exit=${r.status}: ' +
+        (r.stderr.isNotEmpty ? r.stderr : r.stdout),
+  );
+  if (r.status != 0)
+    throw WindowsSandboxError(
+      'profile_forget_failed',
+      'The profile read grant could not be removed (srt-win profile ' +
+          'forget exited ${r.status}): ${r.stderr.isNotEmpty ? r.stderr : r.stdout}',
+      'profile',
+    );
+  var raw = <String, dynamic>{};
+  try {
+    raw = jsonDecode(r.stdout) as Map<String, dynamic>;
+  } catch (_) {
+    // No report on stdout: nothing was deferred that can be named.
+  }
+  final deferred = _grantItems(raw['deferred']);
+  for (final d in deferred)
+    logForDebugging(
+      '[Sandbox Windows] profile forget could not reach ${d.path}: ' +
+          'it may still carry the entry if its volume returns',
+      level: 'warn',
+    );
+  return WindowsProfileForgetResult(deferred: deferred);
+}
+
+/** `p` for a comparison of profile paths: no `\\?\` prefix, `/`, lower case, no separator at the end. */
+String _profilePathKey(String p) => stripExtendedPathPrefix(
+  p,
+).replaceAll(r'\', '/').replaceAll(RegExp(r'/+$'), '').toLowerCase();
 
 /** How a path a session wants to grant stands to a profile exclusion. */
 class WindowsProfileExclusionConflict {
@@ -2851,6 +3395,59 @@ class WindowsProfileExclusionConflict {
   });
 }
 
+/** One component of a recorded exclusion against one of a path; both lower case. */
+bool _exclusionComponentMatches(String pattern, String name) {
+  if (pattern == '*') return true;
+  if (pattern.endsWith('*'))
+    return name.startsWith(pattern.substring(0, pattern.length - 1));
+  if (pattern.startsWith('*')) return name.endsWith(pattern.substring(1));
+  return pattern == name;
+}
+
+/**
+ * Whether something that exists beneath the directory `dir` matches
+ * `rest`, the components of an exclusion that `dir` lies above.
+ */
+// 'none' | 'match' | { unexamined: string }.
+Object _exclusionMatchedBeneath(
+  String dir,
+  List<String> rest, [
+  bool top = true,
+]) {
+  if (rest.isEmpty) return 'match';
+  late List<fs.Dirent> entries;
+  try {
+    final st = fs.lstatSync(dir);
+    if (st.isSymbolicLink()) {
+      // Beneath `dir`, a link is simply not followed. `dir` itself was
+      // resolved a moment ago and should not be one.
+      return top ? (unexamined: "'$dir' is a link") : 'none';
+    }
+    if (!st.isDirectory()) return 'none';
+    entries = fs.readdirSync(dir, withFileTypes: true);
+  } catch (e) {
+    if (_isAbsentError(e)) return 'none';
+    final code = e is NodeError ? e.code : 'error';
+    return (unexamined: "'$dir' could not be listed ($code)");
+  }
+  ({String unexamined})? unexamined;
+  for (final e in entries) {
+    if (!_exclusionComponentMatches(
+      rest[0],
+      normalizeCaseForComparison(e.name),
+    ))
+      continue;
+    final found = _exclusionMatchedBeneath(
+      path.join(dir, e.name),
+      rest.sublist(1),
+      false,
+    );
+    if (found == 'match') return 'match';
+    if (found != 'none') unexamined ??= found as ({String unexamined});
+  }
+  return unexamined ?? 'none';
+}
+
 /**
  * The paths among `paths` a session must not grant while the profile read
  * grant exists, with the exclusion each collides with. Paths are resolved
@@ -2861,7 +3458,116 @@ List<WindowsProfileExclusionConflict> windowsProfileExclusionConflicts(
   ({List<String> exclusions, List<String> ungrantedOnly}) grant, {
   List<String>? override,
   bool? write,
-}) => throw UnsupportedError('Windows is not supported by this port');
+}) {
+  if (paths.isEmpty) return [];
+  final access = write == true ? 'write' : 'read';
+  List<({String exclusion, String kind, List<String> parts})> rulesOf(
+    List<String> list,
+    String kind,
+  ) => list
+      .map(
+        (e) => (
+          exclusion: e,
+          kind: kind,
+          parts: normalizeCaseForComparison(_profilePathKey(e)).split('/'),
+        ),
+      )
+      .toList();
+  // The ungranted-only directory itself is looked for first, so it is
+  // reported as what it is and not as "above" something inside it.
+  final ungranted = rulesOf(grant.ungrantedOnly, 'ungranted-only');
+  final rules = [
+    ...ungranted.map(
+      (r) => (
+        exclusion: r.exclusion,
+        kind: r.kind,
+        parts: r.parts,
+        onlyEqual: true,
+      ),
+    ),
+    ...rulesOf(grant.exclusions, 'protected').map(
+      (r) => (
+        exclusion: r.exclusion,
+        kind: r.kind,
+        parts: r.parts,
+        onlyEqual: false,
+      ),
+    ),
+    ...ungranted.map(
+      (r) => (
+        exclusion: r.exclusion,
+        kind: r.kind,
+        parts: r.parts,
+        onlyEqual: false,
+      ),
+    ),
+  ];
+  if (rules.isEmpty) return [];
+  final admitted =
+      (write == true ? <String>[] : (override ?? []).map(_windowsPathKey))
+          .toSet();
+  final out = <WindowsProfileExclusionConflict>[];
+  for (final p in paths) {
+    // One guarded look at the path: the comparison key and the
+    // lookups beneath it use the same result.
+    final onDisk = _resolveWindowsPath(p);
+    final key = _windowsPathKeyOf(p, onDisk);
+    final parts = key.split('/');
+    for (final r in rules) {
+      final shared = parts.length < r.parts.length
+          ? parts.length
+          : r.parts.length;
+      var related = true;
+      for (var i = 0; related && i < shared; i++)
+        related = _exclusionComponentMatches(r.parts[i], parts[i]);
+      if (!related) continue;
+      final relation = parts.length == r.parts.length
+          ? 'equal'
+          : parts.length > r.parts.length
+          ? 'inside'
+          : 'above';
+      if (r.onlyEqual && relation != 'equal') continue;
+      String? unexamined;
+      if (relation == 'above' && r.exclusion.contains('*')) {
+        if (onDisk is _ResolvedWindowsPathAbsent) continue;
+        if (onDisk is _ResolvedWindowsPathResolved) {
+          final found = _exclusionMatchedBeneath(
+            onDisk.path,
+            r.parts.sublist(parts.length),
+          );
+          if (found == 'none') continue;
+          if (found != 'match')
+            unexamined = (found as ({String unexamined})).unexamined;
+        } else {
+          // Never opened (a share, the device namespace) or not
+          // openable: nothing was looked at, so nothing is admitted.
+          unexamined = onDisk is _ResolvedWindowsPathUnprobed
+              ? "'$p' is not on a local drive and is not examined"
+              : "'$p' could not be resolved (${(onDisk as _ResolvedWindowsPathError).code})";
+        }
+      }
+      if (r.kind == 'ungranted-only') {
+        if (relation == 'inside') continue;
+      } else if (relation != 'above' && admitted.contains(key)) {
+        // An admitted path is still checked against the other
+        // exclusions: it may lie above one of them.
+        continue;
+      }
+      out.add(
+        WindowsProfileExclusionConflict(
+          path: p,
+          exclusion: r.exclusion,
+          kind: r.kind,
+          access: access,
+          relation: relation,
+          unexamined: unexamined,
+        ),
+      );
+      break;
+    }
+  }
+  return out;
+}
 
 /**
  * Variables an embedder may set so a tool reads the real user's files in
@@ -2974,6 +3680,9 @@ const WINDOWS_LOOPBACK_NO_PROXY = 'localhost,127.0.0.1,::1';
       ...(p.gitSafeDirectories ?? []),
     ],
     schannelCa: p.caCertPath != null,
+    // Schannel cannot acquire credentials under the write-restricted
+    // token; git's OpenSSL backend reads the same GIT_SSL_CAINFO.
+    opensslBackend: true,
     baseEnv: p.setEnvVars,
   );
 
@@ -3109,16 +3818,57 @@ Map<String, String?> envListToObject(List<String> list) {
 // ────────────────────────────────────────────────────────────────────
 
 /**
+ * Why an existing install cannot be used by this `srt-win` (its setup
+ * marker is another release's; re-run the install), or `undefined`.
+ * An `srt-win` that does not report its setup version is not judged.
+ */
+String? windowsSetupVersionMismatch(
+  WindowsSandboxUserStatus us, [
+  String? sublayerGuid,
+]) {
+  if (us.setupVersion == null || us.markerVersion == us.setupVersion)
+    return null;
+  if (us.markerVersion != null && us.markerVersion! > us.setupVersion!) {
+    final sl = sublayerGuid != null && sublayerGuid.isNotEmpty
+        ? ' --sublayer-guid $sublayerGuid'
+        : '';
+    return 'The Windows sandbox on this machine was set up by a newer ' +
+        'release (setup version ${us.markerVersion}; this release needs ' +
+        '${us.setupVersion}). Use that release, or replace its install ' +
+        'with this one: `srt-win.exe install --force$sl`.\n' +
+        'Nothing is granted or run until then.';
+  }
+  return 'The Windows sandbox on this machine was set up by a different ' +
+      "release (setup version ${us.markerVersion ?? 'unknown'}; this " +
+      'release needs ${us.setupVersion}). Re-run the install to upgrade ' +
+      'it in place (one UAC prompt):\n' +
+      _windowsInstallCommandLines(
+        _windowsInstallFlags(
+          WindowsInstallContext(sublayerGuid: sublayerGuid),
+          false,
+        ),
+      ) +
+      'Nothing is granted or run until then.';
+}
+
+/** The two ways to run the install, with `flags` (see `windowsInstallFlags`). */
+String _windowsInstallCommandLines(String flags) =>
+    '  $WINDOWS_INSTALL_COMMAND$flags\n' +
+    '  — or call installWindowsSandbox(), or run ' +
+    '`srt-win.exe install$flags` directly.\n';
+
+/**
  * Install instructions, surfaced verbatim in error messages.
  */
-String windowsInstallInstructions(String? sublayerGuid) {
-  final sl = sublayerGuid != null && sublayerGuid.isNotEmpty
-      ? ' --sublayer-guid $sublayerGuid'
-      : '';
+// string | WindowsInstallContext | undefined.
+String windowsInstallInstructions(Object? install, [bool force = false]) {
+  final ctx = install is String
+      ? WindowsInstallContext(sublayerGuid: install)
+      : install as WindowsInstallContext?;
   return 'Windows sandbox needs a one-time install (one UAC prompt):\n' +
-      '  npx sandbox-runtime windows-install\n' +
-      '  — or call installWindowsSandbox(), or run ' +
-      '`srt-win.exe install$sl` directly.\n' +
+      _windowsInstallCommandLines(
+        _windowsInstallFlags(ctx ?? const WindowsInstallContext(), force),
+      ) +
       'No logout is needed: the WFP filter keys on the dedicated ' +
       "`srt-sandbox` user's SID, so your network is unaffected.";
 }
@@ -3156,13 +3906,22 @@ _PromiseSettledResult<T> _settle<T>(T Function() fn) {
  * both probes concurrently and its thunk returns the settled result.
  */
 SandboxDependencyCheck _interpretDependencyProbes(
-  String? sublayerGuid,
+  WindowsInstallContext install,
   _PromiseSettledResult<WindowsSandboxUserStatus> user,
   _PromiseSettledResult<WindowsWfpStatusResult> Function() getWfp,
 ) {
+  final sublayerGuid = install.sublayerGuid,
+      allowLoopback = install.allowLoopback;
   final errors = <String>[];
   final warnings = <String>[];
-
+  String mode(bool open) => open ? 'open' : 'closed';
+  String? reinstallRequired, loopbackMismatch;
+  SandboxDependencyCheck result() => SandboxDependencyCheck(
+    errors: errors,
+    warnings: warnings,
+    reinstallRequired: reinstallRequired,
+    loopbackMismatch: loopbackMismatch,
+  );
   // 2. Sandbox user provisioned + credential readable.
   if (user.status == 'rejected') {
     errors.add('srt-win user status failed: ${errorMessage(user.reason)}');
@@ -3173,10 +3932,24 @@ SandboxDependencyCheck _interpretDependencyProbes(
     errors.add(
       'Sandbox user is not provisioned (user=${us.provisioned}, ' +
           'cred=${us.credPresent}). ' +
-          windowsInstallInstructions(sublayerGuid),
+          windowsInstallInstructions(install),
     );
+  } else {
+    // Installed, by a release with another setup version: an upgrade,
+    // not a missing sandbox, so its own wording.
+    reinstallRequired = windowsSetupVersionMismatch(us, sublayerGuid);
+    if (reinstallRequired != null && reinstallRequired.isNotEmpty)
+      errors.add(reinstallRequired);
   }
-
+  // 2b. Secondary Logon service usable: every launch goes through it.
+  // Field absent (older srt-win) → no opinion.
+  if (us.seclogon == 'disabled' || us.seclogon == 'missing')
+    errors.add(_seclogonDisabledMessage(us.seclogon!));
+  else if (us.seclogon == 'cannot-read')
+    logForDebugging(
+      '[Sandbox Windows] Secondary Logon (seclogon) state cannot-read; ' +
+          'a launch will show whether it is usable',
+    );
   // 3. WFP filters installed under the sublayer. BFE enumeration is
   // admin-gated; `cannot-read` is informational only — the
   // BEHAVIORAL check (`verifyWindowsWfpEgress`) runs at
@@ -3184,31 +3957,58 @@ SandboxDependencyCheck _interpretDependencyProbes(
   final wfp = getWfp();
   if (wfp.status == 'rejected') {
     errors.add('srt-win wfp status failed: ${errorMessage(wfp.reason)}');
-    return SandboxDependencyCheck(errors: errors, warnings: warnings);
+    return result();
   }
   final ws = wfp.value!;
-  if (ws.state == 'cannot-read') {
+  if (ws.state == 'cannot-read')
     logForDebugging(
       '[Sandbox Windows] wfp status cannot-read (non-elevated): ${ws.hint ?? 'undefined'}',
+    );
+  else if (ws.state == 'loopback-mismatch') {
+    // The filters in place are not the ones the install recorded.
+    errors.add(
+      'WFP filters under sublayer ${sublayerGuid ?? '(default)'} cannot ' +
+          'be used: their loopback mode ' +
+          "(${ws.allowLoopback ? 'open' : 'closed'}) is not the one the " +
+          'install recorded. Re-run the install for this configuration ' +
+          '(one UAC prompt):\n  ' +
+          _windowsInstallCommand(install, true),
     );
   } else if (ws.state != 'installed') {
     // 'absent'. If the user is also not-provisioned, the user-state
     // error above already gave the right instruction; don't repeat.
-    if (us.provisioned && us.credPresent) {
+    if (us.provisioned && us.credPresent)
       errors.add(
         'WFP filters not installed under sublayer ' +
-            "${sublayerGuid ?? '(default)'}. " +
-            windowsInstallInstructions(sublayerGuid),
+            '${sublayerGuid ?? '(default)'}. ' +
+            windowsInstallInstructions(install),
       );
-    }
-  } else if (ws.portRange != null) {
+  } else if (ws.portRange != null)
     logForDebugging(
       '[Sandbox Windows] WFP installed: ${ws.filters} filters, ' +
-          'proxy port range ${ws.portRange!.$1}-${ws.portRange!.$2}',
+          'proxy port range ${ws.portRange!.$1}-${ws.portRange!.$2}, ' +
+          'loopback ${mode(ws.allowLoopback)}',
     );
+  // 4. The installed loopback mode is the configured one, in either
+  // direction (`undefined`: the caller did not say what is configured).
+  final fenced =
+      us.provisioned &&
+      us.credPresent &&
+      (ws.state == 'installed' || ws.state == 'cannot-read');
+  if (fenced && allowLoopback != null && ws.allowLoopback != allowLoopback) {
+    loopbackMismatch =
+        'WFP filters under sublayer ${sublayerGuid ?? '(default)'} do not ' +
+        'match network.allowLocalBinding (installed: loopback ' +
+        '${mode(ws.allowLoopback)}; configured: ' +
+        '${mode(allowLoopback)}). Re-run the install for this ' +
+        'configuration (one UAC prompt):\n  ' +
+        _windowsInstallCommand(install, true);
+    errors.add(loopbackMismatch);
+  } else if (fenced && ws.allowLoopback) {
+    // Not an error, and not to be read past: say what is open.
+    warnings.add(WINDOWS_ALLOW_LOOPBACK_EFFECT);
   }
-
-  return SandboxDependencyCheck(errors: errors, warnings: warnings);
+  return result();
 }
 
 /**
