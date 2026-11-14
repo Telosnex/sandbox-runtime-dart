@@ -84,7 +84,7 @@ class TLSSocket extends net.NodeSocket {
     if (opts['isServer'] != true) {
       throw UnimplementedError('tls.TLSSocket on the client side');
     }
-    final context0 = opts['secureContext'];
+    final context0 = opts['secureContext'] ?? serverContextFor(opts);
     if (context0 is! SecurityContext) {
       throw ArgumentError.value(
         context0,
@@ -180,6 +180,9 @@ class TLSSocket extends net.NodeSocket {
 }
 
 const _tlsSocketOptions = {
+  'key',
+  'cert',
+  'ca',
   'isServer',
   'secureContext',
   'ALPNProtocols',
@@ -546,7 +549,7 @@ SecurityContext secureContextFor(Object? ca, SecurityContext? context) {
     }
   }
 
-  if (ca is Iterable && ca is! String) {
+  if (ca is Iterable && ca is! String && ca is! List<int>) {
     for (final certificate in ca) {
       addCertificate(certificate as Object);
     }
@@ -955,7 +958,7 @@ List<Uint8List> _caDers(Object? ca) {
     }
   }
 
-  if (ca is Iterable && ca is! String) {
+  if (ca is Iterable && ca is! String && ca is! List<int>) {
     ca.forEach((c) => add(c as Object));
   } else if (ca != null) {
     add(ca);
