@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/sandbox/tls-terminate-proxy.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/tls-terminate-proxy.ts @ 0bbebed.
 // ignore_for_file: slash_for_doc_comments, dangling_library_doc_comments
 // ignore_for_file: constant_identifier_names, doc_directive_unknown
 // ignore_for_file: non_constant_identifier_names
@@ -39,6 +39,7 @@ import 'parent_proxy.dart'
         directRequestOptions,
         DirectRequestOptions,
         formatAuthority,
+        onUpstreamError,
         relayResponseHead,
         stripHopByHop;
 import 'aws_sigv4.dart' show sha256Hex;
@@ -219,8 +220,10 @@ _duplexOverSocket(
  * reads in that socket's own buffer too, which grows by the whole upload.
  * `outbound` is the stream whose write queue holds what is on its way to
  * the client.
+ *
+ * @internal Exported for its test.
  */
-({tls.TLSSocket tls, stream.Writable outbound}) _serverTlsOn(
+({tls.TLSSocket tls, stream.Writable outbound}) serverTlsOn(
   stream.Duplex socket,
   Uint8List head,
   Map<String, Object?> options,
@@ -240,6 +243,14 @@ _duplexOverSocket(
     'isServer': true,
   });
   setConsumer(tls_);
+  // destroySoon() is to destroy a socket once all it was given is out. This
+  // one has finished as soon as it has written to the stream under it, long
+  // before the client has the bytes, and destroyed then it drops them. (A
+  // runtime's http server may call it after an HTTP/1.0 response.) Ended, it
+  // closes the tunnel too, after the flush. destroy() still cuts at once.
+  tls_.destroySoonOverride = () {
+    tls_.end();
+  };
   return (tls: tls_, outbound: duplex);
 }
 
@@ -263,6 +274,45 @@ const _MAX_QUEUED_FOR_CLIENT = 1 << 20;
  * paused instead (gateSocketOnBufferedBody).
  */
 const _MAX_BUFFERED_REQUEST_BODY = 4 << 20;
+
+/** How long a tunnel may stay as it is before boundTunnel closes it. */
+class TunnelTimeouts {
+  const TunnelTimeouts({
+    required this.firstRequestMs,
+    required this.keepAliveMs,
+    required this.keepAliveMarginMs,
+    required this.stalledMs,
+  });
+  /** From the ClientHello to the first request's whole head. */
+  final int firstRequestMs;
+  /** What `Keep-Alive: timeout` says: from a response to the next request. */
+  final int keepAliveMs;
+  /** How much later than it says an idle tunnel is ended, for a client that takes it at its word. */
+  final int keepAliveMarginMs;
+  /** With a request or a response under way that does not move. */
+  final int stalledMs;
+}
+
+const TUNNEL_TIMEOUTS = TunnelTimeouts(
+  firstRequestMs: 10000,
+  keepAliveMs: 5000,
+  keepAliveMarginMs: 1000,
+  stalledMs: 300000,
+);
+
+// Dart: Partial<TunnelTimeouts> has each field optional.
+class PartialTunnelTimeouts {
+  const PartialTunnelTimeouts({
+    this.firstRequestMs,
+    this.keepAliveMs,
+    this.keepAliveMarginMs,
+    this.stalledMs,
+  });
+  final int? firstRequestMs, keepAliveMs, keepAliveMarginMs, stalledMs;
+}
+
+/** A tunnel with something under way is looked at this many times in a timeout. */
+const _LOOKS = 5;
 
 class TerminateTarget {
   /**
@@ -312,6 +362,9 @@ class TerminateTarget {
   /// Forward the request-target as spelled (see HttpProxyServerOptions.requestTargetAsSpelled).
   final bool? requestTargetAsSpelled;
 
+  /** What becomes of an ambiguous request-target (see HttpProxyServerOptions.ambiguousRequestTarget). */
+  final AmbiguousRequestTarget? ambiguousRequestTarget;
+
   /// The TLS server name the client sent (set by terminateAndForward).
   final String? clientServerName;
 
@@ -327,6 +380,9 @@ class TerminateTarget {
   /// Shared across a proxy's tunnels: bytes they may hold for slow parties (see ByteBudget).
   final ByteBudget? byteBudget;
 
+  /** In place of TUNNEL_TIMEOUTS (see HttpProxyServerOptions.tunnelTimeouts). */
+  final PartialTunnelTimeouts? timeouts;
+
   const TerminateTarget({
     required this.hostname,
     required this.port,
@@ -339,11 +395,13 @@ class TerminateTarget {
     this.foldHopByHop,
     this.denyHeader,
     this.requestTargetAsSpelled,
+    this.ambiguousRequestTarget,
     this.clientServerName,
     this.clientServerNameUnreadable,
     this.onEstablished,
     this.onHandshakeProbe,
     this.byteBudget,
+    this.timeouts,
   });
 }
 
@@ -377,12 +435,19 @@ void terminateAndForward(
   // The tunnel's one connection is its client's, so the server name in its
   // ClientHello is the tunnel's (read below, before the handshake).
   ServerName serverName = const ServerNameAbsent();
-  // Never listens: the TLS socket below is handed to it.
-  final inner = http.createServer(
-    target.maxHeaderSize != null
-        ? {'maxHeaderSize': target.maxHeaderSize}
-        : <String, Object?>{},
+  final timeouts = TunnelTimeouts(
+    firstRequestMs:
+        target.timeouts?.firstRequestMs ?? TUNNEL_TIMEOUTS.firstRequestMs,
+    keepAliveMs: target.timeouts?.keepAliveMs ?? TUNNEL_TIMEOUTS.keepAliveMs,
+    keepAliveMarginMs:
+        target.timeouts?.keepAliveMarginMs ?? TUNNEL_TIMEOUTS.keepAliveMarginMs,
+    stalledMs: target.timeouts?.stalledMs ?? TUNNEL_TIMEOUTS.stalledMs,
   );
+  // Never listens: the TLS socket below is handed to it.
+  final inner = http.createServer({
+    'keepAliveTimeout': timeouts.keepAliveMs,
+    if (target.maxHeaderSize != null) 'maxHeaderSize': target.maxHeaderSize,
+  });
 
   // Needs an http.Server that serves a connection handed to it (Node, Bun
   // 1.4 and later: such a server has a 'connection' listener of its own).
@@ -440,9 +505,11 @@ void terminateAndForward(
         foldHopByHop: target.foldHopByHop,
         denyHeader: target.denyHeader,
         requestTargetAsSpelled: target.requestTargetAsSpelled,
+        ambiguousRequestTarget: target.ambiguousRequestTarget,
         onEstablished: target.onEstablished,
         onHandshakeProbe: target.onHandshakeProbe,
         byteBudget: target.byteBudget,
+        timeouts: target.timeouts,
         clientServerName: serverName.kind == 'name'
             ? (serverName as ServerNameName).name
             : null,
@@ -454,7 +521,13 @@ void terminateAndForward(
       maxSigv4BodyBytes ?? MAX_SIGV4_RESIGN_BODY_BYTES,
     );
   });
-  inner.on('clientError', (dynamic err, net.NodeSocket sock) {
+  // Responses under way on the tunnel's connection.
+  var answering = 0;
+  inner.on('request', (http.IncomingMessage _req, http.ServerResponse res) {
+    answering++;
+    res.once('close', () => answering--);
+  });
+  inner.on('clientError', (Object err, net.NodeSocket sock) {
     // Parse errors and resets on the tunnel would otherwise escalate to an
     // uncaughtException, same class as the request-stream errors handled
     // above.
@@ -462,25 +535,22 @@ void terminateAndForward(
       '[tls-terminate] client connection error for ${target.hostname}: ${errorMessage(err)}',
       level: 'error',
     );
-    if (target.maxHeaderSize != null &&
-        err is NodeError &&
-        err.code == 'HPE_HEADER_OVERFLOW' &&
-        sock.writable) {
-      // A head past the caller's own limit is a request past its limits:
-      // 400, flushed before the socket goes.
-      sock.on('error', ([_]) {});
-      final mark = target.denyHeader != null
-          ? '${target.denyHeader}: bad_request\r\n'
-          : '';
-      sock.end(
-        'HTTP/1.1 400 Bad Request\r\n${mark}Content-Length: 0\r\nConnection: close\r\n\r\n',
-        ([_]) => sock.destroy(),
-      );
-      // Dart timers have no unref().
-      Timer(const Duration(milliseconds: 1000), () => sock.destroy());
-      return;
-    }
-    sock.destroy();
+    // A request the parser refuses is refused like any other: answered, and
+    // reported under the tunnel's own target.
+    final refused = refuseUnparsedRequest(
+      err,
+      sock,
+      answering == 0,
+      target.denyHeader != null
+          ? (name: target.denyHeader!, value: 'bad_request')
+          : 'blocked-by-sandbox-runtime',
+    );
+    if (refused == null) return;
+    target.onFilterRequestDeny?.call(
+      refused.method,
+      'https://${formatAuthority(target.hostname, target.port, 443)}${refused.target}',
+      refused.reason,
+    );
   });
   inner.on('upgrade', (Object? _req, net.NodeSocket sock) {
     // WebSocket / non-HTTP over TLS — out of scope for now.
@@ -525,7 +595,7 @@ void terminateAndForward(
     final leafFor = target.requireHostMatch != true && serverName.kind == 'name'
         ? (serverName as ServerNameName).name
         : target.hostname;
-    final (:tls, :outbound) = _serverTlsOn(
+    final (:tls, :outbound) = serverTlsOn(
       socket,
       hello,
       {
@@ -551,9 +621,9 @@ void terminateAndForward(
     tls.once('data', onEstablished);
     // Neither event comes for a client that finishes the handshake and then
     // stays quiet where 'secure' is not said, so a deadline asks instead.
-    target.onHandshakeProbe?.call(
-      () => established || _isTlsHandshakeDone(tls),
-    );
+    bool handshakeDone() => established || _isTlsHandshakeDone(tls);
+    target.onHandshakeProbe?.call(handshakeDone);
+    boundTunnel(inner, tls, outbound, socket, timeouts, handshakeDone);
     tls.once('secure', ([_]) {
       onEstablished();
       // Where the runtime reports the name its TLS layer took, it must be
@@ -607,6 +677,122 @@ void terminateAndForward(
     inner.emit('connection', tls);
     keepFlushedHeaderBatches(tls);
   };
+}
+
+/**
+ * Close a tunnel that would otherwise stay open, and hold its slot, for as
+ * long as its client or its upstream leaves it so. Its server never listens,
+ * so of a server's connection timeouts the runtime applies keepAliveTimeout
+ * alone (Node) or none (Bun).
+ *
+ * - Idle, that is no response owed (no request yet, between two, part of a
+ *   head) and nothing queued for the client: ended with close_notify and a
+ *   FIN, and destroyed if it is still there, and idle, as long again.
+ * - Under way, that is a request not all in, the tunnel paused for an
+ *   upstream that takes no more of one (so that not even its client's
+ *   leaving is seen), or bytes queued for a client: destroyed once nothing
+ *   has moved for `stalledMs`. A client that goes on reading loses nothing.
+ *   That it reads is seen when the kernel takes more, which it does once a
+ *   good part of its send buffer is free: up to a megabyte or two at a time.
+ *
+ * A whole request that waits for its response is left alone: the tunnel is
+ * read meanwhile, so it closes when its client does.
+ *
+ * @internal Exported for its test.
+ */
+void boundTunnel(
+  http.NodeHttpServer inner,
+  tls.TLSSocket tls,
+  stream.Writable outbound,
+  stream.Duplex socket,
+  TunnelTimeouts timeouts,
+  bool Function() handshakeDone,
+) {
+  final TunnelTimeouts(
+    :firstRequestMs,
+    :keepAliveMs,
+    :keepAliveMarginMs,
+    :stalledMs,
+  ) = timeouts;
+  // What is on its way to the client and still in this process. No layer
+  // counts it all: a response is done, and Bun's TLS socket empty and
+  // finished, with a megabyte in the stream under it. (Under Node two of
+  // the three are one: all that is asked is whether it is zero, or changes.)
+  int queued() =>
+      tls.writableLength + outbound.writableLength + socket.writableLength;
+
+  var owed = 0;
+  late Timer idle;
+  void endWhenIdleFor(int ms) {
+    final busy = queued() > 0;
+    idle = Timer(
+      Duration(microseconds: ((busy ? ms / _LOOKS : ms) * 1000).round()),
+      () {
+        // Not idle for all of `ms`: a handshake under way has a deadline of
+        // its own, and what is queued is the client's to take.
+        if (!handshakeDone() || busy || queued() > 0) {
+          endWhenIdleFor(ms);
+          return;
+        }
+        // Ended, and still here: not every client answers an end, and not
+        // every runtime closes the socket under a TLS socket it ends.
+        if (tls.writableEnded) {
+          socket.destroy();
+          return;
+        }
+        logForDebugging('[tls-terminate] tunnel idle for $ms ms; closed');
+        tls.end();
+        endWhenIdleFor(ms);
+      },
+    );
+  }
+
+  endWhenIdleFor(firstRequestMs);
+  // Node's own keep-alive timeout destroys the socket, whatever is queued.
+  inner.on('timeout', () {});
+
+  http.IncomingMessage? receiving;
+  // A tunnel moves when bytes are read, when it is taken up again after a
+  // pause (what is read then, a runtime may have read ahead and counted),
+  // and when bytes written to it leave the queue.
+  var resumed = 0;
+  tls.on('resume', () => resumed++);
+  var moved = 0;
+  var still = 0;
+  final stalled = Timer.periodic(
+    Duration(microseconds: (stalledMs * 1000 / _LOOKS).round()),
+    (_) {
+      final before = moved;
+      moved = tls.bytesRead + resumed + tls.bytesWritten - queued();
+      final underWay =
+          tls.isPaused() || receiving?.complete == false || queued() > 0;
+      still = underWay && moved == before ? still + 1 : 0;
+      if (still < _LOOKS) return;
+      logForDebugging(
+        '[tls-terminate] nothing has moved for $stalledMs ms; tunnel closed',
+      );
+      socket.destroy();
+    },
+  );
+
+  inner.on('request', (http.IncomingMessage req, http.ServerResponse res) {
+    owed++;
+    idle.cancel();
+    receiving = req;
+    // Once the answer is out nothing reads the request on (an upstream that
+    // answered or failed early took part of it), and a runtime's server
+    // leaves alone a request that was being read. The rest is dropped, so
+    // that the tunnel is read on: to the next request, or its client's end.
+    res.once('finish', () => req.unpipe().resume());
+    res.once('close', () {
+      if (--owed == 0 && !socket.destroyed)
+        endWhenIdleFor(keepAliveMs + keepAliveMarginMs);
+    });
+  });
+  socket.once('close', () {
+    idle.cancel();
+    stalled.cancel();
+  });
 }
 
 /**
@@ -759,9 +945,15 @@ ServerName _hostNameEntry(Uint8List body) {
  * the client ends its side, or after a grace period. Until then what the
  * client sends is read and dropped, since unread input when the socket
  * closes turns the close into a reset, and a reset discards what the
- * client has not read yet. A backstop covers a client that stops reading.
+ * client has not read yet. A client that has not taken it all in
+ * `stalledMs` is cut: what is queued leaves the queue all at once, so one
+ * that reads slowly cannot be told from one that has stopped.
  */
-void closeAfterFlush(stream.Duplex socket, void Function(String how) done) {
+void closeAfterFlush(
+  stream.Duplex socket,
+  void Function(String how) done, [
+  int stalledMs = 300000,
+]) {
   if (socket.destroyed) {
     done('the client, earlier');
     return;
@@ -769,21 +961,21 @@ void closeAfterFlush(stream.Duplex socket, void Function(String how) done) {
   var finished = socket.writableFinished;
   var clientEnded = socket.readableEnded;
   var settled = false;
-  late final Timer backstop;
+  late final Timer stalled;
   Timer? grace;
   void close(String how) {
     if (settled) return;
     settled = true;
-    backstop.cancel();
+    stalled.cancel();
     grace?.cancel();
     if (!socket.destroyed) socket.destroy();
     done(how);
   }
 
   // Dart timers have no unref().
-  backstop = Timer(
-    const Duration(milliseconds: 30000),
-    () => close('the 30 s backstop'),
+  stalled = Timer(
+    Duration(milliseconds: stalledMs),
+    () => close('not flushed in $stalledMs ms'),
   );
   void onFinish([Object? _]) {
     finished = true;
@@ -1001,29 +1193,47 @@ Future<void> _forwardUpstream(
   // yields a well-formed URL, and discard any client-supplied authority so
   // the CONNECT-verified target stays authoritative (same rationale as the
   // Host-header note below).
-  // With filterRequest, the request target is normalized before the hook
-  // sees it and that normalized target is what is forwarded: some runtimes'
-  // HTTP clients normalize it again on the way out, and the hook must judge
-  // exactly what is sent. A target of any other shape could make the judged
-  // URL name another host, so it is refused. Without filterRequest nothing
-  // judges the path, so the target is forwarded unchanged (and a masked AWS
-  // credential is re-signed over those same bytes). requestTargetAsSpelled
-  // comes first: it forwards the target as the client spelled it.
+  // With filterRequest, the hook gets the target as spelled and normalized,
+  // and the spelling is what is forwarded: rewriting it would break a
+  // signature over the path, or have a masked AWS credential re-signed for
+  // a resource the client did not name. Where the two forms can name
+  // different resources the hook may have judged another one than the
+  // upstream acts on, so the request is refused unless
+  // ambiguousRequestTarget says which form to send. A target of any other
+  // shape could make the judged URL name another host, so it is refused.
+  // Without filterRequest nothing judges the path, so the target is
+  // forwarded unchanged. requestTargetAsSpelled comes first: it forwards the
+  // target as the client spelled it.
   DenyMark? markFor(String code) => target.denyHeader != null
       ? (name: target.denyHeader!, value: code)
       : null;
+  // The tunnel target as it goes on the wire: filterRequest URL, Host, SigV4.
+  final authority = formatAuthority(target.hostname, target.port, 443);
+  final read = filterRequest != null && target.requestTargetAsSpelled != true
+      ? readRequestTarget(
+          req.url ?? '/',
+          req.method,
+          target.ambiguousRequestTarget,
+        )
+      : null;
   final path = target.requestTargetAsSpelled == true
       ? requestTargetAsSpelled(req.url ?? '/')
-      : filterRequest != null
-      ? normalizeRequestTarget(req.url ?? '/', req.method)
+      : read != null
+      ? read.forwarded
       : _originFormPath(req.url);
   if (path == null) {
-    respondDenied(
+    final why = respondRefusedTarget(
       res,
-      'malformed request-target',
-      markFor('bad_request') ?? 'blocked-by-sandbox-runtime',
-      400,
+      read?.refusal,
+      markFor('bad_request'),
     );
+    target.onFilterRequestDeny?.call(
+      req.method ?? 'GET',
+      'https://$authority${read?.spelled ?? ''}',
+      why,
+    );
+    // Like a denial: a body still to come must not keep the tunnel.
+    _destroyAfterDenial(req, res);
     return;
   }
   // RFC 9112 3.2: an HTTP/1.1 request without Host is answered 400. Not
@@ -1038,19 +1248,16 @@ Future<void> _forwardUpstream(
     );
     return;
   }
-  // The tunnel target as it goes on the wire: filterRequest URL, Host, SigV4.
-  final authority = formatAuthority(target.hostname, target.port, 443);
+  // RFC 9112 3.3: the target URI of the asterisk form (`OPTIONS *`) has an
+  // empty path. Put behind the authority, the `*` would be read into the host.
+  final url = 'https://$authority${path == '*' ? '' : path}';
   stream.Readable body = req;
   RequestDecision? decision;
   final sni = target.clientServerName ?? _serverNameOf(req);
   if (target.requireHostMatch == true &&
       target.clientServerNameUnreadable == true) {
     const why = 'TLS server name could not be read';
-    target.onFilterRequestDeny?.call(
-      req.method ?? 'GET',
-      'https://$authority$path',
-      why,
-    );
+    target.onFilterRequestDeny?.call(req.method ?? 'GET', url, why);
     respondDenied(
       res,
       why,
@@ -1066,11 +1273,7 @@ Future<void> _forwardUpstream(
       defaultPort: 443,
     ), _absoluteFormAuthority(req.url));
     if (why != null) {
-      target.onFilterRequestDeny?.call(
-        req.method ?? 'GET',
-        'https://$authority$path',
-        why,
-      );
+      target.onFilterRequestDeny?.call(req.method ?? 'GET', url, why);
       respondDenied(
         res,
         why,
@@ -1102,13 +1305,15 @@ Future<void> _forwardUpstream(
       filterRequest,
       req,
       res,
-      'https://$authority$path',
+      url,
       ac.signal,
       target.onFilterRequestDeny,
       RequestInfo(
         sni: sni,
         target: (host: target.hostname, port: target.port),
-        requestTarget: path,
+        requestTarget: read?.spelled ?? path,
+        normalizedRequestTarget: read?.normalized,
+        requestTargetIsAmbiguous: read?.ambiguous,
         rawHeaders: [...req.rawHeaders],
         scheme: 'https',
       ),
@@ -1326,7 +1531,7 @@ Future<void> _forwardUpstream(
     },
   );
 
-  upstream.on('error', (Object err) => failUpstream(err, upstream));
+  onUpstreamError(upstream, (Object err) => failUpstream(err, upstream));
 
   res.on('close', ([_]) => upstream.destroy());
   if (bufferedBody != null) {

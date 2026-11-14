@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/sandbox/http-proxy.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/http-proxy.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, dangling_library_doc_comments
 // ignore_for_file: slash_for_doc_comments, curly_braces_in_flow_control_structures
 // ignore_for_file: prefer_interpolation_to_compose_strings, non_constant_identifier_names
@@ -8,7 +8,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import '../node/abort.dart' show AbortController;
-import '../node/errno.dart' show errorMessage, errorCode;
+import '../node/errno.dart' show errorMessage, errorCode, NodeError;
 import '../node/buffer.dart' show Buffer;
 import '../node/http.dart' as http;
 import '../node/http.dart' show Agent, createServer;
@@ -18,6 +18,7 @@ import '../node/net.dart' as net;
 import '../node/net.dart' show connect, isIP;
 import '../node/stream.dart' as stream;
 import '../node/url.dart' show URL;
+import '../node/util.dart' show inspect;
 import '../utils/debug.dart';
 import 'sandbox_utils.dart' show encodedCommandFromProxyUser;
 import 'emitted_connection.dart'
@@ -30,7 +31,9 @@ import 'mitm_ca.dart' show CRL_PATH, MitmCA;
 import 'request_filter.dart'
     show
         decideAndRespond,
-        normalizeRequestTarget,
+        readRequestTarget,
+        respondRefusedTarget,
+        AmbiguousRequestTarget,
         requestTargetAsSpelled,
         DenyMark,
         applyHeaderEdits,
@@ -46,7 +49,11 @@ import 'request_filter.dart'
         FilterRequestCallback,
         MutateForwardedHeaders;
 import 'tls_terminate_proxy.dart'
-    show peekForClientHello, terminateAndForward, TerminateTarget;
+    show
+        peekForClientHello,
+        terminateAndForward,
+        TerminateTarget,
+        PartialTunnelTimeouts;
 import 'body_substitution.dart'
     show prepareBodySubstitution, GetBodySubstitutions;
 import 'credential_aws_pairs.dart' show PlanSigv4;
@@ -65,6 +72,7 @@ import 'parent_proxy.dart'
         openConnectTunnel,
         ConnectTunnelOptions,
         proxyAuthHeader,
+        onUpstreamError,
         relayResponseHead,
         selectParentProxyUrl,
         shouldBypassParentProxy,
@@ -76,6 +84,35 @@ const _ALLOWLIST_DENY = (
   'Connection blocked by network allowlist',
   'blocked-by-allowlist',
 );
+
+// Fixed fields only: an error's message, cause and stack can carry whatever
+// the failing call held, such as a proxy URL with credentials in it.
+String _describeError(Object? error) {
+  if (error is Error || error is Exception) {
+    final details = error is NodeError ? error : null;
+    return inspect(
+      {
+        'name': details != null ? 'Error' : error.runtimeType.toString(),
+        'code': details?.code,
+        'errno': details?.errno,
+        'syscall': details?.syscall,
+        'address': details?.address,
+        'port': details?.port,
+      },
+      depth: 0,
+      breakLength: double.infinity,
+    );
+  }
+  return error == null
+      ? 'object'
+      : error is String
+      ? 'string'
+      : error is num
+      ? 'number'
+      : error is bool
+      ? 'boolean'
+      : 'object';
+}
 
 /**
  * Host-allowlist decision. `encodedCommand` is the per-command suffix
@@ -316,6 +353,17 @@ abstract interface class HttpProxyServerOptions {
   bool? get requestTargetAsSpelled;
 
   /**
+   * What becomes of a request filterRequest would judge whose target is
+   * ambiguous (see readRequestTarget), on both paths. `'refuse'`, the
+   * default: 400 before filterRequest is asked, reported through
+   * onFilterRequestDenied. `'asSpelled'`: forwarded as the client spelled
+   * it; filterRequest has to hold for every reading. `'normalize'`: forwarded
+   * normalized, which breaks a signature over the path and names another
+   * resource to an upstream that takes the path literally.
+   */
+  AmbiguousRequestTarget? get ambiguousRequestTarget;
+
+  /**
    * Refuse, with 400 and before the allowlist is consulted, a request
    * whose destination host is not spelled in plain ASCII: letters, digits,
    * `-` and `.` in non-empty labels (one trailing dot allowed), or an IP
@@ -352,7 +400,9 @@ abstract interface class HttpProxyServerOptions {
    * terminated is accepted, before its first bytes are seen, and held until
    * the tunnel closes (an idle keep-alive tunnel holds one too), or until
    * the tunnel turns out not to carry TLS. So at the cap, a CONNECT that
-   * would have been tunnelled opaquely as non-TLS is refused too.
+   * would have been tunnelled opaquely as non-TLS is refused too. The
+   * refusal is logged and passed to onFilterRequestDenied with method CONNECT,
+   * once per command until half the slots are free again.
    * SandboxManager sets it from network.tlsTerminate.maxTunnels.
    */
   int? get maxTerminatedTunnels;
@@ -360,10 +410,22 @@ abstract interface class HttpProxyServerOptions {
   /**
    * A tunnel to be TLS-terminated must finish its TLS handshake this long
    * after its CONNECT (default 10 s), or it is closed and its slot freed.
-   * A tunnel that finished its handshake is not timed out afterwards.
+   * Past its handshake, tunnelTimeouts apply.
    * SandboxManager sets it from network.tlsTerminate.handshakeTimeoutMs.
    */
   int? get tlsHandshakeTimeoutMs;
+
+  /**
+   * When a TLS-terminated tunnel is closed, and its slot freed, past its
+   * handshake. Idle, with nothing queued for its client: with no whole
+   * request head yet (default 10 s), or none since its last response (6 s:
+   * the 5 s that `Keep-Alive: timeout` tells the client, and a margin of
+   * 1 s). Under way, with a request that is not all in or is held back for
+   * its upstream, or bytes queued for its client: once nothing has moved for
+   * 300 s. A whole request that waits for its response is not timed out.
+   * Primarily a test seam.
+   */
+  PartialTunnelTimeouts? get tunnelTimeouts;
 
   /**
    * Bytes all of this proxy's connections together may hold for slow
@@ -407,6 +469,8 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
         : <String, Object?>{},
   );
   var terminatedTunnels = 0;
+  /** The commands told of the tunnel cap in this burst of refusals. */
+  final toldOfCap = <String?>{};
   final byteBudget =
       options.byteBudget ??
       createByteBudget(options.maxBufferedBytes ?? 256 << 20);
@@ -733,7 +797,29 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
         // only terminate if it is one. Non-TLS falls through to the opaque
         // tunnel below — i.e. base-sandbox behaviour, hostname-allowlisted
         // but not content-inspected (same as the SOCKS path).
-        if (terminatedTunnels >= (options.maxTerminatedTunnels ?? 256)) {
+        final maxTunnels = options.maxTerminatedTunnels ?? 256;
+        if (terminatedTunnels >= maxTunnels) {
+          // Of a refused CONNECT clients show the status at most, so that
+          // the limit is the sandbox's own is said where refusals are.
+          if (!toldOfCap.contains(auth.encodedCommand)) {
+            // The client picks the name, so the names kept are bounded.
+            if (toldOfCap.length >= 100) toldOfCap.clear();
+            toldOfCap.add(auth.encodedCommand);
+            final reason =
+                "the sandbox's limit of $maxTunnels TLS-terminated tunnels at "
+                "once is reached; the limit is network.tlsTerminate.maxTunnels "
+                "in the sandbox's configuration";
+            logForDebugging(
+              '[proxy] CONNECT $hostname:$port refused: $reason',
+              level: 'warn',
+            );
+            options.onFilterRequestDenied?.call((
+              method: 'CONNECT',
+              url: formatAuthority(hostname, port, 0),
+              reason: reason,
+              encodedCommand: auth.encodedCommand,
+            ));
+          }
           final mark = markFor('too_many_tunnels', 'too-many-tunnels')!;
           final (name, value) = mark is String
               ? ('X-Proxy-Error', mark)
@@ -751,6 +837,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
           if (!slotHeld) return;
           slotHeld = false;
           terminatedTunnels--;
+          if (terminatedTunnels * 2 <= maxTunnels) toldOfCap.clear();
         }
 
         bool Function() handshakeDone = () => false;
@@ -802,7 +889,9 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
               foldHopByHop: options.foldHopByHop,
               denyHeader: options.denyHeader,
               requestTargetAsSpelled: options.requestTargetAsSpelled,
+              ambiguousRequestTarget: options.ambiguousRequestTarget,
               byteBudget: byteBudget,
+              timeouts: options.tunnelTimeouts,
               onEstablished: () => deadline.cancel(),
               onHandshakeProbe: (isDone) {
                 handshakeDone = isDone;
@@ -886,7 +975,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
         }
       } catch (err) {
         logForDebugging(
-          'CONNECT tunnel failed: ${errorMessage(err)}',
+          'CONNECT tunnel failed: ${_describeError(err)}',
           level: 'error',
         );
         // If we already sent 200 (mitmCA sniff path), an HTTP status line now
@@ -929,7 +1018,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
 
       upstream.on('error', (Object err) {
         logForDebugging(
-          'CONNECT tunnel failed: ${errorMessage(err)}',
+          'CONNECT tunnel failed: ${_describeError(err)}',
           level: 'error',
         );
         socket.destroy();
@@ -1072,23 +1161,39 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
       // forwarding the client's raw req.url. This ensures the upstream proxy
       // sees exactly the host we allowlist-checked, closing URL-parser
       // differential bypasses.
-      // With filterRequest, the request target is normalized before the
-      // hook sees it and that normalized target is what is forwarded;
-      // without it, the parsed path and query are forwarded unchanged.
-      // requestTargetAsSpelled comes first: it forwards the target as the
-      // client spelled it, hook or no hook.
+      // With filterRequest, the hook gets the target as spelled and
+      // normalized, the spelling is what is forwarded, and a target whose
+      // two forms can name different resources is refused unless
+      // ambiguousRequestTarget says which to send (see forwardUpstream in
+      // tls-terminate-proxy.ts); without it, the parsed path and query are
+      // forwarded unchanged. requestTargetAsSpelled comes first: it forwards
+      // the target as the client spelled it, hook or no hook.
+      final read =
+          options.filterRequest != null &&
+              options.requestTargetAsSpelled != true
+          ? readRequestTarget(
+              req.url!,
+              req.method,
+              options.ambiguousRequestTarget,
+            )
+          : null;
       final requestTarget = options.requestTargetAsSpelled == true
           ? requestTargetAsSpelled(req.url!, absolute: true)
-          : options.filterRequest != null
-          ? normalizeRequestTarget(req.url!, req.method)
+          : read != null
+          ? read.forwarded
           : '${url.pathname}${url.search}';
       if (requestTarget == null) {
-        respondDenied(
+        final reason = respondRefusedTarget(
           res,
-          'malformed request-target',
+          read?.refusal,
           markFor('bad_request'),
-          400,
         );
+        options.onFilterRequestDenied?.call((
+          method: req.method ?? 'GET',
+          url: '${url.protocol}//$authority${read?.spelled ?? ''}',
+          reason: reason,
+          encodedCommand: auth.encodedCommand,
+        ));
         return;
       }
       final absUrl = '${url.protocol}//$authority$requestTarget';
@@ -1154,7 +1259,9 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
               : null,
           RequestInfo(
             target: (host: hostname, port: port),
-            requestTarget: requestTarget,
+            requestTarget: read?.spelled ?? requestTarget,
+            normalizedRequestTarget: read?.normalized,
+            requestTargetIsAmbiguous: read?.ambiguous,
             rawHeaders: [...req.rawHeaders],
             scheme: 'http',
           ),
@@ -1211,7 +1318,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
 
       void failUpstream(Object err) {
         logForDebugging(
-          'Proxy request failed: ${errorMessage(err)}',
+          'Proxy request failed: ${_describeError(err)}',
           level: 'error',
         );
         respondUpstreamError(res, err, options.denyHeader);
@@ -1239,7 +1346,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
             // handle source errors.
             proxyRes.on('error', (Object err) {
               logForDebugging(
-                'Upstream response error: ${errorMessage(err)}',
+                'Upstream response error: ${_describeError(err)}',
                 level: 'error',
               );
               res.destroy();
@@ -1278,7 +1385,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
             // handle source errors.
             proxyRes.on('error', (Object err) {
               logForDebugging(
-                'Upstream response error: ${errorMessage(err)}',
+                'Upstream response error: ${_describeError(err)}',
                 level: 'error',
               );
               res.destroy();
@@ -1328,7 +1435,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
             // handle source errors.
             proxyRes.on('error', (Object err) {
               logForDebugging(
-                'Upstream response error: ${errorMessage(err)}',
+                'Upstream response error: ${_describeError(err)}',
                 level: 'error',
               );
               res.destroy();
@@ -1344,7 +1451,7 @@ http.NodeHttpServer createHttpProxyServer(HttpProxyServerOptions options) {
         );
       }
 
-      proxyReq.on('error', failUpstream);
+      onUpstreamError(proxyReq, failUpstream);
 
       // Tear down the upstream request if the client goes away mid-flight.
       res.on('close', () => proxyReq.destroy());

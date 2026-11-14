@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/sandbox/request-filter.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/request-filter.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, dangling_library_doc_comments
 // ignore_for_file: non_constant_identifier_names, slash_for_doc_comments
 // ignore_for_file: unintended_html_in_doc_comment
@@ -14,12 +14,13 @@
  */
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'emitted_connection.dart' show endRequestAfterResponse;
 import '../node/abort.dart' as abort;
 import '../node/buffer.dart' show Buffer;
-import '../node/errno.dart' show errorMessage;
+import '../node/errno.dart' show errorMessage, NodeError;
 import '../node/fetch.dart' as fetch;
 import '../node/http.dart' as http;
 import '../node/net.dart' show isIP;
@@ -119,6 +120,8 @@ class RequestInfo {
     this.unshownBody,
     this.target,
     this.requestTarget,
+    this.normalizedRequestTarget,
+    this.requestTargetIsAmbiguous,
     this.rawHeaders,
   });
 
@@ -145,14 +148,29 @@ class RequestInfo {
    */
   final ({String host, int port})? target;
   /**
-   * The request-target in origin form (path and query), exactly as it is
-   * forwarded upstream; path rules should key on this. It is normalized
-   * once on both paths (see normalizeRequestTarget) and that exact value
-   * is forwarded. (With no filterRequest configured there is no hook to
-   * judge the target: plain HTTP forwards the URL-parsed path and query,
-   * and the TLS-terminated path forwards the client's bytes unchanged.)
+   * The request-target in origin form (path and query) as the client
+   * spelled it, without a fragment, a byte outside ASCII percent-encoded.
+   * These are the bytes forwarded upstream, unless the proxy was created with
+   * `ambiguousRequestTarget: 'normalize'`. `request.url` is a parsed URL
+   * and cannot hold them: its path has dot segments resolved already. (With
+   * no filterRequest configured there is no hook to judge the target: plain
+   * HTTP forwards the URL-parsed path and query, and the TLS-terminated
+   * path forwards the client's bytes unchanged.)
    */
   final String? requestTarget;
+  /**
+   * The same target normalized (see normalizeRequestTarget): what is
+   * forwarded under `'normalize'`, and one of the readings an upstream may
+   * make of an ambiguous spelling. `/a\b/../c` is `/a/c` here, and `/c` to
+   * an upstream that keeps the `\`.
+   */
+  final String? normalizedRequestTarget;
+  /**
+   * Whether the two forms can name different resources (see
+   * readRequestTarget): what `'refuse'` refuses. They also differ, harmlessly,
+   * by a character the URL parser escapes and by an empty query.
+   */
+  final bool? requestTargetIsAmbiguous;
   /**
    * A copy of the client's header lines as received: name, value, name,
    * value, ... Some runtimes lower-case the names.
@@ -340,6 +358,8 @@ Future<({stream.Readable body, RequestDecision decision})?> decideAndRespond(
               unshownBody: _unshownBodyProbe(req, forCallback),
               target: info?.target,
               requestTarget: info?.requestTarget,
+              normalizedRequestTarget: info?.normalizedRequestTarget,
+              requestTargetIsAmbiguous: info?.requestTargetIsAmbiguous,
               rawHeaders: info?.rawHeaders,
             )
           : info,
@@ -565,6 +585,214 @@ String? normalizeRequestTarget(String raw, String? method) {
   }
   if (url.protocol != 'http:' && url.protocol != 'https:') return null;
   return '${url.pathname.replaceFirst(RegExp(r'^/{2,}'), '/')}${url.search}';
+}
+
+/** What a proxy with a filterRequest does with an ambiguous request-target. */
+typedef AmbiguousRequestTarget = String; // 'refuse' | 'asSpelled' | 'normalize'
+
+const _MALFORMED_TARGET = 'malformed request-target';
+const _AMBIGUOUS_TARGET =
+    'ambiguous request-target: as spelled and normalized it names different '
+    'paths (a dot segment, leading slashes or "\\"); nothing was forwarded '
+    '(network.ambiguousRequestTarget in the sandbox\'s configuration is "refuse")';
+
+String _percentEncoded(String text) => Buffer.from(text)
+    .toString('hex')
+    .toUpperCase()
+    .replaceAllMapped(RegExp('..'), (m) => '%${m[0]}');
+
+/**
+ * Both forms of a request-target that a filterRequest judges: `spelled`, in
+ * origin form as the client wrote it, and `normalized` (see
+ * normalizeRequestTarget). It is `ambiguous` when the two can name different
+ * resources, so that an upstream may act on another one than a policy
+ * judged: a dot segment (`%2e` included), a run of leading slashes, or `\`
+ * in the path. Not ambiguous, because every reader takes both forms for the
+ * same resource: a character the URL parser escapes (which ones differs by
+ * runtime), an empty query it drops, and the `/` an empty path becomes.
+ *
+ * `forwarded` is the form `mode` sends. There is none, and `refusal` says
+ * why, for an ambiguous target unless `mode` picks a form, and in every mode
+ * for:
+ * - a shape normalizeRequestTarget refuses, an authority that ends elsewhere
+ *   than the URL parser ends it, a space or a control character;
+ * - bytes that are not UTF-8: a runtime that lets a byte outside ASCII
+ *   through has decoded it, and has put U+FFFD for these, so what the client
+ *   named is lost. (A U+FFFD of the client's own looks the same.)
+ *
+ * Bytes that are UTF-8 are spelled percent-encoded, which names the same
+ * resource to every reader and is what an upstream's parser is sure to take.
+ *
+ * A `#` and what follows it are in neither form. A fragment is the client's
+ * own and no part of a request-target, but some clients leave it in the
+ * absolute form they send a proxy; upstreams differ in whether it ends the
+ * path or belongs to it, so it is cut before anything is read, judged,
+ * signed, reported or sent.
+ */
+({
+  String? spelled,
+  String? normalized,
+  bool? ambiguous,
+  String? forwarded,
+  String? refusal,
+})
+readRequestTarget(String raw, String? method, [AmbiguousRequestTarget? mode]) {
+  final target = raw.replaceFirst(RegExp(r'#.*', dotAll: true), '');
+  final ascii = target.replaceAllMapped(
+    RegExp(r'[^\0-\x7f]+', unicode: true),
+    (m) => _percentEncoded(m[0]!),
+  );
+  final normalized = normalizeRequestTarget(ascii, method);
+  var spelled = ascii.replaceFirst(
+    RegExp(r'^https?://[^/?#\\]+', caseSensitive: false),
+    '',
+  );
+  if (spelled == '' || spelled.startsWith('?')) spelled = '/$spelled';
+  if (normalized == null || !RegExp(r'^(?:\*|/[!-~]*)$').hasMatch(spelled)) {
+    return (
+      spelled: null,
+      normalized: null,
+      ambiguous: null,
+      forwarded: null,
+      refusal: _MALFORMED_TARGET,
+    );
+  }
+  if (RegExp(r'[\ufffd\ud800-\udfff]', unicode: true).hasMatch(target)) {
+    return (
+      spelled: spelled,
+      normalized: null,
+      ambiguous: null,
+      forwarded: null,
+      refusal:
+          '$_MALFORMED_TARGET: it holds bytes that are not UTF-8, or U+FFFD',
+    );
+  }
+  final forms = [spelled, normalized]
+      .map(
+        (t) => t.replaceAllMapped(
+          RegExp('["\'<>^`{}]'),
+          (m) => _percentEncoded(m[0]!),
+        ),
+      )
+      .toList();
+  final a = forms[0], b = forms[1];
+  final ambiguous = a != b && a != '$b?';
+  final forwarded = mode == 'normalize'
+      ? normalized
+      : mode == 'asSpelled' || !ambiguous
+      ? spelled
+      : null;
+  return (
+    spelled: spelled,
+    normalized: normalized,
+    ambiguous: ambiguous,
+    forwarded: forwarded,
+    refusal: forwarded == null ? _AMBIGUOUS_TARGET : null,
+  );
+}
+
+/**
+ * Refuse a request-target: 400 and a warn-level line. Returns the reason,
+ * for the caller to report as it reports a denial.
+ */
+String respondRefusedTarget(
+  http.ServerResponse res, [
+  String? refusal,
+  DenyMark? mark,
+]) {
+  refusal ??= _MALFORMED_TARGET;
+  logForDebugging('[proxy] $refusal', level: 'warn');
+  respondDenied(
+    res,
+    refusal,
+    mark ?? (refusal == _AMBIGUOUS_TARGET ? 'ambiguous-request-target' : null),
+    400,
+  );
+  return refusal;
+}
+
+/** How many bytes of a request-target the runtime's parser refused are reported. */
+const _MAX_REPORTED_TARGET_LENGTH = 200;
+
+/**
+ * Handle a server's 'clientError'. A request the runtime's own parser gave
+ * up on, which no request handler gets to see, is refused: 400 with the
+ * reason on the bare socket, which ends, and a warn-level line. Returns what
+ * the caller is to report of it, as it reports a denial. Any other error (a
+ * reset, a client that left) destroys the socket, with nothing to report.
+ *
+ * Nothing is written, and the socket is destroyed, where `mayAnswer` is
+ * false (the caller's: a response to an earlier request is under way, and
+ * these bytes would land inside it) or the socket takes no write. On a
+ * socket that was ended nothing is done: bytes that follow a refused head
+ * fail the parser again while the answer is on its way out, and that is one
+ * refusal.
+ *
+ * The one thing read of the client's bytes is the request line, and only
+ * where the parser stopped inside its target and the line is whole: the
+ * method if the runtime knows it, and an origin-form target, cut, with
+ * every byte outside printable ASCII percent-encoded.
+ */
+({String method, String target, String reason})? refuseUnparsedRequest(
+  Object err,
+  stream.Duplex socket,
+  bool mayAnswer, [
+  DenyMark mark = _DEFAULT_DENY_TAG,
+]) {
+  final code = err is NodeError ? err.code : null;
+  final rawPacket = err is http.NodeHttpError ? err.rawPacket : null;
+  final bytesParsed = err is http.NodeHttpError ? err.bytesParsed : null;
+  if (code == null ||
+      !code.startsWith('HPE_') ||
+      // The input ended in the middle of a message: the client left.
+      code == 'HPE_INVALID_EOF_STATE') {
+    socket.destroy();
+    return null;
+  }
+  if (socket.writableEnded) return null;
+  var method = '-',
+      target = '',
+      reason = 'malformed request (${errorMessage(err)})';
+  if (code == 'HPE_INVALID_URL') {
+    reason =
+        '$_MALFORMED_TARGET: percent-encode its bytes outside printable ASCII';
+    if (rawPacket != null && bytesParsed != null) {
+      final text = latin1.decode(rawPacket);
+      final line = RegExp(r'([A-Z-]+) (/[^ \r\n]*) HTTP/1\.[01]\r?\n');
+      final start = text.substring(0, bytesParsed).lastIndexOf('\n') + 1;
+      final m = line.matchAsPrefix(text, start);
+      if (m != null && http.METHODS.contains(m[1])) {
+        method = m[1]!;
+        final t = m[2]!;
+        target = t
+            .substring(0, t.length.clamp(0, _MAX_REPORTED_TARGET_LENGTH))
+            .replaceAllMapped(
+              RegExp(r'[^!-~]'),
+              (m) =>
+                  '%${m[0]!.codeUnitAt(0).toRadixString(16).toUpperCase().padLeft(2, '0')}',
+            );
+      }
+    }
+  }
+  logForDebugging('[proxy] $reason', level: 'warn');
+  final refused = (method: method, target: target, reason: reason);
+  if (!mayAnswer || !socket.writable) {
+    socket.destroy();
+    return refused;
+  }
+  // The peer may reset while the answer flushes.
+  socket.on('error', () {});
+  final (name, value) = _denyMarkHeader(mark);
+  socket.end(
+    'HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n'
+    '$name: $value\r\nContent-Length: ${reason.length + 1}\r\n'
+    'Connection: close\r\n\r\n$reason\n',
+  );
+  // Ended, and destroyed a second later: a body still on its way is read and
+  // dropped meanwhile. Unread, it would turn the close into a reset, and the
+  // reset would discard the answer.
+  Timer(const Duration(milliseconds: 1000), () => socket.destroy());
+  return refused;
 }
 
 /**
