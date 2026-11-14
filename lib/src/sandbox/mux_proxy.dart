@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/sandbox/mux-proxy.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/mux-proxy.ts @ 0bbebed.
 // ignore_for_file: slash_for_doc_comments, dangling_library_doc_comments, constant_identifier_names, non_constant_identifier_names
 
 import 'dart:async';
@@ -16,6 +16,7 @@ import '../node/os.dart' show tmpdir;
 import '../utils/debug.dart';
 import '../utils/platform.dart';
 import 'listen_in_range.dart';
+import 'tls_terminate_proxy.dart' show closeAfterFlush;
 
 /**
  * First-byte values that select the SOCKS handler. SOCKS5's greeting is
@@ -144,7 +145,18 @@ MuxProxyServer createMuxProxyServer(MuxProxyOptions opts) {
     final upstream = backendSocketPath != null && backendSocketPath != ''
         ? net.connect(backendSocketPath!)
         : net.connect(backendTcpPort!, '127.0.0.1');
+    var answered = false;
+    upstream.once('data', () {
+      answered = true;
+    });
     upstream.on('error', (Object err) {
+      // The 502 is an answer, for a client that has had none. One that has
+      // may be in the middle of anything, a TLS tunnel included, where clear
+      // text is noise. The 'close' that follows ends it.
+      if (answered) {
+        logForDebugging('mux: HTTP backend error: ${errorMessage(err)}');
+        return;
+      }
       // Surface a 502 with the errno code so callers (and CI logs) can tell
       // *why* the backend was unreachable instead of an opaque empty-reply.
       // Full error (including path) goes to debug logging only — the client
@@ -163,7 +175,8 @@ MuxProxyServer createMuxProxyServer(MuxProxyOptions opts) {
     });
     client.on('error', () => upstream.destroy());
     client.once('close', () => upstream.destroy());
-    upstream.once('close', () => client.destroy());
+    // What is still queued for the client then is the end of an answer.
+    upstream.once('close', () => closeAfterFlush(client, (_) {}));
     client.pipe(upstream);
     upstream.pipe(client);
   }
