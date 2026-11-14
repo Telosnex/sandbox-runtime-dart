@@ -278,10 +278,10 @@ class WindowsWfpVerifyResult {
     WindowsWfpProbeOutcome lowIntegrityLoopback,
     WindowsWfpProbeOutcome untrustedIntegrity,
     WindowsWfpProbeOutcome untrustedIntegrityLoopback,
+    /** With loopback open: own token, to the loopback listener. */
     WindowsWfpProbeOutcome? openLoopback,
   })
   probes;
-  /** With loopback open: own token, to the loopback listener. */
   /** Gaps the probe found open: NOT a clean pass when non-empty. */
   final List<WindowsWfpResidual> residuals;
   /**
@@ -813,8 +813,18 @@ class _RunOpts {
   const _RunOpts({this.timeoutMs, this.stdin, this.srtWin});
 }
 
-_RunResult _runSrtWin(List<String> args, [_RunOpts opts = const _RunOpts()]) =>
-    throw UnsupportedError('Windows is not supported by this port');
+_RunResult _runSrtWin(List<String> args, [_RunOpts opts = const _RunOpts()]) {
+  // Callers must thread `srtWin` (SandboxManager resolves once at
+  // `initialize()`); the argless `resolveSrtWin()` throws, telling a
+  // direct helper caller to pass an explicit path.
+  // ETIMEDOUT means the process ran and spawnSync killed it after
+  // `timeout` — throw a distinct code so every caller surfaces
+  // "timed out" instead of an opaque `exited null`. Callers with a
+  // more specific mapping (e.g. `install_timeout`) catch by code.
+  // Any other `r.error` (ENOENT, EACCES, EINVAL) means the process
+  // never started.
+  throw UnsupportedError('Windows is not supported by this port');
+}
 
 /**
  * `srt-win`'s exit code when its lock is held by a `profile grant` or
@@ -920,7 +930,13 @@ void _throwIfRefusedBesideOthers(
 Future<_RunResult> _runSrtWinAsync(
   List<String> args, [
   _RunOpts opts = const _RunOpts(),
-]) => throw UnsupportedError('Windows is not supported by this port');
+]) {
+  // Manual timer instead of spawn's `timeout` option so a timeout
+  // is distinguishable from an external kill — parity with the
+  // sync variant's ETIMEDOUT branch (same code, same message).
+  // Swallow EPIPE if the child dies before the stdin write drains.
+  throw UnsupportedError('Windows is not supported by this port');
+}
 
 T _parseSrtWinJson<T>(List<String> args, _RunResult r) {
   if (r.status != 0) {
@@ -993,6 +1009,10 @@ WindowsWfpStatusResult _mapWfpStatus(_RawWfpStatus raw) {
 }
 
 /** Shape of `srt-win user status` (and `srt-win status .user`) stdout. */
+// Absent from an `srt-win` that predates the field.
+// Absent from an `srt-win` that keeps no grants between sessions.
+// Absent from an `srt-win` without the profile read grant.
+// Absent from an `srt-win` that does not name what it does.
 typedef _RawUserStatus = Map<String, dynamic>;
 
 /**
@@ -1442,13 +1462,19 @@ WindowsWfpVerifyResult interpretWindowsWfpVerify(
  * sandbox user. Binds a local listener on an ephemeral loopback port
  * outside the WFP loopback-permit range, then spawns `srt-win
  * runner` as the sandbox user (via `CreateProcessWithLogonW`) to
- * attempt a direct TCP connect to it. The WFP block-user filter
+ * attempt direct TCP connects, one per token shape a sandboxed
+ * process can present. The WFP block-user filter
  * fires at `ALE_AUTH_CONNECT` — before any packet leaves — so an
  * active fence yields WSAEACCES immediately and a missing fence lets
  * the connect through (the kernel completes the handshake against
- * the listening socket's backlog; no event-loop tick required, so
- * the synchronous `runSrtWin` is safe). Does not require elevation
- * and does not depend on any external host.
+ * the listening socket's backlog). The event loop stays live while
+ * `srt-win` runs. Does not require elevation and does not depend on
+ * any external host.
+ *
+ * With `opts.allowLoopback` the connects that must be blocked go to
+ * {@link WINDOWS_LOOPBACK_PROBE_PORT}, where nothing listens and only
+ * the filter's refusal passes, and the listener is what `srt-win` must
+ * be able to reach.
  *
  * `initialize()` calls this once per session, so a stale install
  * (sandbox user provisioned but filters since removed) fails closed
@@ -1459,7 +1485,16 @@ WindowsWfpVerifyResult interpretWindowsWfpVerify(
  * @param opts.proxyPortRange the WFP loopback-permit range the
  *   listener must avoid. Default
  *   {@link DEFAULT_WINDOWS_PROXY_PORT_RANGE}.
- * @throws on any outcome other than `blocked` (exit 0).
+ * @param opts.allowLoopback the session's `network.allowLocalBinding`;
+ *   `srt-win` compares it with the installed loopback mode.
+ * @param opts.sublayerGuid, opts.sandboxUser the session's install
+ *   options, named in the reinstall command an error suggests.
+ * @param opts.anonymousEgress also make the off-loopback attempt under
+ *   the anonymous token. It cannot change the result and can take
+ *   seconds, so `initialize()` leaves it out; for diagnostics only.
+ * @param opts.writeRoots the session's write roots: the probe runs
+ *   under the write-restricted token a command of the session gets.
+ * @throws on any outcome other than exit 0.
  */
 Future<WindowsWfpVerifyResult> verifyWindowsWfpEgress({
   String? target,
@@ -1470,7 +1505,20 @@ Future<WindowsWfpVerifyResult> verifyWindowsWfpEgress({
   String? sandboxUser,
   List<String>? writeRoots,
   SrtWinSpawn? srtWin,
-}) async => throw UnsupportedError('Windows is not supported by this port');
+}) async {
+  // Bind ephemeral; retry if it lands inside the WFP
+  // loopback-permit range (a port in-range would be PERMITted
+  // even with the fence active → false `connected`).
+  // A connect that gets through is accepted while `srt-win` runs:
+  // drop it, and keep its errors from being uncaught.
+  // Under the token a command of the session gets.
+  // 30s: first call after install may create the sandbox user's
+  // profile (LOGON_WITH_PROFILE) via CreateProcessWithLogonW, and
+  // the runner bounds each of its connects (probe.rs).
+  // Exit 18 comes with empty stdout: report the typed failure before
+  // the output is parsed.
+  throw UnsupportedError('Windows is not supported by this port');
+}
 
 /**
  * Query the sandbox user account's provisioning state. Each field
@@ -1526,8 +1574,11 @@ Future<WindowsSandboxUserStatus> getWindowsSandboxUserStatusAsync({
  *   parseable X.509 certificate, or the registry write into the
  *   sandbox user's hive fails.
  */
-void windowsTrustCa(String caCertPath, {SrtWinSpawn? srtWin}) =>
-    throw UnsupportedError('Windows is not supported by this port');
+void windowsTrustCa(String caCertPath, {SrtWinSpawn? srtWin}) {
+  // 60s: first call may create the sandbox user's profile
+  // (LOGON_WITH_PROFILE) via the one-shot CreateProcessWithLogonW.
+  throw UnsupportedError('Windows is not supported by this port');
+}
 
 /** Async twin of {@link windowsTrustCa} — identical argv and errors. */
 Future<void> windowsTrustCaAsync(
@@ -1539,6 +1590,11 @@ void _checkTrustCaResult(String caCertPath, _RunResult r) {
   logForDebugging(
     '[Sandbox Windows] user trust-ca exit=${r.status}: ${r.stderr.isNotEmpty ? r.stderr : r.stdout}',
   );
+  final seclogon = _seclogonDisabledFrom((
+    status: r.status,
+    stderr: r.stderr,
+  ), 'user');
+  if (seclogon != null) throw seclogon;
   if (r.status != 0) {
     throw WindowsSandboxError(
       'trust_ca_failed',
@@ -1668,7 +1724,43 @@ Future<WindowsPersistentCa> ensurePersistentWindowsCa({
   String? dir,
   int? regenerateWithinDays,
   SrtWinSpawn? srtWin,
-}) async => throw UnsupportedError('Windows is not supported by this port');
+}) async {
+  // Provisioning gate. The `ca/` subdirectory's whole custody story
+  // depends on inheriting the state-DB dir's stamped DACL — which
+  // `srt-win install` creates. Never mkdir the state dir here.
+  // tmp+rename atomic write. Node's `renameSync` on Windows is
+  // libuv's `MoveFileExW(…, MOVEFILE_REPLACE_EXISTING)` — an atomic
+  // same-volume replace — so `p` is either its previous content or
+  // the full new content, never partial.
+  // Shared return path: write the derived cert.pem/key.pem siblings
+  // (tooling-only — trust-ca never reads them), reconcile trust, and
+  // assemble the result. Trust is idempotent and ADDITIVE: `srt-win
+  // user trust-ca` writes a per-thumbprint registry key (a rotation
+  // adds the new cert, prior ones stay trusted); the state-DB
+  // `ca_cert` column tracks the latest.
+  // Trust from a per-call unique temp, never a shared mutable
+  // path — a concurrent broker's write to `cert.pem` could
+  // otherwise swap the bytes between our write and `srt-win user
+  // trust-ca`'s read, leaving the registry trusting a different
+  // cert than this session's proxy signs with.
+  // Read+validate helper. Any read/parse/validate failure returns
+  // undefined (never throws) so a corrupt on-disk pair is not an
+  // error the embedder has to handle.
+  // Reuse when ca.json exists, validates, and isn't expiring inside
+  // the horizon.
+  // Generate. `ca/` (not the state dir) is mkdir'd here so it
+  // inherits the parent's (OI)(CI) DACL. After the atomic write,
+  // RE-READ ca.json and use that content: a concurrent broker's
+  // rename may have won, and returning our own PEMs would diverge
+  // from disk — the re-read makes every racer converge.
+  // Best-effort sweep of stale `*.tmp.*` / `.trust.*` files from
+  // crashed prior brokers.
+  // sweep is best-effort; a leftover tmp is harmless.
+  // `on` can only be undefined if a concurrent broker overwrote with
+  // an invalid pair (which the tmp+rename path can't produce) — so
+  // treat as our own write having landed.
+  throw UnsupportedError('Windows is not supported by this port');
+}
 
 class WindowsInstallOptions {
   /** WFP sublayer GUID. Omit for srt-win's compile-time default. */
@@ -1865,6 +1957,7 @@ void _throwOnInstallFailure(_RunResult r) {
     '[Sandbox Windows] install exit=${r.status}: ${r.stderr.isNotEmpty ? r.stderr : r.stdout}',
   );
   if (r.status == 0 || r.status == 10) return;
+  if (_rejectsAllowLoopback((stderr: r.stderr))) throw _srtWinTooOld(r.stderr);
   final out = r.stderr.isNotEmpty ? r.stderr : r.stdout;
   switch (r.status) {
     case 12:
@@ -1881,7 +1974,8 @@ void _throwOnInstallFailure(_RunResult r) {
       throw WindowsSandboxError(
         'install_config_conflict',
         'srt-win install: filters already exist under this sublayer with ' +
-            'a different port range or sandbox-user name. Pass ' +
+            'a different port range, loopback mode or sandbox-user ' +
+            'name. Pass ' +
             '{force: true} to replace, or pick a different sublayerGuid. ' +
             'Output: $out',
       );
@@ -1919,9 +2013,9 @@ void _throwOnInstallFailure(_RunResult r) {
  * `spawnSync`-blocks the event loop for the full UAC-prompt wait
  * (up to `timeoutMs`).
  *
- * @throws on user/WFP creation failure, or if filters already exist
- *   under `sublayerGuid` with a different port range and `force` is
- *   not set.
+ * @throws on user/WFP creation failure, if filters already exist
+ *   under `sublayerGuid` with a different port range or loopback mode
+ *   and `force` is not set, or if `srt-win` predates `allowLoopback`.
  */
 WindowsInstallResult installWindowsSandbox({
   String? sublayerGuid,
@@ -2071,6 +2165,11 @@ Never _throwInstallProfileGrantFailure(Object e) {
 ({bool? cancelled}) uninstallWindowsSandbox({
   String? sublayerGuid,
   bool? keepUser,
+  /**
+   * How long to wait for the uninstall: the elevation prompt, and
+   * then the removal of the grants kept for this user, which walks
+   * the profile. Defaults to the install's and the grant's together.
+   */
   int? timeoutMs,
   SrtWinSpawn? srtWin,
 }) => throw UnsupportedError('Windows is not supported by this port');
@@ -2424,7 +2523,8 @@ class SeclogonDisabledError extends WindowsSandboxError {
  * Parse a structured `srt-win exec` error from its stderr. `exec`
  * emits typed launch failures as a single JSON line
  * `{"code":…,"message":…}` alongside a distinct exit code —
- * `mapped_drive_cwd` is exit **16**. Embedders that spawn the
+ * `mapped_drive_cwd` is exit **16**, `seclogon_disabled` exit **18**,
+ * `wfp_loopback_mismatch` exit **19**. Embedders that spawn the
  * `{argv, env}` from {@link wrapCommandWithSandboxWindows} call
  * this on non-zero exit to surface an actionable
  * {@link WindowsSandboxError} instead of a bare status.
@@ -2586,17 +2686,25 @@ bool _windowsAclGrantReleased(Object? o) {
 }
 
 /**
- * Release this holder's deny ACEs and remove the sandbox-user ACE
- * on any path whose refcount falls to zero. Best-effort (does not
- * throw on per-path anomalies); returns per-path outcomes for the
- * caller to surface. Returns `undefined` only when `srt-win`
- * itself failed (no JSON to parse).
+ * Release this holder's deny ACEs. Best-effort; `undefined` when
+ * `srt-win` failed. srt-win refuses (status `grantPending`) while the
+ * holder still has a grant recorded: revoke first.
  */
 List<WindowsAclAceOutcome>? restoreWindowsAcl({
   required String sandboxUserSid,
   int? holderPid,
   SrtWinSpawn? srtWin,
-}) => throw UnsupportedError('Windows is not supported by this port');
+}) {
+  // Don't let a teardown helper throw — the caller's reset() must
+  // complete. runSrtWinJsonAllowFail parses stdout before checking
+  // the exit code, so a non-zero exit with the per-path JSON intact
+  // still surfaces every entry to reset()'s loop. Only spawn-fail
+  // / unparseable output throws → log and return undefined.
+  // Pre- same-user-removal builds emit `{paths, parents}`; post-
+  // emit a flat array. Flatten either so reset()'s logging loop
+  // is shape-agnostic across the transition.
+  throw UnsupportedError('Windows is not supported by this port');
+}
 
 class WindowsAclGrantOptions {
   /** Paths to grant `MODIFY_NO_FDC` on (the working tree, `allowWrite`). */
@@ -2607,12 +2715,12 @@ class WindowsAclGrantOptions {
   final String sandboxUserSid;
   /** Long-lived host PID the holds are tied to. Default: this process. */
   final int? holderPid;
-  /** Resolved `srt-win` spawn descriptor — from {@link resolveSrtWin}. */
   /**
    * `read` paths that may be granted although the profile read grant
    * excludes them (`srt-win acl grant --allow-profile-exclusion`).
    */
   final List<String>? allowProfileExclusions;
+  /** Resolved `srt-win` spawn descriptor — from {@link resolveSrtWin}. */
   final SrtWinSpawn? srtWin;
 
   const WindowsAclGrantOptions({
@@ -2647,17 +2755,6 @@ void grantWindowsAcl(WindowsAclGrantOptions opts) =>
     throw UnsupportedError('Windows is not supported by this port');
 
 /**
- * Release this holder's grants and remove the sandbox-user ACE on
- * any path whose refcount falls to zero. Best-effort (does not
- * throw); logs anomalies.
- */
-List<WindowsAclAceOutcome>? revokeWindowsAcl({
-  required String sandboxUserSid,
-  int? holderPid,
-  SrtWinSpawn? srtWin,
-}) => throw UnsupportedError('Windows is not supported by this port');
-
-/**
  * Session start under the write-restricted token: one `srt-win acl
  * grant --persistent`. Grants on the `write` roots are KEPT at session
  * end; `srt-win acl forget` removes them.
@@ -2666,7 +2763,10 @@ Future<void> grantWindowsAclPersistent(
   WindowsAclGrantOptions opts, {
   required List<String> denyRead,
   required List<String> denyWrite,
-}) async => throw UnsupportedError('Windows is not supported by this port');
+}) async {
+  // A root's first grant walks its whole tree.
+  throw UnsupportedError('Windows is not supported by this port');
+}
 
 class WindowsAclRevokeResult {
   /**
@@ -2732,6 +2832,17 @@ WindowsAclRevokeResult _windowsAclRevokeResult(
 }
 
 /**
+ * Release this holder's grants. Best-effort (does not throw). Do not
+ * follow with {@link restoreWindowsAcl}: use
+ * {@link revokeWindowsAclChecked}, which says whether it completed.
+ */
+List<WindowsAclAceOutcome>? revokeWindowsAcl({
+  required String sandboxUserSid,
+  int? holderPid,
+  SrtWinSpawn? srtWin,
+}) => throw UnsupportedError('Windows is not supported by this port');
+
+/**
  * What `srt-win profile status` reports. Only `current` is a grant a
  * session may rely on: complete, made with this `srt-win`'s exclusion
  * list, for the profile directory that is there now.
@@ -2763,6 +2874,7 @@ class WindowsProfileGrantStatus {
   final int? listVersion;
   final int? recordedListVersion;
   /** Which operation last wrote the record, when `srt-win` says. */
+  /// 'grant' | 'forget'.
   final String? lastOperation;
   /** The record was made for the profile directory that is there now. */
   final bool sameProfile;
@@ -3006,7 +3118,11 @@ WindowsProfileGrantStatus _mapProfileStatus(_RawProfileStatus raw) {
 WindowsProfileGrantStatus getWindowsProfileReadStatus({
   bool? paths,
   SrtWinSpawn? srtWin,
-}) => throw UnsupportedError('Windows is not supported by this port');
+}) {
+  // Asked while a grant or forget is running: the record is being
+  // rewritten, and is not a run that was cut short.
+  throw UnsupportedError('Windows is not supported by this port');
+}
 
 /** Async twin of {@link getWindowsProfileReadStatus}: the event loop stays live. */
 Future<WindowsProfileGrantStatus> getWindowsProfileReadStatusAsync({
@@ -3080,6 +3196,7 @@ class WindowsProfileGrantItem {
    * (`'unknown'`: not tried). One you can read without seeing its access
    * list is to be taken as readable to sandboxed commands as well.
    */
+  /// boolean | 'unknown'.
   final Object? callerReads;
   /**
    * On an `unverifiable` item: why it could not be examined —
@@ -4018,6 +4135,12 @@ SandboxDependencyCheck _interpretDependencyProbes(
  * Prefer {@link checkWindowsDependenciesAsync}; this variant
  * `spawnSync`-blocks the event loop on two `srt-win.exe` spawns
  * (Windows Defender cold-scan can add seconds).
+ *
+ * @param opts.allowLoopback the configured `network.allowLocalBinding`:
+ *   an install with the other loopback mode is an error. Omit it to
+ *   skip the comparison.
+ * @param opts.proxyPortRange, opts.sandboxUser the configured install
+ *   options, named in the install command an error suggests.
  */
 SandboxDependencyCheck checkWindowsDependencies({
   String? sublayerGuid,
@@ -4025,7 +4148,13 @@ SandboxDependencyCheck checkWindowsDependencies({
   String? sandboxUser,
   bool? allowLoopback,
   SrtWinSpawn? srtWin,
-}) => throw UnsupportedError('Windows is not supported by this port');
+}) {
+  // 1. Binary present. The argless `resolveSrtWin()` throws (no
+  // implicit vendor fallback) — surfaced as a dependency error
+  // telling the caller to thread an explicit path.
+  // Lazy: spawned only if user-status succeeded (short-circuit).
+  throw UnsupportedError('Windows is not supported by this port');
+}
 
 /**
  * Async twin of {@link checkWindowsDependencies}. Same result for the
