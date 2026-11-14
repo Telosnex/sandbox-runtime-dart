@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/wrap-with-sandbox.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/wrap-with-sandbox.test.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments
 import 'package:path/path.dart' show join;
 import 'package:sandbox_runtime/src/node/fs.dart'
@@ -444,7 +444,7 @@ void main() {
             );
 
             expect(result, contains('/opt/sc/socat'));
-            expect(result, contains('TCP-LISTEN:3128'));
+            expect(result, contains('TCP6-LISTEN:3128'));
           } finally {
             rmSync(httpSock, {'force': true});
             rmSync(socksSock, {'force': true});

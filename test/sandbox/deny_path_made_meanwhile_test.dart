@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/deny-path-made-meanwhile.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/deny-path-made-meanwhile.test.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments
 import 'package:path/path.dart' show join;
 import 'package:sandbox_runtime/src/node/fs.dart' as fs;
@@ -87,7 +87,7 @@ void main() {
       );
 
       test(
-        'still leaves alone a path beneath a file, which can never be created',
+        'still lays nothing at a path beneath a file, and keeps the file',
         () async {
           writeFileSync(join(area, '.git'), 'gitdir: elsewhere\n');
           final denied = join(area, '.git', 'hooks');
@@ -95,6 +95,14 @@ void main() {
           final wrapped = await wrap(denied);
 
           expect(wrapped, isNot(contains(denied)));
+          expect(
+            countMounts(wrapped, [
+              '--ro-bind',
+              join(area, '.git'),
+              join(area, '.git'),
+            ]),
+            1,
+          );
         },
       );
     },

@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/read-deny-glob.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/read-deny-glob.test.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments, curly_braces_in_flow_control_structures, prefer_interpolation_to_compose_strings
 
 import 'dart:io';
@@ -431,32 +431,26 @@ void main() {
       });
 
       test(
-        'denies nothing for a link out of the tree when the pattern cannot be read a name at a time',
+        'denies through a link out of the tree what a pattern with a wildcard in a set matches',
         () {
-          // `id[*].pem` cannot be followed one path component at a time, so no
-          // directory is listed through a symlink, and what such a pattern would
-          // match through one goes undenied: a known gap. Denying whole what every
-          // link out of the tree leads to is no cure: with vendor/sdk/conf -> /usr
-          // that masks /usr, and no command starts.
-          final unsplit = caseRoot('unsplit');
-          mkdirSync(join(unsplit, 'proj', 'vendor', 'sdk'), {
-            'recursive': true,
-          });
-          mkdirSync(join(unsplit, 'outside'));
-          writeFileSync(join(unsplit, 'outside', 'x'), '');
+          final root = caseRoot('wildcard-in-a-set');
+          mkdirSync(join(root, 'proj', 'vendor', 'sdk'), {'recursive': true});
+          mkdirSync(join(root, 'outside'));
+          writeFileSync(join(root, 'outside', 'id*.pem'), '');
+          writeFileSync(join(root, 'outside', 'idx.pem'), '');
           symlinkSync(
-            join(unsplit, 'outside'),
-            join(unsplit, 'proj', 'vendor', 'sdk', 'conf'),
+            join(root, 'outside'),
+            join(root, 'proj', 'vendor', 'sdk', 'conf'),
           );
 
           final unlistable = <String>{};
           final mounts = expandReadDenyGlobLinux(
-            join(unsplit, 'proj', 'id[*].pem'),
+            join(root, 'proj', '**', 'id[*].pem'),
             [],
             unlistableDirs: unlistable,
           );
 
-          expect(mounts, []);
+          expect(mounts, [join(root, 'outside', 'id*.pem')]);
           expect([...unlistable], []);
         },
       );
@@ -628,7 +622,8 @@ void main() {
           String tail = '**/secrets/**',
         ]) {
           final realStat = fs.statSync;
-          final realRealpath = fs.realpathSync;
+          // The real path is asked of the `native` form.
+          final realRealpath = fs.realpathSyncNative;
           String? answerFor(String fn, String p) =>
               answers['$fn ${p.substring(math.min(root.length + 1, p.length))}'];
           fs.statSync = (String p) {
@@ -638,7 +633,7 @@ void main() {
               return realStat(join(root, answer.substring(1)));
             throw NodeError(answer, code: answer);
           };
-          fs.realpathSync = (String p) {
+          fs.realpathSyncNative = (String p) {
             final answer = answerFor('realpathSync', p);
             if (answer == null) return realRealpath(p);
             if (answer[0] == '=') {
@@ -653,7 +648,7 @@ void main() {
             ).map((p) => p.substring(root.length + 1)).toList();
           } finally {
             fs.statSync = realStat;
-            fs.realpathSync = realRealpath;
+            fs.realpathSyncNative = realRealpath;
           }
         }
 
@@ -2164,9 +2159,9 @@ void main() {
         }
 
         final realStat = fs.statSync;
-        final realRealpath = fs.realpathSync;
+        final realRealpath = fs.realpathSyncNative;
         fs.statSync = (String p) => unreachable(p) ? eacces(p) : realStat(p);
-        fs.realpathSync = (String p) =>
+        fs.realpathSyncNative = (String p) =>
             unreachable(p) ? eacces(p) : realRealpath(p);
         try {
           final wrapped = await wrapCommandWithSandboxLinux(
@@ -2186,7 +2181,7 @@ void main() {
           return (wrapped: wrapped, certs: certs, link: link);
         } finally {
           fs.statSync = realStat;
-          fs.realpathSync = realRealpath;
+          fs.realpathSyncNative = realRealpath;
         }
       }
 

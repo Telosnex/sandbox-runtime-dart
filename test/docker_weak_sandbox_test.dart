@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/docker-weak-sandbox.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/docker-weak-sandbox.test.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, prefer_adjacent_string_concatenation, dangling_library_doc_comments, slash_for_doc_comments, unintended_html_in_doc_comment
 /**
  * End-to-end: run srt as uid 0 inside a container with
@@ -186,20 +186,88 @@ void main() {
       });
 
       // Under the helper the command holds a full capability set in the helper's
-      // nested user namespace, so what refuses the unmount is EINVAL: the mounts
-      // it inherited were copied across a user-namespace boundary and are locked.
+      // nested user namespace, and what refuses the unmount is the helper's
+      // namespaces filter (EPERM), before the kernel looks at the locked mount.
       test('leaves the command no way to unmount a deny (seccomp helper)', () {
         final out = join(DENIED, 'escaped');
         final r = srt(escapeAttempt(out));
 
         expect(r.stdout, contains('SANDBOX-RAN'));
-        expect(r.stdout, contains('umount2 / rc=-1 errno=EINVAL'));
-        expect(r.stdout, contains('umount2 $SECRET rc=-1 errno=EINVAL'));
+        expect(r.stdout, contains('umount2 / rc=-1 errno=EPERM'));
+        expect(r.stdout, contains('umount2 $SECRET rc=-1 errno=EPERM'));
         refusedEveryStep(r.stdout);
         expect(r.status, isNot(0));
         expect(r.stdout, isNot(contains('TOPSECRET')));
         expect(fs.existsSync(out), isFalse);
       });
+
+      // The kernel would let it: the command holds the capability.
+      test('cannot make a mount namespace of its own (seccomp helper)', () {
+        final probe = join(WORK, 'mount-namespace-probe.py');
+        fs.writeFileSync(
+          probe,
+          [
+            'import ctypes, errno, os, platform',
+            'libc = ctypes.CDLL(None, use_errno=True)',
+            "CLONE = {'x86_64': 56, 'aarch64': 220}[platform.machine()]",
+            'NEWNS, SIGCHLD = 0x00020000, 17',
+            'def said(label, rc):',
+            "    print(label, 'ok' if rc >= 0 else errno.errorcode.get(ctypes.get_errno()))",
+            "said('unshare', libc.unshare(NEWNS))",
+            'pid = libc.syscall(CLONE, ctypes.c_ulong(NEWNS | SIGCHLD), None, None, None, None)',
+            'if pid == 0: os._exit(0)',
+            "said('clone', pid)",
+            '',
+          ].join('\n'),
+        );
+        final r = srt('echo SANDBOX-RAN; python3 $probe');
+        expect(r.stdout, contains('SANDBOX-RAN'));
+        expect(r.stdout, contains('unshare EPERM'));
+        expect(r.stdout, contains('clone EPERM'));
+      });
+
+      // This job's /proc is masked, so the helper cannot mount a fresh one and
+      // the command still sees the helper's outer process, which shares its user
+      // namespace. The command holds a full capability set there; what keeps it
+      // out is that the helper made itself non-dumpable before it forked.
+      test(
+        'cannot open the memory of the helper process it can see (seccomp helper)',
+        () {
+          final probe = join(WORK, 'helper-mem-probe.py');
+          fs.writeFileSync(
+            probe,
+            [
+              'import os',
+              'seen = 0',
+              "for pid in filter(str.isdigit, os.listdir('/proc')):",
+              '    try:',
+              "        name = open('/proc/%s/comm' % pid).read().strip()",
+              '    except OSError:',
+              '        continue',
+              "    if name != 'apply-seccomp' or int(pid) == os.getpid():",
+              '        continue',
+              '    seen += 1',
+              "    for what in ('mem', 'environ'):",
+              '        try:',
+              "            os.close(os.open('/proc/%s/%s' % (pid, what), os.O_RDWR if what == 'mem' else os.O_RDONLY))",
+              "            print('helper %s OPENED' % what)",
+              '        except OSError as e:',
+              "            print('helper %s refused' % what)",
+              "print('helpers-seen=%d' % seen)",
+              '',
+            ].join('\n'),
+          );
+          final r = srt('echo SANDBOX-RAN; python3 $probe');
+          expect(r.stdout, contains('SANDBOX-RAN'));
+          // If none is visible here the fresh /proc was mounted after all and there
+          // is nothing to reach; otherwise every one seen must refuse.
+          expect(
+            r.stdout,
+            matches(RegExp(r'^helpers-seen=\d+$', multiLine: true)),
+          );
+          expect(r.stdout, isNot(contains('OPENED')));
+        },
+      );
 
       // Without the helper there is no nested namespace and no locked copies:
       // --cap-drop ALL is the whole barrier, and the kernel refuses with EPERM

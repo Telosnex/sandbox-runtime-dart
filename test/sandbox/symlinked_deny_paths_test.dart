@@ -1,4 +1,5 @@
-// Ported from sandbox-runtime test/sandbox/symlinked-deny-paths.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/symlinked-deny-paths.test.ts @ 0bbebed.
+// ignore_for_file: prefer_interpolation_to_compose_strings
 // ignore_for_file: non_constant_identifier_names, slash_for_doc_comments
 import 'dart:io';
 
@@ -8,6 +9,8 @@ import 'package:test/test.dart';
 import 'package:sandbox_runtime/src/node/child_process.dart'
     show SpawnSyncResult, spawnSync;
 import 'package:sandbox_runtime/src/node/fs.dart' as fs;
+import 'package:sandbox_runtime/src/node/process.dart' as process;
+import '../helpers/captured_warnings.dart';
 import 'package:sandbox_runtime/src/sandbox/linux_sandbox_utils.dart';
 import 'package:sandbox_runtime/src/sandbox/sandbox_schemas.dart';
 
@@ -168,6 +171,173 @@ void main() {
         expect(result, isNot(contains('/dev/null $danglingLink')));
         expect(result, contains('--ro-bind /dev/null $linkTarget'));
       },
+    );
+
+    test(
+      'lands beneath where a dangling symlink leads for a path beneath the link',
+      () async {
+        final danglingLink = join(PROJ, 'settings');
+        final linkTarget = join(AREA, 'nowhere');
+        fs.symlinkSync(linkTarget, danglingLink);
+        final result = await wrap([join(danglingLink, '.mcp.json')]);
+        // A directory is what stands in for the first missing component.
+        expect(countMounts(result, ['--ro-bind', '/dev/null', linkTarget]), 0);
+        expect(result, matches(RegExp(r'--ro-bind \S+ ' + linkTarget + ' ')));
+      },
+    );
+
+    /** The placeholders beneath PROJ: what stands in, by where. */
+    Map<String, String> placeholders(String result) => {
+      for (final m in RegExp(r'--ro-bind (\S+) (\S+)').allMatches(result))
+        if (m[1] != m[2] && m[2]!.startsWith('$PROJ/'))
+          m[2]!.substring(PROJ.length + 1): m[1] == '/dev/null'
+              ? 'file'
+              : 'directory',
+    };
+
+    for (final (_, links, expected)
+        in <(String, Map<String, String>, Map<String, String>)>[
+          (
+            'a directory a dangling hop lacks',
+            {'hop': 'lacking/in', 'name': 'hop/../made'},
+            {'lacking': 'directory'},
+          ),
+          (
+            'what the last of three dangling hops lacks',
+            {
+              'hop': 'two/x',
+              'two': 'three/y',
+              'three': 'lacking/z',
+              'name': 'hop/made',
+            },
+            {'lacking': 'directory'},
+          ),
+          (
+            'the names that only lead down from it',
+            {'name': 'lacking/./in//deep/../../made'},
+            {'lacking': 'directory'},
+          ),
+          (
+            'a hop that is not there, and where the way leads if that is a directory',
+            {'name': 'hop/../made'},
+            {'hop': 'file', 'made': 'file'},
+          ),
+          (
+            'each name the way goes up from at once',
+            {'name': 'one/../two/./../three/in'},
+            {'one': 'file', 'two': 'file', 'three': 'directory'},
+          ),
+        ]) {
+      test('puts a placeholder on %s', () async {
+        for (final MapEntry(key: link, value: target) in links.entries) {
+          fs.symlinkSync(target, join(PROJ, link));
+        }
+        expect(placeholders(await wrap([join(PROJ, 'name')])), expected);
+      });
+    }
+
+    test(
+      'denies what is there where the way leads past a name that is not',
+      () async {
+        fs.mkdirSync(join(PROJ, 'kept'));
+        fs.symlinkSync('hop/../kept', join(PROJ, 'name'));
+        final result = await wrap([join(PROJ, 'name')]);
+        expect(placeholders(result), {'hop': 'file'});
+        expect(
+          countMounts(result, [
+            '--ro-bind',
+            join(PROJ, 'kept'),
+            join(PROJ, 'kept'),
+          ]),
+          1,
+        );
+      },
+    );
+
+    test(
+      'denies the root where the way leads there past a name that is not',
+      () async {
+        fs.symlinkSync(
+          'hop/..${List.filled(PROJ.split('/').length, '/..').join()}',
+          join(PROJ, 'name'),
+        );
+        final result = await wrapCommandWithSandboxLinux(
+          LinuxSandboxParams(
+            command: 'true',
+            needsNetworkRestriction: false,
+            readConfig: null,
+            writeConfig: FsWriteRestrictionConfig(
+              allowOnly: ['/'],
+              denyWithinAllow: [join(PROJ, 'name')],
+            ),
+          ),
+        );
+        // Beside the one that every plan starts with.
+        expect(countMounts(result, ['--ro-bind', '/', '/']), 2);
+      },
+    );
+
+    for (final (_, target, why) in <(String, Object, String)>[
+      ('comes round to itself', 'name', 'ELOOP'),
+      (
+        'goes up from one missing name after another, without end',
+        'x/../name',
+        'too many names',
+      ),
+      ('leads through a name that is no text', <int>[0x6e, 0xff], 'EILSEQ'),
+    ]) {
+      test('masks the link and says why where the way %s', () async {
+        fs.symlinkSync(target, join(PROJ, 'name'));
+        final (:result, :warnings) = await withCapturedWarnings(
+          () => wrap([join(PROJ, 'name')]),
+        );
+        expect(
+          countMounts(result, ['--ro-bind', '/dev/null', join(PROJ, 'name')]),
+          1,
+        );
+        expect(
+          warnings.where((said) => said.contains('cannot be settled')).toList(),
+          [matches(RegExp('${join(PROJ, 'name')} .*$why'))],
+        );
+      });
+    }
+
+    // root searches a directory of any mode.
+    for (final (_, target) in <(String, String)>[
+      ('into', 'shut/x'),
+      ('deep into', 'shut/in/deep/x'),
+      ('up from', 'shut/../made'),
+      ('through a missing name and into', 'gone/../shut/x'),
+    ]) {
+      test(
+        'denies a directory that cannot be searched whole where the way leads %s it',
+        () async {
+          fs.symlinkSync(target, join(PROJ, 'name'));
+          fs.mkdirSync(join(PROJ, 'shut'), {'mode': 384});
+          final result = await wrap([join(PROJ, 'name')]);
+          final shut = join(PROJ, 'shut');
+          expect(countMounts(result, ['--ro-bind', shut, shut]), 1);
+          expect(result, isNot(contains('/dev/null ${join(PROJ, 'name')}')));
+        },
+        skip: process.getuid?.call() != 0
+            ? false
+            : 'root searches a directory of any mode',
+      );
+    }
+
+    test(
+      'mounts nothing for a directory that cannot be searched where the command cannot write',
+      () async {
+        final shut = join(BASE, 'shut');
+        fs.symlinkSync(join(shut, 'x'), join(PROJ, 'name'));
+        fs.mkdirSync(shut, {'mode': 384});
+        final result = await wrap([join(PROJ, 'name')]);
+        expect(result, isNot(contains(shut)));
+        expect(result, isNot(contains('/dev/null ${join(PROJ, 'name')}')));
+      },
+      skip: process.getuid?.call() != 0
+          ? false
+          : 'root searches a directory of any mode',
     );
 
     test(

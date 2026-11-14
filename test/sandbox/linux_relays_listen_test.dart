@@ -1,4 +1,5 @@
-// Ported from sandbox-runtime test/sandbox/linux-relays-listen.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/linux-relays-listen.test.ts @ 0bbebed.
+// ignore_for_file: prefer_adjacent_string_concatenation
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments
 import 'package:path/path.dart' show join;
 import 'package:sandbox_runtime/src/node/child_process.dart' show spawnSync;
@@ -130,6 +131,30 @@ void main() {
           expect((await run(later)).lines, ['3128 up', '1080 up']);
         });
       }
+
+      // Which family a plain TCP-LISTEN takes is socat's choice, and differs by
+      // version. These two stand-ins make it, so that the socat here does not.
+      test('listens on IPv4 where socat cannot on IPv6, and would', () async {
+        const noIPv6 =
+            'case "\$1" in TCP-LISTEN:* | TCP6-LISTEN:*) exit 1 ;; esac\nexec socat "\$@"';
+        expect((await run(noIPv6)).lines, ['3128 up', '1080 up']);
+      });
+
+      test('serves ::1 as well as 127.0.0.1, whatever socat would take', () async {
+        final (:lines, ms: _) = await run(
+          'exec socat -4 "\$@"',
+          command:
+              'for at in 127.0.0.1/3128 127.0.0.1/1080 ::1/3128 ::1/1080; do\n' +
+              '  (exec 3<>/dev/tcp/\$at) 2>/dev/null && echo "\$at up" || echo "\$at refused"\n' +
+              'done',
+        );
+        expect(lines, [
+          '127.0.0.1/3128 up',
+          '127.0.0.1/1080 up',
+          '::1/3128 up',
+          '::1/1080 up',
+        ]);
+      }, skip: existsSync('/proc/net/if_inet6') ? false : 'IPv6 not available');
 
       // There, and never listening.
       const stopped = 'kill -STOP \$\$';
