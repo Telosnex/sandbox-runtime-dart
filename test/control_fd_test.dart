@@ -19,6 +19,7 @@ import 'helpers/platform.dart';
 // Get the path to the built CLI
 // Dart: the CLI is bin/srt.dart, run by the Dart executable in place of `node`.
 final CLI_PATH = path.join(process.cwd(), 'bin', 'srt.dart');
+late String cliKernelPath;
 
 // srt is expected to exit on its own shortly after the wrapped command
 // (which runs for well under a second) finishes; a hang is a failure, not
@@ -47,27 +48,29 @@ Future<int?> waitForExit(ChildProcess child) {
   final completer = Completer<int?>();
   int? code;
   Timer? drainTimer;
-  final exitTimer = Timer(
-    const Duration(milliseconds: EXIT_TIMEOUT_MS),
-    () => completer.completeError(
-      Exception(
-        'srt did not exit within ${EXIT_TIMEOUT_MS}ms of the wrapped command',
-      ),
-    ),
-  );
+  final exitTimer = Timer(const Duration(milliseconds: EXIT_TIMEOUT_MS), () {
+    if (!completer.isCompleted) {
+      completer.completeError(
+        Exception(
+          'srt did not exit within ${EXIT_TIMEOUT_MS}ms of the wrapped command',
+        ),
+      );
+    }
+  });
   child.on('exit', (int? c) {
     code = c;
     // srt is gone; only the pipes are still open, which is a different
     // failure (something else holding them) and gets its own deadline.
     exitTimer.cancel();
-    drainTimer = Timer(
-      const Duration(milliseconds: DRAIN_TIMEOUT_MS),
-      () => completer.completeError(
-        Exception(
-          'srt exited but its stdio did not close within ${DRAIN_TIMEOUT_MS}ms',
-        ),
-      ),
-    );
+    drainTimer = Timer(const Duration(milliseconds: DRAIN_TIMEOUT_MS), () {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          Exception(
+            'srt exited but its stdio did not close within ${DRAIN_TIMEOUT_MS}ms',
+          ),
+        );
+      }
+    });
   });
   child.on('close', () {
     exitTimer.cancel();
@@ -115,6 +118,23 @@ void main() {
   // anything it shells out to.
   group('--control-fd', skip: isWindows ? 'Windows not supported by this port' : null, () {
     late String tmpDir;
+    late String kernelDir;
+    setUpAll(() {
+      // The upstream CLI is already built. Compile the Dart port once too,
+      // so the exit deadline measures execution rather than cold compilation.
+      kernelDir = fs.mkdtempSync(path.join(os.tmpdir(), 'control-fd-kernel-'));
+      cliKernelPath = path.join(kernelDir, 'srt.dill');
+      execFileSync(Platform.resolvedExecutable, [
+        'compile',
+        'kernel',
+        CLI_PATH,
+        '-o',
+        cliKernelPath,
+      ]);
+    });
+    tearDownAll(() {
+      fs.rmSync(kernelDir, {'recursive': true, 'force': true});
+    });
     // Every process this file starts, so a test that fails with one still
     // running does not leave it behind.
     var spawned = <ChildProcess>[];
@@ -133,7 +153,7 @@ void main() {
       runtime ??= Platform.resolvedExecutable;
       final child = spawn(
         runtime,
-        [CLI_PATH, ...args],
+        [cliKernelPath, ...args],
         {'stdio': stdio, 'env': env},
       );
       spawned.add(child);
@@ -189,7 +209,7 @@ void main() {
       env ??= process.env;
       final result = spawnSync(
         Platform.resolvedExecutable,
-        [CLI_PATH, ...args],
+        [cliKernelPath, ...args],
         {
           'stdio': stdio,
           'env': env,
@@ -570,7 +590,7 @@ void main() {
         'bash',
         [
           '-c',
-          'exec 20<>$fifo; exec ${Platform.resolvedExecutable} $CLI_PATH --debug --control-fd 20 -- $testScript',
+          'exec 20<>$fifo; exec ${Platform.resolvedExecutable} $cliKernelPath --debug --control-fd 20 -- $testScript',
         ],
         {
           'stdio': ['inherit', 'pipe', 'pipe'],

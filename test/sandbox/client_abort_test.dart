@@ -100,6 +100,10 @@ void main() {
     });
 
     tearDownAll(() async {
+      // Abort tests may leave half-open request sockets after their assertions.
+      // Release them explicitly before waiting for the listening servers.
+      proxy.closeAllConnections();
+      upstream.closeAllConnections();
       await (() {
         final r = Completer<void>();
         proxy.close(() => r.complete());
@@ -242,6 +246,10 @@ void main() {
     });
 
     tearDownAll(() async {
+      // Abort tests may leave half-open request sockets after their assertions.
+      // Release them explicitly before waiting for the listening servers.
+      proxy.closeAllConnections();
+      upstream.closeAllConnections();
       await (() {
         final r = Completer<void>();
         proxy.close(() => r.complete());
