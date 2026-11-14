@@ -1106,21 +1106,3 @@ StatFs statfsSync(String path) {
     calloc.free(buf);
   }
 }
-
-/// Node's `fs.symlinkSync` with a byte target, preserving non-UTF-8 link text.
-void symlinkSyncBuffer(Uint8List target, String path) {
-  final libc = _libc;
-  if (libc == null) throw UnsupportedError('fs.symlinkSync needs a POSIX libc');
-  if (target.contains(0)) {
-    throw ArgumentError('The target must be without null bytes');
-  }
-  final nativeTarget = calloc<Uint8>(target.length + 1);
-  nativeTarget.asTypedList(target.length).setAll(0, target);
-  try {
-    final symlink = libc.lookupFunction<_TwoPathN, _TwoPathD>('symlink');
-    final status = _withPath(path, (p) => symlink(nativeTarget, p));
-    if (status != 0) throw _errnoError('symlink', path);
-  } finally {
-    calloc.free(nativeTarget);
-  }
-}
