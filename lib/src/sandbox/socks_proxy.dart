@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/sandbox/socks-proxy.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/socks-proxy.ts @ 0bbebed.
 // ignore_for_file: dangling_library_doc_comments, slash_for_doc_comments, constant_identifier_names, non_constant_identifier_names, unintended_html_in_doc_comment
 
 import 'dart:async';
@@ -18,6 +18,8 @@ import 'parent_proxy.dart'
         connectViaParentProxy,
         dialDirect,
         isValidHost,
+        openConnectTunnel,
+        ConnectTunnelOptions,
         selectParentProxyUrl,
         shouldBypassParentProxy;
 import 'resolved_address_guard.dart' show isResolvedAddressDenied;
@@ -31,12 +33,24 @@ abstract interface class SocksProxyServerOptions {
    */
   FutureOr<bool> filter(int port, String host, [String? encodedCommand]);
   /**
-   * Optional upstream HTTP proxy. When present, SOCKS CONNECT requests are
-   * tunnelled through the parent's HTTP CONNECT instead of dialing directly.
-   * NO_PROXY-matched hosts still connect directly.
+   * Unix socket path of the MITM proxy that carries connections to this host,
+   * or undefined for a host it does not cover. Called with the canonical host,
+   * after `filter` has allowed it. A returned path is the only route tried: an
+   * HTTP CONNECT into that socket, never parentProxy or a direct dial.
+   */
+  String? Function(String host)? get getMitmSocketPath;
+
+  /**
+   * Optional upstream HTTP proxy. When present, SOCKS CONNECT requests (those
+   * not routed via mitmProxy) are tunnelled through the parent's HTTP CONNECT
+   * instead of dialing directly. NO_PROXY-matched hosts still connect directly.
    */
   ResolvedParentProxy? get parentProxy;
-  /** Direct-dial name resolution (see HttpProxyServerOptions.lookupFor); a refusal is answered "not allowed by ruleset". */
+  /**
+   * Direct-dial name resolution (see HttpProxyServerOptions.lookupFor); a
+   * refusal is answered "not allowed by ruleset". Not consulted for the
+   * mitmProxy or parentProxy routes.
+   */
   DirectLookup? get lookupFor;
   /**
    * Per-session token (same value as the HTTP proxy's). When set, the
@@ -182,12 +196,12 @@ SocksProxyWrapper createSocksProxyServer(SocksProxyServerOptions options) {
   });
 
   // Override the default connection handler so we can route through a parent
-  // HTTP proxy when one is configured. The default handler does a straight
-  // net.connect() which fails when direct egress is blocked.
+  // HTTP proxy, or into the MITM proxy's socket, when one is configured. The
+  // default handler does a straight net.connect(), which uses neither.
   socksServer.setConnectionHandler((conn, sendStatus) {
     // The ruleset validator above allowed this destination on its
-    // canonical spelling; dial (and make the parent-proxy decision on)
-    // that same spelling, as the HTTP proxy does, rather than the client's.
+    // canonical spelling; dial (and make the MITM and parent-proxy decisions
+    // on) that same spelling, as the HTTP proxy does, rather than the client's.
     final host = canonicalizeHost(conn.destAddress!) ?? conn.destAddress!;
     final port = conn.destPort!;
 
@@ -200,24 +214,45 @@ SocksProxyWrapper createSocksProxyServer(SocksProxyServerOptions options) {
     });
     conn.socket.on('error', (_) => upstreamRef?.destroy());
 
-    // SOCKS is an opaque TCP tunnel — semantically identical to HTTP
-    // CONNECT — so always prefer HTTPS_PROXY if set, regardless of dest port.
+    // A host with a MITM socket must never reach the network any other way:
+    // if that tunnel fails the client gets a failure reply, not the next route.
+    final mitmSocketPath = options.getMitmSocketPath?.call(host);
+
+    // SOCKS is an opaque TCP tunnel — semantically identical to HTTP CONNECT —
+    // so a non-MITM host prefers HTTPS_PROXY if set, regardless of dest port.
     final parentProxy = options.parentProxy;
     final parentUrl =
-        parentProxy != null && !shouldBypassParentProxy(parentProxy, host)
+        (mitmSocketPath == null || mitmSocketPath.isEmpty) &&
+            parentProxy != null &&
+            !shouldBypassParentProxy(parentProxy, host)
         ? selectParentProxyUrl(parentProxy, isHttps: true)
         : null;
 
-    final open = parentUrl != null
-        ? connectViaParentProxy(parentUrl, host, port)
-        : dialDirect(
-            host,
-            port,
-            options.lookupFor?.call(
-              port,
-              encodedCommandFromProxyUser(conn.username),
-            ),
-          );
+    Future<net.NodeSocket> open;
+    if (mitmSocketPath != null && mitmSocketPath.isNotEmpty) {
+      logForDebugging(
+        'Routing SOCKS CONNECT $host:$port through MITM proxy at $mitmSocketPath',
+      );
+      open = openConnectTunnel(
+        ConnectTunnelOptions(
+          dial: () => net.connect({'path': mitmSocketPath}),
+          readyEvent: 'connect',
+          destHost: host,
+          destPort: port,
+        ),
+      );
+    } else if (parentUrl != null) {
+      open = connectViaParentProxy(parentUrl, host, port);
+    } else {
+      open = dialDirect(
+        host,
+        port,
+        options.lookupFor?.call(
+          port,
+          encodedCommandFromProxyUser(conn.username),
+        ),
+      );
+    }
 
     open
         .then((upstream) {

@@ -762,8 +762,16 @@ class NodeSocket extends stream.Duplex {
     return this;
   }
 
+  /// Assignable Node method, used by a TLS-on-Duplex wrapper.
+  void Function()? destroySoonOverride;
+
   /// Node `socket.destroySoon()`.
   void destroySoon() {
+    final override = destroySoonOverride;
+    if (override != null) {
+      override();
+      return;
+    }
     if (writable) end();
     if (writableFinished) {
       destroy();
