@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime vendor/seccomp/build.ts @ 24eb39e.
+// Ported from sandbox-runtime vendor/seccomp/build.ts @ 0bbebed.
 
 import 'dart:io';
 import 'dart:typed_data';
@@ -50,27 +50,31 @@ void main() {
     '-lseccomp',
   ]);
 
+  // The two filters apply-seccomp stacks (see seccomp-unix-block.c), as separate
+  // arrays so that a command opted out of `namespaces` keeps `unix`. For the
+  // builder's own architecture only: the generator can put a call its libseccomp
+  // cannot name into a filter by number for that architecture alone.
+  final target = arch == 'x64' ? 'x86_64' : 'aarch64';
   final bpf = <String, Uint8List>{};
-  for (final target in ['x86_64', 'aarch64']) {
-    final temporary = path.join(out, '$target.bpf');
-    _run([generator, temporary, target]);
-    bpf[target] = File(temporary).readAsBytesSync();
+  for (final rules in ['unix', 'namespaces']) {
+    final temporary = path.join(out, '$target.$rules.bpf');
+    _run([generator, temporary, target, rules]);
+    bpf[rules] = File(temporary).readAsBytesSync();
     File(temporary).deleteSync();
   }
   File(generator).deleteSync();
 
   final header = path.join(out, 'unix-block-bpf.h');
   File(header).writeAsStringSync(
-    '#if defined(__x86_64__)\n'
+    '#if defined(__${target}__)\n'
     'static const unsigned char unix_block_bpf[] = {\n'
-    '${toCArray(bpf['x86_64']!)}\n'
+    '${toCArray(bpf['unix']!)}\n'
     '};\n'
-    '#elif defined(__aarch64__)\n'
-    'static const unsigned char unix_block_bpf[] = {\n'
-    '${toCArray(bpf['aarch64']!)}\n'
+    'static const unsigned char namespace_block_bpf[] = {\n'
+    '${toCArray(bpf['namespaces']!)}\n'
     '};\n'
     '#else\n'
-    '#error "unsupported architecture for unix-block BPF filter"\n'
+    '#error "these filters were generated for another architecture"\n'
     '#endif\n',
   );
 

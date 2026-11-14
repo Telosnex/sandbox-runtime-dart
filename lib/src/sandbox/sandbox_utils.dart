@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/sandbox/sandbox-utils.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/sandbox-utils.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, dangling_library_doc_comments
 // ignore_for_file: slash_for_doc_comments, non_constant_identifier_names
 // ignore_for_file: avoid_dynamic_calls, curly_braces_in_flow_control_structures
@@ -19,6 +19,7 @@ import '../node/process.dart' as process;
 import '../utils/debug.dart';
 import '../utils/platform.dart' show getPlatform;
 import '../utils/real_path.dart' show realPathOf;
+import 'glob_pattern.dart';
 import 'sandbox_config.dart'
     show FilesystemPathEntry, FilesystemPathLiteral, FilesystemPathSpelling;
 
@@ -610,19 +611,44 @@ bool Function(String p) _readRuleCovers(FilesystemPathEntry entry) {
   final spelling = (entry as FilesystemPathSpelling).path;
   final stripped = removeTrailingGlobSuffix(spelling);
   if (containsGlobCharsForPlatform(stripped)) {
-    try {
-      final regex = RegExp(denyGlobRegex(normalizePathForSandbox(stripped)));
-      // V8 finds a pattern too large only when it first runs it.
-      regex.hasMatch('');
-      return (p) => regex.hasMatch(p);
-    } catch (_) {
-      // Too large to compile. What it covers cannot be told, so it covers.
-      return (_) => true;
-    }
+    final regex = _compiledDenyGlob(normalizePathForSandbox(stripped));
+    // Too large to compile. What it covers cannot be told, so it covers.
+    return regex == null ? (_) => true : (p) => regex.hasMatch(p);
   }
   final rule = normalizePathForSandbox(stripped, literal: true);
   return (p) => isAtOrUnder(p, rule);
 }
+
+/**
+ * {@link denyGlobRegex} compiled, or null for a pattern too large to compile.
+ * Kept by the normalized pattern, which is all it depends on: these rules are
+ * read for a getter that callers ask once a path. What is asked of the disk
+ * on the way to the normalized pattern is asked every time.
+ */
+RegExp? _compiledDenyGlob(String normalizedGlob) {
+  var regex = _compiledDenyGlobs[normalizedGlob];
+  if (!_compiledDenyGlobs.containsKey(normalizedGlob)) {
+    try {
+      regex = RegExp(denyGlobRegex(normalizedGlob));
+      // V8 finds a pattern too large only when it first runs it.
+      regex.hasMatch('');
+    } catch (_) {
+      regex = null;
+    }
+    _compiledDenyGlobChars += normalizedGlob.length;
+    if (_compiledDenyGlobChars > _MAX_COMPILED_DENY_GLOB_CHARS) {
+      _compiledDenyGlobs.clear();
+      _compiledDenyGlobChars = normalizedGlob.length;
+    }
+    _compiledDenyGlobs[normalizedGlob] = regex;
+  }
+  return regex;
+}
+
+final _compiledDenyGlobs = <String, RegExp?>{};
+var _compiledDenyGlobChars = 0;
+/** Past this much pattern text all that is kept is let go, to begin again. */
+const _MAX_COMPILED_DENY_GLOB_CHARS = 1 << 20;
 
 /**
  * Generate proxy environment variables for sandboxed processes
@@ -909,6 +935,8 @@ const int _SAFE_DIRECTORY_WILDCARD_THRESHOLD = 8;
 ///     without `-c http.sslBackend=openssl`. Revocation is disabled
 ///     because CryptoAPI CRL/OCSP fetches ignore proxy env and would
 ///     be WFP-fenced.
+///   - `http.sslBackend=openssl` when `opensslBackend` — for a child
+///     whose token Schannel refuses (the write-restricted token).
 ///
 /// Composes with an existing `GIT_CONFIG_COUNT` in `baseEnv` by
 /// continuing its numbering; the returned `GIT_CONFIG_COUNT` is the
@@ -928,6 +956,9 @@ Map<String, String> buildGitConfigEnv({
 
   /// Windows-only schannel knobs; default false.
   bool schannelCa = false,
+
+  /// Windows-only: select git's OpenSSL TLS backend; default false.
+  bool opensslBackend = false,
   Map<String, String?>? baseEnv,
 }) {
   // An explicit `GIT_CONFIG_COUNT=0` in baseEnv is an opt-out ("no
@@ -982,6 +1013,9 @@ Map<String, String> buildGitConfigEnv({
   if (schannelCa) {
     emit('http.schannelUseSSLCAInfo', 'true');
     emit('http.schannelCheckRevoke', 'false');
+  }
+  if (opensslBackend) {
+    emit('http.sslBackend', 'openssl');
   }
   if (n == start) return {};
   out['GIT_CONFIG_COUNT'] = '$n';
@@ -1082,105 +1116,6 @@ String? encodedCommandFromProxyUser(String? username) {
     return null;
   }
   return suffix;
-}
-
-/// Convert a glob pattern to a regular expression
-///
-/// This implements gitignore-style pattern matching to match the behavior of the
-/// `ignore` library used by the permission system.
-///
-/// Supported patterns:
-/// - * matches any characters except / (e.g., *.ts matches foo.ts but not foo/bar.ts)
-/// - ** matches any characters including / (e.g., src/**/*.ts matches all .ts files in src/)
-/// - ? matches any single character except / (e.g., file?.txt matches file1.txt)
-/// - [abc] matches any character in the set (e.g., file[0-9].txt matches file3.txt)
-///
-/// Brackets that would not compile, because a range in them runs backwards
-/// (`[user-id]`: `r-i`) or a second `[` is left open, are the text they are, as
-/// POSIX reads a `[` that opens no set. The rest of the pattern keeps its
-/// meaning. So what is returned always compiles, and no entry keeps a sandbox
-/// from starting.
-///
-/// Exported for testing and shared between macOS sandbox profiles and Linux glob expansion.
-String globToRegex(String globPattern) {
-  // Every other part is a bracket expression, up to the first `]` as a regular
-  // expression reads one. The last part holds each `[` that is left open.
-  final splitParts = <String>[];
-  var cursor = 0;
-  for (final match in RegExp(r'\[[^\]]*\]').allMatches(globPattern)) {
-    splitParts.add(globPattern.substring(cursor, match.start));
-    splitParts.add(match[0]!);
-    cursor = match.end;
-  }
-  splitParts.add(globPattern.substring(cursor));
-  final sources = splitParts.map((part) {
-    final source = _globPartToRegex(part);
-    if (_isRegex(source)) return source;
-    logForDebugging(
-      '[Sandbox] The brackets in $part spell no set of characters, so they are read as text: $globPattern',
-      level: 'warn',
-    );
-    final pieces = <String>[];
-    var cursor = 0;
-    for (final bracket in RegExp(r'[\[\]]').allMatches(part)) {
-      pieces.add(part.substring(cursor, bracket.start));
-      pieces.add(bracket[0]!);
-      cursor = bracket.end;
-    }
-    pieces.add(part.substring(cursor));
-    return pieces.indexed
-        .map(
-          (entry) =>
-              entry.$1.isOdd ? '\\${entry.$2}' : _globPartToRegex(entry.$2),
-        )
-        .join();
-  }).join();
-  return '^$sources\$';
-}
-
-bool _isRegex(String source) {
-  try {
-    RegExp(source);
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
-
-/// {@link globToRegex} for one bracket expression, or for what lies between two.
-String _globPartToRegex(String part) => part
-    // Escape regex special characters (except glob chars * ? [ ])
-    .replaceAllMapped(RegExp(r'[.^$+{}()|\\]'), (match) => '\\${match[0]}')
-    // Escape unclosed brackets (no matching ])
-    .replaceAllMapped(RegExp(r'\[([^\]]*?)$'), (match) => '\\[${match[1]}')
-    // Convert glob patterns to regex (order matters - ** before *)
-    .replaceAll('**/', '__GLOBSTAR_SLASH__') // Placeholder for **/
-    .replaceAll('**', '__GLOBSTAR__') // Placeholder for **
-    .replaceAll('*', '[^/]*') // * matches anything except /
-    .replaceAll('?', '[^/]') // ? matches single character except /
-    // Restore placeholders
-    .replaceAll(
-      '__GLOBSTAR_SLASH__',
-      '(.${'*'}/)?',
-    ) // **/ matches zero or more dirs
-    .replaceAll('__GLOBSTAR__', '.*'); // ** matches anything including /
-
-/// Regex for a glob used in a DENY rule: {@link globToRegex} plus an optional
-/// `/…` tail, so the deny covers everything beneath each match the way
-/// `subpath` does for literals. Callers strip a trailing `/**` before the
-/// pattern gets here (removeTrailingGlobSuffix), so `**/secrets/**` arrives
-/// as `**/secrets` and, matched exactly, would deny only the directory
-/// vnode while `secrets/key` stayed readable. This is what the Linux backend
-/// already does (a deny masks the whole subtree). Only ever widens a deny.
-///
-/// Takes a whole pattern, so every character in it is glob syntax: right for
-/// the pattern reading of a spelling the caller wrote, which is what
-/// {@link readRuleCovers} passes. A pattern anchored at a directory that is a
-/// name on disk goes through the macOS `denyGlobEntryRegex`, which splices
-/// that directory back in escaped and calls this for the tail.
-String denyGlobRegex(String normalizedGlob) {
-  // globToRegex() always returns '^…$'.
-  return '${globToRegex(normalizedGlob).substring(0, globToRegex(normalizedGlob).length - 1)}(/.*)?\$';
 }
 
 class ExpandGlobOptions {
@@ -1364,13 +1299,10 @@ List<String> expandGlobPattern(
 /// after it are shared, so the automaton grows with the pattern's length and
 /// not with the number of combinations.
 ///
-/// `splits` is false for a pattern this cannot be done for: one with a
-/// wildcard inside a bracket expression (globToRegex rewrites that wildcard
-/// like any other, and what is left no longer reads as one character), with a
-/// second `[` that nothing closes, or that spells one of globToRegex's
-/// placeholders. Its positions say nothing, so every directory is listed, an
-/// entry is matched by its whole spelling, and {@link walkGlobPattern} does
-/// not list such a pattern through symlinks.
+/// `splits` is false for a pattern this cannot be done for: one of thousands
+/// of components, more than a path has. Its positions say nothing, so every
+/// directory is listed, an entry is matched by its whole spelling, and
+/// [walkGlobPattern] does not list such a pattern through symlinks.
 class _GlobPositions {
   const _GlobPositions({
     required this.splits,
@@ -1397,110 +1329,11 @@ class _GlobPositions {
   final bool Function(List<int>, String, String) matchesDirectoryForm;
 }
 
-/// What globToRegex makes of a pattern, piece by piece: `any` is its `.*`,
-///  `anyDirs` its `(.*/)?`, and a `source` matches within one name. Undefined
-///  for the patterns {@link GlobPositions} does not split.
-sealed class _GlobPiece {
-  const _GlobPiece();
-}
-
-final class _GlobPieceAny extends _GlobPiece {
-  const _GlobPieceAny();
-}
-
-final class _GlobPieceAnyDirs extends _GlobPiece {
-  const _GlobPieceAnyDirs();
-}
-
-final class _GlobPieceSlash extends _GlobPiece {
-  const _GlobPieceSlash();
-}
-
-final class _GlobPieceSource extends _GlobPiece {
-  const _GlobPieceSource(this.source, {this.canBeSeparator = false});
-  final String source;
-  final bool canBeSeparator;
-}
-
 RegExp _globRegExp(String source, String flags) => RegExp(
   source,
   caseSensitive: !flags.contains('i'),
   dotAll: flags.contains('s'),
 );
-
-List<_GlobPiece>? _globPieces(String pattern, String flags) {
-  // globToRegex rewrites its own placeholders where a pattern spells one.
-  if (pattern.contains('__GLOBSTAR')) return null;
-  String sourceOf(String text) =>
-      globToRegex(text).substring(1, globToRegex(text).length - 1);
-  final pieces = <_GlobPiece>[];
-  var unclosed = 0;
-  // A bracket expression first, the way a regular expression reads one:
-  // everything up to the first `]`. Then a run of `*` with the separator
-  // after it, since `**/` is one thing to globToRegex.
-  final tokenizer = RegExp(r'(\[[^\]]*\])|(\*+)(/?)|(/)|([^[*/]+|\[)');
-  for (final match in tokenizer.allMatches(pattern)) {
-    final text = match[0]!;
-    final bracket = match[1];
-    final stars = match[2];
-    final separatorAfterStars = match[3];
-    final separator = match[4];
-    if (bracket != null) {
-      if (RegExp(r'[*?]').hasMatch(bracket)) return null;
-      final source = sourceOf(bracket);
-      final regex = _globRegExp('^$source\$', flags);
-      if (regex.hasMatch(bracket)) {
-        // Read as the text it is, where a separator is one like any other.
-        for (final item in source.split('/').indexed) {
-          if (item.$1 > 0) pieces.add(const _GlobPieceSlash());
-          pieces.add(_GlobPieceSource(item.$2));
-        }
-      } else {
-        pieces.add(
-          _GlobPieceSource(
-            source,
-            canBeSeparator: _globRegExp('^$source\$', flags).hasMatch('/'),
-          ),
-        );
-      }
-    } else if (stars != null) {
-      // globToRegex takes `**/` first, so the last two of a run before a
-      // separator go with it. What is left of the run is `**` pairs from the
-      // left and then a `*`; a `.*` takes in a `.*` or `[^/]*` beside it.
-      final withSeparator = separatorAfterStars == '/' && stars.length >= 2;
-      final left = stars.length - (withSeparator ? 2 : 0);
-      if (left >= 2) {
-        pieces.add(const _GlobPieceAny());
-      } else if (left == 1) {
-        pieces.add(const _GlobPieceSource('[^/]*'));
-      }
-      if (withSeparator) {
-        pieces.add(const _GlobPieceAnyDirs());
-      } else if (separatorAfterStars == '/') {
-        pieces.add(const _GlobPieceSlash());
-      }
-    } else if (separator != null) {
-      pieces.add(const _GlobPieceSlash());
-    } else {
-      // globToRegex escapes the first `[` that nothing closes and no other:
-      // a second one reads on into whatever a later wildcard is rewritten to.
-      if (text == '[' && unclosed++ > 0) return null;
-      pieces.add(_GlobPieceSource(sourceOf(text)));
-    }
-  }
-  // `(.*/)?` adds nothing before another one or before a `.*`.
-  return pieces.indexed
-      .where(
-        (item) =>
-            item.$2 is! _GlobPieceAnyDirs ||
-            ((item.$1 + 1 >= pieces.length ||
-                    pieces[item.$1 + 1] is! _GlobPieceAnyDirs) &&
-                (item.$1 + 1 >= pieces.length ||
-                    pieces[item.$1 + 1] is! _GlobPieceAny)),
-      )
-      .map((item) => item.$2)
-      .toList();
-}
 
 _GlobPositions _globPositions(String normalizedPattern, String flags) {
   final regex = _globRegExp(globToRegex(normalizedPattern), flags);
@@ -1521,10 +1354,11 @@ _GlobPositions _globPositions(String normalizedPattern, String flags) {
   // A component: one name, matched by one of these. `to` is the position
   // after it, undefined where the pattern ends, which is a match.
   final states = <Object>[];
-  const star = '[^/]*';
+  final star = globTokenToRegex(const GlobTokenSimple(GlobTokenKind.Star));
 
   /// The automaton of one pattern, as the position it starts at.
-  int build(List<_GlobPiece> pieces) {
+  int build(List<GlobToken> pieces) {
+    final sources = pieces.map(globTokenToRegex).toList();
     final memo = <String, int>{};
     int globstar(int? then) {
       states.add(_Globstar(then));
@@ -1537,13 +1371,17 @@ _GlobPositions _globPositions(String normalizedPattern, String flags) {
       final key = '$i${lead ? '*' : ''}';
       final known = memo[key];
       if (known != null) return known;
-      if (!lead && i < pieces.length && pieces[i] is _GlobPieceAnyDirs) {
+      if (!lead &&
+          i < pieces.length &&
+          pieces[i].kind == GlobTokenKind.GlobstarSlash) {
         final id = globstar(null);
         memo[key] = id;
         (states[id] as _Globstar).then = componentAt(i + 1, false);
         return id;
       }
-      if (!lead && i == pieces.length - 1 && pieces[i] is _GlobPieceAny) {
+      if (!lead &&
+          i == pieces.length - 1 &&
+          pieces[i].kind == GlobTokenKind.Globstar) {
         final id = globstar(null);
         memo[key] = id;
         return id;
@@ -1561,22 +1399,22 @@ _GlobPositions _globPositions(String normalizedPattern, String flags) {
           endsWith(source, null);
           break;
         }
-        if (piece is _GlobPieceSlash) {
+        if (piece.kind == GlobTokenKind.Separator) {
           endsWith(source, componentAt(j + 1, false));
           break;
         }
-        if (piece is _GlobPieceAny) {
+        if (piece.kind == GlobTokenKind.Globstar) {
           // Spanning separators: `X*` / `**` / `*Y`. Or not: `X*Y`.
           endsWith('$source$star', globstar(componentAt(j + 1, true)));
           source += star;
-        } else if (piece is _GlobPieceAnyDirs) {
+        } else if (piece.kind == GlobTokenKind.GlobstarSlash) {
           // Spanning: `X*` / `**` / what follows. Or X run into it.
           endsWith('$source$star', globstar(componentAt(j + 1, false)));
-        } else if ((piece as _GlobPieceSource).canBeSeparator) {
+        } else if (piece is GlobTokenSet && piece.matchesSeparator) {
           endsWith(source, componentAt(j + 1, false));
-          source += '(?!/)${piece.source}';
+          source += '(?!/)${sources[j]}';
         } else {
-          source += piece.source;
+          source += sources[j];
         }
       }
       return id;
@@ -1588,16 +1426,11 @@ _GlobPositions _globPositions(String normalizedPattern, String flags) {
   late List<int> starts;
   late int firstOfDirectoryForm;
   try {
-    final pieces = _globPieces(normalizedPattern, flags);
-    final directoryPieces = directoryRegex == null
-        ? <_GlobPiece>[]
-        : _globPieces(directoryForm, flags);
-    if (pieces == null || directoryPieces == null) return unsplit;
-    starts = [build(pieces)];
+    starts = [build(parseGlob(normalizedPattern))];
     firstOfDirectoryForm = states.length;
-    if (directoryRegex != null) starts.add(build(directoryPieces));
+    if (directoryRegex != null) starts.add(build(parseGlob(directoryForm)));
   } catch (_) {
-    // A piece of the pattern that is no regular expression on its own.
+    // More components than the build can nest.
     return unsplit;
   }
   void open(Set<int> into, int? position) {
