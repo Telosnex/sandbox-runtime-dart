@@ -51,7 +51,7 @@ class Option {
   final bool variadic;
   late final String? short;
   late final String? long;
-  Object? Function(String value)? parseArg;
+  Function? parseArg;
 
   String name() {
     if (long != null) return long!.replaceFirst(RegExp(r'^--'), '');
@@ -160,11 +160,15 @@ class Command {
   Command option(
     String flags, [
     String? description,
-    Object? Function(String value)? parseArg,
+    Function? parseArg,
+    Object? defaultValue,
   ]) {
     final option = Option(flags, description)..parseArg = parseArg;
     _registerOption(option);
     final name = option.attributeName();
+    if (defaultValue != null) {
+      _optionValues[name] = defaultValue;
+    }
     _optionListeners[option.name()] = (val) {
       final invalidValueMessage =
           "error: option '${option.flags}' argument '$val' is invalid.";
@@ -272,7 +276,13 @@ class Command {
 
   Object? _callParseArg(Option target, String value, String message) {
     try {
-      return target.parseArg!(value);
+      final parseArg = target.parseArg!;
+      return parseArg is Object? Function(String)
+          ? parseArg(value)
+          : Function.apply(parseArg, [
+              value,
+              _optionValues[target.attributeName()],
+            ]);
     } on CommanderError catch (err) {
       if (err.code == 'commander.invalidArgument') {
         error(

@@ -6,6 +6,8 @@ import 'dart:io' as io;
 import 'dart:io' show Directory, Platform, ProcessInfo, ProcessSignal;
 
 import 'child_process.dart' as child_process;
+import 'events.dart' show applyListener;
+import 'stream.dart' as stream;
 
 String? _platformOverride;
 Map<String, String>? _envOverride;
@@ -63,17 +65,21 @@ Map<String, String> get versions => {'dart': Platform.version.split(' ').first};
 ({int rss}) memoryUsage() => (rss: ProcessInfo.currentRss);
 
 /// Node's `process.stdout` / `process.stderr`: `write(String | bytes)`.
-class WriteStream {
-  WriteStream._(this._sink);
+class WriteStream extends stream.Writable {
+  WriteStream._(this._sink) : super(autoDestroy: false);
   final io.Stdout _sink;
 
-  bool write(Object data) {
-    if (data is List<int>) {
-      _sink.add(data);
+  @override
+  void writeImpl(Object chunk, String encoding, Function callback) {
+    if (chunk is List<int>) {
+      _sink.add(chunk);
     } else {
-      _sink.write(data);
+      _sink.write(chunk);
     }
-    return true;
+    _sink.flush().then(
+      (_) => applyListener(callback, const []),
+      onError: (Object error) => applyListener(callback, [error]),
+    );
   }
 
   bool get isTTY => _sink.hasTerminal;
@@ -82,6 +88,9 @@ class WriteStream {
 
 final WriteStream stdout = WriteStream._(io.stdout);
 final WriteStream stderr = WriteStream._(io.stderr);
+
+/// Node's `process.stdin`: read lazily, only once a caller reads or pipes it.
+final stream.Readable stdin = stream.Readable.from(io.stdin, objectMode: false);
 
 /// Node's `process.kill(pid, signal)`.
 bool kill(int pid, [Object signal = 'SIGTERM']) =>
