@@ -932,11 +932,7 @@ String? _mkdirSync(Object path, [Map<String, Object?> options = const {}]) {
         try {
           final result = _withBytePath(
             bytes,
-            (p) => libc.lookupFunction<_LstatNative, _LstatDart>(
-              Platform.isMacOS && Abi.current() == Abi.macosX64
-                  ? 'stat\$INODE64'
-                  : 'stat',
-            )(p, stat.cast()),
+            (p) => _pathStatCall(libc, 'stat')(p, stat.cast()),
           );
           if (result == 0 &&
               _parseStat(
