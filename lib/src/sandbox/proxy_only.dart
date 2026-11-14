@@ -1,8 +1,9 @@
-// Ported from sandbox-runtime src/sandbox/proxy-only.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/proxy-only.ts @ 0bbebed.
 // ignore_for_file: dangling_library_doc_comments, slash_for_doc_comments
 // ignore_for_file: constant_identifier_names
 
 import 'dart:async';
+import 'tls_terminate_proxy.dart' show PartialTunnelTimeouts;
 
 import '../node/errno.dart';
 
@@ -454,6 +455,10 @@ class _HttpProxyServerOptions implements HttpProxyServerOptions {
   final String? denyHeader;
   @override
   final bool? requestTargetAsSpelled;
+  @override
+  String? get ambiguousRequestTarget => null;
+  @override
+  PartialTunnelTimeouts? get tunnelTimeouts => null;
   @override
   final bool? requireAsciiHost;
   @override

@@ -1731,7 +1731,7 @@ Future<void> _readMessageBody(
   if (contentLength != null) {
     var remaining = contentLength;
     while (remaining > 0) {
-      final bytes = await reader.exact(remaining > 8192 ? 8192 : remaining);
+      final bytes = await reader.some(remaining > 8192 ? 8192 : remaining);
       if (bytes == null) {
         message._fail(
           const SocketException(

@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/invalid-upstream-response.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/invalid-upstream-response.test.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, no_leading_underscores_for_local_identifiers, slash_for_doc_comments
 import 'dart:async';
 import 'dart:convert';
@@ -42,6 +42,12 @@ final CA_KEY = join(FIXTURE_DIR, 'ca.key');
 final CA_PEM = readFileSync(CA_CERT, 'utf8') as String;
 
 const TLS_UPSTREAM_NAME = 'badstatus.test';
+
+/** By path: the body an upstream declares, which `EXCESS` then follows. */
+const DECLARED = {
+  '/more-than-declared': 'whole',
+  '/more-in-one-write': 'whole',
+};
 
 // Dart: the object literal upstream hands createHttpProxyServer; every
 // option not named here is absent (null).
@@ -103,6 +109,24 @@ void answer(net.NodeSocket socket) {
     } else if (path == '/status-000') {
       socket.write(
         'HTTP/1.1 000 x\r\nX-Up: 1\r\nContent-Length: 4\r\n\r\nleak',
+      );
+    } else if (DECLARED.containsKey(path)) {
+      final body = DECLARED[path]!;
+      final head = 'HTTP/1.1 200 OK\r\nContent-Length: ${body.length}\r\n\r\n';
+      if (path == '/more-in-one-write') {
+        socket.write('${head}${body}EXCESS');
+      } else {
+        socket.write(head, () => socket.write('${body}EXCESS'));
+      }
+    } else if (path == '/bad-chunk') {
+      socket.write(
+        'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n',
+        () => socket.write('5\r\nwhole\r\nnot a size\r\n'),
+      );
+    } else if (path == '/less-than-declared') {
+      socket.write(
+        'HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\n',
+        () => socket.end('whole'),
       );
     } else {
       socket.write('HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok');
@@ -266,6 +290,33 @@ void main() {
           expect(good.raw.endsWith('ok'), true);
         }, skip: tlsSkip);
       }
+
+      String bodyOf(String raw) => raw.substring(raw.indexOf('\r\n\r\n') + 4);
+      // As from an upstream that counts characters for bytes. A client that asks
+      // it directly takes what was declared.
+      for (final path in DECLARED.keys) {
+        test('$name: $path arrives as declared, and no more', () async {
+          final got = await get(path);
+          expect(got.status, 200);
+          expect(bodyOf(got.raw) == DECLARED[path], true);
+        });
+      }
+      test('$name: /less-than-declared stays short of it', () async {
+        final got = await get('/less-than-declared');
+        expect(
+          got.raw,
+          matches(RegExp(r'\r\ncontent-length: 9\r\n', caseSensitive: false)),
+        );
+        expect(bodyOf(got.raw), 'whole');
+      });
+      test('$name: /bad-chunk is not ended as a whole answer is', () async {
+        final got = await get('/bad-chunk');
+        expect(
+          got.raw,
+          isNot(matches(RegExp(r'\r\ncontent-length:', caseSensitive: false))),
+        );
+        expect(got.raw.endsWith('0\r\n\r\n'), false);
+      });
     }
   });
 
