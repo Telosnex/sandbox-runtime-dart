@@ -37,27 +37,31 @@ bool isDeepStrictEqual(Object? left, Object? right) {
     final pair = (a, b);
     if (seen.contains(pair)) return true;
     seen.add(pair);
-    if (a is List && b is List) {
-      return a.length == b.length &&
-          Iterable<int>.generate(a.length).every((i) => equal(a[i], b[i]));
-    }
-    if (a is Map && b is Map) {
-      return a.length == b.length &&
-          a.entries.every(
-            (e) => b.containsKey(e.key) && equal(e.value, b[e.key]),
-          );
-    }
-    if (a is Set && b is Set) {
-      if (a.length != b.length) return false;
-      final rest = b.toList();
-      for (final item in a) {
-        final at = rest.indexWhere((other) => equal(item, other));
-        if (at < 0) return false;
-        rest.removeAt(at);
+    try {
+      if (a is List && b is List) {
+        return a.length == b.length &&
+            Iterable<int>.generate(a.length).every((i) => equal(a[i], b[i]));
       }
-      return true;
+      if (a is Map && b is Map) {
+        return a.length == b.length &&
+            a.entries.every(
+              (e) => b.containsKey(e.key) && equal(e.value, b[e.key]),
+            );
+      }
+      if (a is Set && b is Set) {
+        if (a.length != b.length) return false;
+        final rest = b.toList();
+        for (final item in a) {
+          final at = rest.indexWhere((other) => equal(item, other));
+          if (at < 0) return false;
+          rest.removeAt(at);
+        }
+        return true;
+      }
+      return false;
+    } finally {
+      seen.remove(pair);
     }
-    return false;
   }
 
   return equal(left, right);
