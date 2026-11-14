@@ -1,4 +1,5 @@
 // Ported from sandbox-runtime src/sandbox/macos-sandbox-utils.ts @ 0bbebed.
+// ignore_for_file: prefer_adjacent_string_concatenation
 // ignore_for_file: constant_identifier_names, dangling_library_doc_comments
 // ignore_for_file: doc_directive_unknown, slash_for_doc_comments, curly_braces_in_flow_control_structures
 // ignore_for_file: prefer_interpolation_to_compose_strings, non_constant_identifier_names

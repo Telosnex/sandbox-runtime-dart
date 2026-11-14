@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/literal-path-entries.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/literal-path-entries.test.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments
 import 'dart:async';
 import 'dart:convert';
@@ -24,6 +24,8 @@ import 'package:sandbox_runtime/src/sandbox/sandbox_manager.dart';
 import 'package:sandbox_runtime/src/sandbox/sandbox_schemas.dart';
 import 'package:sandbox_runtime/src/sandbox/sandbox_utils.dart';
 import 'package:sandbox_runtime/src/utils/config_loader.dart';
+import 'package:sandbox_runtime/src/sandbox/glob_pattern.dart'
+    show globToRegex, denyGlobRegex;
 import 'package:test/test.dart';
 
 import '../helpers/bwrap_namespace.dart';
@@ -605,6 +607,9 @@ void main() {
             ]) {
               fs.writeFileSync(join(base, file), '');
             }
+            for (final file in ['*x', 'deep/ax']) {
+              fs.writeFileSync(join(base, file), '');
+            }
           }
         });
 
@@ -639,15 +644,13 @@ void main() {
         }
 
         for (final (tail, expected) in [
-          ('/**/[a*]x', ['/a]x', '/deep/a]x']),
-          ('/[a*]x', ['/a]x']),
-          ('/deep/[a*]x', ['/deep/a]x']),
+          ('/**/[a*]x', ['/*x', '/deep/ax']),
+          ('/[a*]x', ['/*x']),
+          ('/deep/[a*]x', ['/deep/ax']),
         ]) {
           test(
-            'matches $tail, which cannot be split, by its spelling from the anchor on',
+            'matches $tail, with a wildcard in a set, from the anchor on',
             () {
-              // A wildcard inside a bracket expression: the walk matches such a
-              // pattern against whole paths, which beneath an anchor start at it.
               expect(
                 (expandGlobPattern(
                     ordinary + tail,

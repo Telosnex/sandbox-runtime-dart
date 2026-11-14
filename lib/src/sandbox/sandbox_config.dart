@@ -1975,10 +1975,10 @@ class TlsTerminateConfig {
   /// Paths to PEM CA certificate files appended to the trust bundle the sandboxed child is pointed at, after the MITM CA and the host's regular roots. Use for site-local roots (e.g. an internal mTLS CA) presented by excluded/passthrough hosts, so the child can verify them itself. Only the CERTIFICATE blocks of each file are copied; files that are missing, unreadable, or contain no PEM CERTIFICATE block are skipped (with a debug log), so paths that exist on only some hosts are safe to list.
   final List<String>? extraCaCertPaths;
 
-  /// At most this many CONNECT tunnels are TLS-terminated at once (default 256); past it a CONNECT is answered 503 with "X-Proxy-Error: too-many-tunnels". A tunnel holds its slot from its CONNECT until it closes, so idle keep-alive tunnels count; one that turns out not to carry TLS frees it. The slot is taken before the first bytes are seen, so at the cap a non-TLS CONNECT (SSH, say) to a host that would be terminated is refused too. Hosts in excludeDomains do not count. Read when the proxy starts; updateConfig does not change it.
+  /// At most this many CONNECT tunnels are TLS-terminated at once (default 256); past it a CONNECT is answered 503 with "X-Proxy-Error: too-many-tunnels", and the refusal is recorded as a violation, once per command until half the slots are free again. A tunnel holds its slot from its CONNECT until it closes, so idle keep-alive tunnels count until they are closed (6 s after a response); one that turns out not to carry TLS frees it. The slot is taken before the first bytes are seen, so at the cap a non-TLS CONNECT (SSH, say) to a host that would be terminated is refused too. Hosts in excludeDomains do not count. Read at each CONNECT, so updateConfig changes it for the tunnels that follow.
   final int? maxTunnels;
 
-  /// A tunnel to be TLS-terminated must finish its TLS handshake within this many milliseconds of its CONNECT (default 10000), or it is closed and its slot freed. A tunnel past its handshake is never timed out by it. Read when the proxy starts; updateConfig does not change it.
+  /// A tunnel to be TLS-terminated must finish its TLS handshake within this many milliseconds of its CONNECT (default 10000), or it is closed and its slot freed. A tunnel past its handshake is never timed out by it. Read at each CONNECT, so updateConfig changes it for the tunnels that follow.
   final int? handshakeTimeoutMs;
   const TlsTerminateConfig({
     this.caCertPath,

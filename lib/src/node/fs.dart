@@ -1,3 +1,4 @@
+// ignore_for_file: non_constant_identifier_names, curly_braces_in_flow_control_structures
 // Node `fs` compatibility: the synchronous calls the ported files make.
 // No upstream counterpart. POSIX calls go to libc directly, so a failure keeps
 // its errno (and so Node's `code`); dart:io would turn it into a lossy
@@ -15,6 +16,7 @@ import 'package:path/path.dart' as path_utils;
 import 'buffer.dart';
 import 'errno.dart';
 import 'fd_io.dart';
+import 'path.dart' as node_path;
 import 'stream.dart' as stream;
 
 final DynamicLibrary? _libc = _loadLibc();
@@ -546,7 +548,7 @@ String _realpathSync(String path) {
   _observe('realpathSync', path);
   // Node folds dot segments in the supplied path before touching the file
   // system (`link/..` means the directory holding link, even if link is bad).
-  final resolvedPath = path_utils.normalize(path_utils.absolute(path));
+  final resolvedPath = node_path.resolve(path);
   final libc = _libc;
   if (libc != null) {
     final realpath = libc.lookupFunction<_RealpathNative, _RealpathDart>(
@@ -591,11 +593,13 @@ String Function(String path) realpathSync = _realpathSync;
 
 /// Node's `fs.realpathSync.native`, without realpathSync's lexical folding
 /// or its fallback for paths the native implementation cannot resolve.
-String realpathSyncNative(String path) =>
+String _realpathSyncNative(String path) =>
     utf8.decode(realpathSyncNativeBuffer(path), allowMalformed: true);
 
+String Function(String path) realpathSyncNative = _realpathSyncNative;
+
 /// The `encoding: 'buffer'` overload of Node's realpathSync.native.
-Uint8List realpathSyncNativeBuffer(String path) {
+Uint8List _realpathSyncNativeBuffer(String path) {
   _observe('realpathSync.native', path);
   final libc = _libc;
   if (libc != null) {
@@ -625,6 +629,10 @@ Uint8List realpathSyncNativeBuffer(String path) {
   }
   return Uint8List.fromList(utf8.encode(_realpathSync(path)));
 }
+
+/// Replaceable buffer overload, paired with realpathSyncNative.
+Uint8List Function(String path) realpathSyncNativeBuffer =
+    _realpathSyncNativeBuffer;
 
 String _codeFromIoError(FileSystemException error) {
   final errno = error.osError?.errorCode;
@@ -967,7 +975,7 @@ String? _mkdirSync(Object path, [Map<String, Object?> options = const {}]) {
     } on FileSystemException catch (error) {
       throw nodeError(_codeFromIoError(error), 'mkdir', path);
     }
-    return recursive && !existed ? path_utils.absolute(path) : null;
+    return recursive && !existed ? node_path.resolve(path) : null;
   }
   final mkdir = libc.lookupFunction<_PathModeN, _PathModeD>('mkdir');
   int make(String p) => _withPath(p, (n) => mkdir(n, mode));
@@ -975,7 +983,7 @@ String? _mkdirSync(Object path, [Map<String, Object?> options = const {}]) {
     if (make(path) != 0) throw _errnoError('mkdir', path);
     return null;
   }
-  final absolute = path_utils.normalize(path_utils.absolute(path));
+  final absolute = node_path.resolve(path);
   final missing = <String>[];
   var current = absolute;
   while (true) {
