@@ -1,5 +1,5 @@
 // Ported from sandbox-runtime src/sandbox/windows-sandbox-utils.ts @ 0bbebed.
-// ignore_for_file: doc_directive_unknown, dangling_library_doc_comments, curly_braces_in_flow_control_structures, prefer_adjacent_string_concatenation, overridden_fields
+// ignore_for_file: doc_directive_unknown, dangling_library_doc_comments, prefer_adjacent_string_concatenation, overridden_fields
 // Windows is not supported by this port (PORT_WORKLOG.md); pure helpers are ported, the rest throws.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments
 // ignore_for_file: unused_element, unused_element_parameter, prefer_is_empty, curly_braces_in_flow_control_structures
