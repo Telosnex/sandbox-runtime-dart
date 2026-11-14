@@ -70,6 +70,7 @@ import 'package:path/path.dart' as path;
 import '../node/stream.dart' as stream;
 import '../node/process.dart' as process;
 import '../node/errno.dart' show errorMessage;
+import '../node/fs.dart' as fs;
 import '../utils/debug.dart';
 import 'sandbox_utils.dart';
 import 'windows_sandbox_utils.dart';
@@ -453,7 +454,24 @@ MxcRequest buildMxcRequest(MxcSandboxParams p) {
     encodedCommand,
   );
   final readwritePaths = <String>[...?p.allowWrite, if (temp != null) temp];
-  final deniedPaths = <String>[...?p.denyRead, ...?p.denyWrite];
+  // TELOSNEX DEVIATION (PORT_WORKLOG.md, "Deviations from upstream"):
+  // upstream sends every denyWrite path as a denied path, which also
+  // takes reads away. On MXC, a read-only path beneath a write grant
+  // blocks writes, renames into it and deletes, and keeps reads (tested
+  // on Windows 11 26H2, 2026-11-14). A read-only path that does not
+  // exist does not stop its creation, so only an existing path becomes
+  // read-only, and only outside every denyRead; any other denyWrite path
+  // stays denied, as upstream sends it.
+  final readDenied = coveringWindowsPath([...?p.denyRead]);
+  final writeDeniedReadable = [
+    for (final d in p.denyWrite ?? const <String>[])
+      if (readDenied(d) == null && fs.existsSync(d)) d,
+  ];
+  final deniedPaths = <String>[
+    ...?p.denyRead,
+    for (final d in p.denyWrite ?? const <String>[])
+      if (!writeDeniedReadable.contains(d)) d,
+  ];
   // MXC lets the most specific entry win. A read-only entry at or
   // beneath a write grant would make that subtree read-only, so it is
   // left out when the write grant is what governs it (no deny between
@@ -471,11 +489,15 @@ MxcRequest buildMxcRequest(MxcSandboxParams p) {
     );
   }
 
-  final readonlyPaths = [
-    systemDrive,
-    if (denied(workingDirectory) == null) workingDirectory,
-    ...?p.allowRead,
-  ].where((r) => !governedByWrite(r)).toList();
+  final readonlyPaths =
+      [
+          systemDrive,
+          if (denied(workingDirectory) == null) workingDirectory,
+          ...?p.allowRead,
+        ].where((r) => !governedByWrite(r)).toList()
+        // TELOSNEX DEVIATION: see deniedPaths. Beneath a write grant on
+        // purpose: the most specific entry makes the path read-only.
+        ..addAll(writeDeniedReadable);
   return MxcRequest(
     command: buildShellCommandLine(sh, p.command),
     filesystem: (
