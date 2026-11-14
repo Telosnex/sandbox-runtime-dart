@@ -131,6 +131,7 @@ Future<void> main([List<String> args = const []]) async {
   final code = await child.exitCode;
   temp.deleteSync(recursive: true);
   io.stdout.write(result);
+  await io.stdout.flush();
   io.exit(code);
 }
 

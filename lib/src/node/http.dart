@@ -756,12 +756,14 @@ class NodeHttpServer extends net.NodeServer {
             request.headers.containsKey('upgrade') &&
             (connectionTokens?.contains('upgrade') ?? false)) {
           final buffered = socket.read() ?? Uint8List(0);
+          socket.httpParserReading = false;
           emit('upgrade', request, socket, buffered);
           return;
         }
         if (request.method == 'CONNECT') {
           _idleConnections.remove(socket);
           final buffered = socket.read() ?? Uint8List(0);
+          socket.httpParserReading = false;
           emit('connect', request, socket, buffered);
           if (listenerCount('connect') == 0) {
             socket.write(
