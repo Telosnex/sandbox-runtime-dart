@@ -337,8 +337,6 @@ void main() {
         ]);
       }
 
-      ;
-
       test('leaves it out when there is none', () async {
         final denied = join(DIR, 'policy.json');
         expect(mountsAt(await wrap([denied]), denied), []);
@@ -407,8 +405,6 @@ void main() {
         });
       }
 
-      ;
-
       test(
         'plans the placeholder when the parent is a symlink as it is opened',
         () async {
@@ -463,7 +459,6 @@ void main() {
             asked.add(p.toString().replaceFirst(RegExp(r'\d+'), 'N'));
         }
 
-        ;
         stub('openSync', (dynamic p, dynamic flags, [dynamic third]) {
           if (p == DIR)
             opened.add([p, flags]);
@@ -875,9 +870,6 @@ void main() {
           ],
         ],
         {'encoding': 'utf8', 'timeout': 60000},
-      );
-      print(
-        'outer status=${outer.status} err=${outer.stderr} out=${outer.stdout}',
       );
       final data =
           jsonDecode((outer.stdout as String).trim().split('\n').last)
