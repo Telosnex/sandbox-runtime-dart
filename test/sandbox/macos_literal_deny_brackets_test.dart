@@ -1,7 +1,9 @@
-// Ported from sandbox-runtime test/sandbox/macos-literal-deny-brackets.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/macos-literal-deny-brackets.test.ts @ 0bbebed.
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:sandbox_runtime/src/sandbox/glob_pattern.dart'
+    show denyGlobRegex;
 import 'package:test/test.dart';
 
 import 'package:sandbox_runtime/src/sandbox/credential_mask_files.dart'
