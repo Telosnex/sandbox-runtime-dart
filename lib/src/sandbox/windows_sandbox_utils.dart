@@ -817,6 +817,101 @@ _RunResult _runSrtWin(List<String> args, [_RunOpts opts = const _RunOpts()]) =>
     throw UnsupportedError('Windows is not supported by this port');
 
 /**
+ * `srt-win`'s exit code when its lock is held by a `profile grant` or
+ * `profile forget`: the caller is told after about three seconds.
+ */
+const SRT_WIN_EXIT_PROFILE_BUSY = 25;
+
+/**
+ * `srt-win exec`'s exit code when the session a command was started
+ * for (`heldBy`) ended while the command ran: the command and
+ * everything it started were terminated.
+ */
+const SRT_WIN_EXIT_SESSION_ENDED = 26;
+
+/** `srt-win`'s exit code for "nothing was removed: sandbox sessions or commands are running". */
+const SRT_WIN_EXIT_HELD_BY_OTHERS = 22;
+
+/** `srt-win profile grant`'s exit code for "nothing was changed: sandbox sessions or commands are running". */
+const SRT_WIN_EXIT_GRANT_BLOCKED = 24;
+
+/** One row of `srt-win`'s `{"held_by": […]}`, said as what it is. */
+String _describeWindowsHolder(Map<String, Object?> h) {
+  final who = 'process ${h.containsKey('pid') ? h['pid'] : 'undefined'}';
+  final at = '${h.containsKey('path') ? h['path'] : 'undefined'}';
+  switch (h['kind']) {
+    case 'profile':
+      return '$who is a sandbox session or command';
+    case 'kept_root':
+      return '$who runs on the kept write grant on $at';
+    case 'grant':
+      return '$who holds a session grant on $at';
+    case 'deny':
+    case 'deny_fdc':
+    case 'deny_delete':
+    case 'deny_satisfied':
+      return '$who holds a session deny on $at';
+    default:
+      return '$who holds ${h.containsKey('kind') ? h['kind'] : 'undefined'} on $at';
+  }
+}
+
+String _describeWindowsHolders(String stdout) {
+  var held = <Map<String, Object?>>[];
+  try {
+    final parsed = jsonDecode(stdout);
+    if (parsed is Map && parsed['held_by'] is List)
+      held = (parsed['held_by'] as List).cast<Map<String, Object?>>();
+  } catch (_) {
+    // The exit code says it; the list is for the message only.
+  }
+  final said = held.take(8).map(_describeWindowsHolder).toList();
+  if (held.length > said.length) said.add('${held.length - said.length} more');
+  return said.join('; ');
+}
+
+/**
+ * The one mapping of `srt-win`'s refusals beside other sandbox activity:
+ * 25 (a profile operation runs), 22 (nothing removed), 24 (grant unchanged).
+ */
+void _throwIfRefusedBesideOthers(
+  List<String> args,
+  int? status,
+  String stdout,
+) {
+  if (status == SRT_WIN_EXIT_PROFILE_BUSY)
+    throw WindowsSandboxError(
+      'profile_operation_in_progress',
+      'The read grant on your user profile is being written or removed ' +
+          'right now (srt-win profile grant / profile forget). Nothing in the ' +
+          'sandbox can start until that is done; try again when it has ' +
+          'finished.',
+      args[0],
+    );
+  if (status != SRT_WIN_EXIT_HELD_BY_OTHERS &&
+      status != SRT_WIN_EXIT_GRANT_BLOCKED)
+    return;
+  final what = _describeWindowsHolders(stdout);
+  final who = what.isNotEmpty ? ' ($what)' : '';
+  if (status == SRT_WIN_EXIT_GRANT_BLOCKED)
+    throw WindowsSandboxError(
+      'profile_grant_blocked_by_session',
+      'The read grant on your user profile was not changed: sandbox ' +
+          'sessions or commands are running$who, and the grant is written ' +
+          'only while none is, so that no session sees it change. What was ' +
+          'granted before is as it was. End them and run it again.',
+      args[0],
+    );
+  throw WindowsSandboxError(
+    'kept_grants_in_use',
+    'srt-win ${args.take(2).join(' ')} removed nothing: sandbox ' +
+        'sessions or commands are running$who, and what they run on is ' +
+        'not taken from under them. End them and run it again.',
+    args[0],
+  );
+}
+
+/**
  * Async twin of {@link runSrtWin}: same signature, same result shape,
  * but the event loop stays live. Prefer it for any call reachable
  * from a UI/render path — the sync variant `spawnSync`-blocks, which
@@ -888,6 +983,7 @@ WindowsWfpStatusResult _mapWfpStatus(_RawWfpStatus raw) {
   return WindowsWfpStatusResult(
     state: raw['state'] as WindowsWfpStatus,
     filters: raw['filters'] as int,
+    allowLoopback: raw['allow_loopback'] == true,
     portRange: portRange != null
         ? (portRange[0] as int, portRange[1] as int)
         : null,
@@ -898,6 +994,78 @@ WindowsWfpStatusResult _mapWfpStatus(_RawWfpStatus raw) {
 
 /** Shape of `srt-win user status` (and `srt-win status .user`) stdout. */
 typedef _RawUserStatus = Map<String, dynamic>;
+
+/**
+ * Behaviours of `srt-win` this library relies on and asks for by
+ * name. `srt-win` lists what it does as `capabilities` in `user
+ * status` and `profile status`.
+ */
+const WINDOWS_SRT_WIN_CAPABILITIES = (
+  /**
+   * A read deny handed to `srt-win` is also written on every recorded
+   * path of the profile read grant beneath it that carries an allow
+   * of its own.
+   */
+  profileDenyExpansion: 'profile-deny-expansion',
+  /**
+   * Sessions are recorded as holders of the kept grants they run on,
+   * and `acl forget` / `profile forget` take
+   * `--unless-held-by-others`.
+   */
+  keptGrantHolders: 'kept-grant-holders',
+  /**
+   * `acl grant` itself refuses a path that reaches an exclusion
+   * recorded with the profile read grant.
+   */
+  profileSessionGrantCheck: 'profile-session-grant-check',
+  /**
+   * That expansion leaves out the recorded paths the session allows
+   * more specifically: the grants of the same `acl grant` call, and
+   * the ones a command names with `--deny-read-except`.
+   */
+  readDenyExcept: 'read-deny-except',
+  /**
+   * A session under the write-restricted token is recorded as a
+   * holder of the profile read grant from its start, and `exec` is
+   * told which session holds for it (`--held-by`) or holds for itself.
+   */
+  execHolder: 'exec-holder',
+  /**
+   * `profile retry-stale` tries again to revoke what the last run could
+   * not, and `profile status` says which operation wrote the record and
+   * whether it is this profile's.
+   */
+  profileRetryStale: 'profile-retry-stale',
+);
+
+/**
+ * The first capability this library needs that `capabilities` (as
+ * `srt-win` reported them) does not list.
+ */
+String? missingWindowsSrtWinCapability(List<String> capabilities) {
+  return [
+    WINDOWS_SRT_WIN_CAPABILITIES.profileDenyExpansion,
+    WINDOWS_SRT_WIN_CAPABILITIES.keptGrantHolders,
+    WINDOWS_SRT_WIN_CAPABILITIES.profileSessionGrantCheck,
+    WINDOWS_SRT_WIN_CAPABILITIES.readDenyExcept,
+    WINDOWS_SRT_WIN_CAPABILITIES.execHolder,
+    WINDOWS_SRT_WIN_CAPABILITIES.profileRetryStale,
+  ].where((c) => !capabilities.contains(c)).firstOrNull;
+}
+
+List<String> _capabilityList(Object? v) =>
+    v is List ? v.whereType<String>().toList() : [];
+/** The typed error for an `srt-win` that lacks a behaviour by name. */
+WindowsSandboxError windowsSrtWinOutdatedError(String capability, String why) =>
+    WindowsSandboxError(
+      'srt_win_outdated',
+      'The srt-win in use is older than this library: it does not report ' +
+          "the capability '$capability', which $why. Update srt-win (the " +
+          'one shipped with the program embedding this library, or the ' +
+          "package's own) to a build that matches the library. Nothing was " +
+          'granted.',
+    );
+const _SECLOGON_STATES = ['ok', 'disabled', 'missing', 'cannot-read'];
 
 WindowsSandboxUserStatus _mapUserStatus(_RawUserStatus raw) {
   final user = raw['user'] as Map<String, dynamic>;
@@ -916,12 +1084,77 @@ WindowsSandboxUserStatus _mapUserStatus(_RawUserStatus raw) {
     hiddenFromLogon: user['hidden_from_logon'] as bool,
     credPresent: raw['cred_present'] as bool,
     markerVersion: markerVersion is num ? markerVersion.toInt() : null,
+    setupVersion: raw['setup_version'] is num
+        ? (raw['setup_version'] as num).toInt()
+        : null,
     realUserSid: raw['real_user_sid'] as String,
     caCertThumb: caCertThumb != null && caCertThumb.isNotEmpty
         ? caCertThumb
         : null,
     caCertPem: caCertPem != null && caCertPem.isNotEmpty ? caCertPem : null,
+    seclogon: _SECLOGON_STATES.contains(raw['seclogon'])
+        ? raw['seclogon'] as String
+        : null,
+    // Anything but an explicit "none" counts: a state this code does
+    // not know must not read as "no grants".
+    persistentGrants:
+        raw['persistent_grants'] != null &&
+            raw['persistent_grants']['state'] != 'none'
+        ? (
+            state: raw['persistent_grants']['state'] == 'present'
+                ? 'present'
+                : 'unknown',
+            roots:
+                (raw['persistent_grants']['roots'] as List?)?.cast<String>() ??
+                <String>[],
+            reason:
+                (raw['persistent_grants']['reason'] as String?)?.isNotEmpty ==
+                    true
+                ? raw['persistent_grants']['reason'] as String
+                : null,
+          )
+        : null,
+    sessionUserSid: (raw['session_user_sid'] as String?)?.isNotEmpty == true
+        ? raw['session_user_sid'] as String
+        : null,
+    capabilities: _capabilityList(raw['capabilities']),
+    // As above: only an explicit "none" is no grant.
+    profileGrant:
+        raw['profile_grant'] != null && raw['profile_grant']['state'] != 'none'
+        ? (
+            state: raw['profile_grant']['state'] == 'present'
+                ? 'present'
+                : 'unknown',
+            reason:
+                (raw['profile_grant']['reason'] as String?)?.isNotEmpty == true
+                ? raw['profile_grant']['reason'] as String
+                : null,
+          )
+        : null,
   );
+}
+
+/** User-facing text for a disabled/absent Secondary Logon service. */
+String _seclogonDisabledMessage(String state) => state == 'missing'
+    ? 'The Windows Secondary Logon service (seclogon) is not present ' +
+          'on this machine; the sandbox cannot start without it.'
+    : 'The Windows Secondary Logon service (seclogon) is disabled; an ' +
+          'administrator must set its startup type to Manual (`sc.exe ' +
+          'config seclogon start= demand`). The sandbox cannot start ' +
+          'without it.';
+/** `srt-win` exit code for a `seclogon_disabled` launch failure. */
+const _SRT_WIN_EXIT_SECLOGON_DISABLED = 18;
+/**
+ * The typed `seclogon_disabled` error for an `srt-win` launch result, if it
+ * is one. Gated on the exit code first: the child's own stderr could match.
+ */
+SeclogonDisabledError? _seclogonDisabledFrom(
+  ({int? status, String stderr}) r,
+  String subcommand,
+) {
+  if (r.status != _SRT_WIN_EXIT_SECLOGON_DISABLED) return null;
+  final e = _parseSrtWinLaunchError(r.stderr, subcommand);
+  return e is SeclogonDisabledError ? e : null;
 }
 
 /** Combined result of `srt-win status` — see {@link checkWindowsSandboxStatus}. */
@@ -976,6 +1209,82 @@ Future<WindowsWfpStatusResult> getWindowsWfpStatusAsync({
   SrtWinSpawn? srtWin,
 }) async => throw UnsupportedError('Windows is not supported by this port');
 
+typedef _RawWfpVerify = Map<String, dynamic>;
+
+/**
+ * The options of the install a session expects. A suggested install
+ * command names only the ones that are not the defaults.
+ */
+class WindowsInstallContext {
+  final String? sublayerGuid;
+  final (int, int)? proxyPortRange;
+  final String? sandboxUser;
+  final bool? allowLoopback;
+  const WindowsInstallContext({
+    this.sublayerGuid,
+    this.proxyPortRange,
+    this.sandboxUser,
+    this.allowLoopback,
+  });
+}
+
+/**
+ * Install flags for `ctx`. `force` only when the install replaces a
+ * set that is in place with another configuration: it refuses that
+ * without `--force` (exit 13), and needs none otherwise.
+ */
+String _windowsInstallFlags(WindowsInstallContext ctx, bool force) {
+  final (lo, hi) = ctx.proxyPortRange ?? DEFAULT_WINDOWS_PROXY_PORT_RANGE;
+  final (defLo, defHi) = DEFAULT_WINDOWS_PROXY_PORT_RANGE;
+  return ((ctx.sublayerGuid?.isNotEmpty ?? false)
+          ? ' --sublayer-guid ${ctx.sublayerGuid}'
+          : '') +
+      (lo != defLo || hi != defHi ? ' --proxy-port-range $lo-$hi' : '') +
+      (ctx.sandboxUser != null &&
+              ctx.sandboxUser!.isNotEmpty &&
+              ctx.sandboxUser != 'srt-sandbox'
+          ? ' --sandbox-user ${ctx.sandboxUser}'
+          : '') +
+      (ctx.allowLoopback == true ? ' --allow-loopback' : '') +
+      (force ? ' --force' : '');
+}
+
+/** The install command, as error messages print it. */
+const WINDOWS_INSTALL_COMMAND =
+    'npx @anthropic-ai/sandbox-runtime windows-install';
+String _windowsInstallCommand(WindowsInstallContext ctx, bool force) =>
+    WINDOWS_INSTALL_COMMAND + _windowsInstallFlags(ctx, force);
+/**
+ * Whether a failed `srt-win` run is an `srt-win` that predates
+ * `--allow-loopback` rejecting the argument.
+ */
+bool _rejectsAllowLoopback(({String stderr}) r) =>
+    RegExp("unexpected argument '--allow-loopback'").hasMatch(r.stderr);
+WindowsSandboxError _srtWinTooOld(String stderr) => WindowsSandboxError(
+  'srt_win_too_old',
+  'srt-win is too old for network.allowLocalBinding: it does not know ' +
+      '`--allow-loopback`. Update srt-win (and re-run the install with ' +
+      'it), or unset network.allowLocalBinding. (${stderr.trim()})',
+);
+const _WFP_RESIDUAL_TEXT = <WindowsWfpResidual, String>{
+  'anonymous-egress':
+      'a connect to an off-loopback destination made while impersonating ' +
+      'the anonymous token is not blocked (no filter is keyed on that ' +
+      'token; a sandboxed process that puts it on a thread before ' +
+      'creating a socket is not fenced)',
+  'anonymous-loopback':
+      'a connect to a loopback destination made while impersonating the ' +
+      'anonymous token is not blocked (local listeners outside the proxy ' +
+      'port range are reachable that way)',
+  'deny-only-user-sid':
+      'a connect made under a copy of the sandbox token whose user SID is ' +
+      'deny-only is not blocked (the filters cannot match that token)',
+  'lowered-integrity-unprobed':
+      'a lowered-integrity copy of the sandbox token could not be set up on ' +
+      'this machine, so no connect under it was observed',
+};
+bool _isWfpResidual(String s) => _WFP_RESIDUAL_TEXT.containsKey(s);
+
 /**
  * Behavioral proof that the WFP egress fence is active for the
  * sandbox user. Binds a local listener on an ephemeral loopback port
@@ -1003,6 +1312,11 @@ Future<WindowsWfpStatusResult> getWindowsWfpStatusAsync({
 Future<WindowsWfpVerifyResult> verifyWindowsWfpEgress({
   String? target,
   (int, int)? proxyPortRange,
+  bool? allowLoopback,
+  bool? anonymousEgress,
+  String? sublayerGuid,
+  String? sandboxUser,
+  List<String>? writeRoots,
   SrtWinSpawn? srtWin,
 }) async => throw UnsupportedError('Windows is not supported by this port');
 
@@ -1362,6 +1676,7 @@ List<String> _installArgs(WindowsInstallOptions opts) {
       '${opts.proxyPortRange!.$1}-${opts.proxyPortRange!.$2}',
     ]);
   }
+  if (opts.allowLoopback == true) args.add('--allow-loopback');
   if (opts.sandboxUser != null && opts.sandboxUser!.isNotEmpty)
     args.addAll(['--sandbox-user', opts.sandboxUser!]);
   if (opts.force == true) args.add('--force');
@@ -1459,9 +1774,16 @@ void _throwOnInstallFailure(_RunResult r) {
 WindowsInstallResult installWindowsSandbox({
   String? sublayerGuid,
   (int, int)? proxyPortRange,
+  bool? allowLoopback,
   String? sandboxUser,
   bool? force,
   int? timeoutMs,
+  bool? skipProfileGrant,
+  List<String>? profileExclude,
+  List<String>? profileInclude,
+  int? profileGrantTimeoutMs,
+  void Function(String line)? onProfileGrantProgress,
+  void Function(String notice)? onProfileGrantStart,
   SrtWinSpawn? srtWin,
 }) => throw UnsupportedError('Windows is not supported by this port');
 
@@ -1474,11 +1796,118 @@ WindowsInstallResult installWindowsSandbox({
 Future<WindowsInstallResult> installWindowsSandboxAsync({
   String? sublayerGuid,
   (int, int)? proxyPortRange,
+  bool? allowLoopback,
   String? sandboxUser,
   bool? force,
   int? timeoutMs,
+  bool? skipProfileGrant,
+  List<String>? profileExclude,
+  List<String>? profileInclude,
+  int? profileGrantTimeoutMs,
+  void Function(String line)? onProfileGrantProgress,
+  void Function(String notice)? onProfileGrantStart,
   SrtWinSpawn? srtWin,
 }) async => throw UnsupportedError('Windows is not supported by this port');
+
+/** LocalSystem, LocalService, NetworkService: accounts no one runs sessions as. */
+const _WINDOWS_SERVICE_ACCOUNT_SIDS = {'S-1-5-18', 'S-1-5-19', 'S-1-5-20'};
+
+/**
+ * Why an install leaves the profile read grant unapplied (`undefined`: it
+ * applies it): asked to skip, a service account, or not running as the
+ * owner of the interactive session, whose profile it would open instead.
+ */
+String? windowsProfileGrantSkipReason(
+  WindowsSandboxUserStatus user, {
+  bool? skipProfileGrant,
+}) {
+  if (skipProfileGrant == true) return 'skipProfileGrant was set';
+  const how =
+      'run the install, or grantWindowsProfileRead() (`srt-win profile ' +
+      'grant`), as the user whose sessions are to read their profile';
+  if (_WINDOWS_SERVICE_ACCOUNT_SIDS.contains(user.realUserSid))
+    return 'the install ran as the service account ${user.realUserSid}, which ' +
+        'runs no sessions; $how';
+  if (user.sessionUserSid == null)
+    return 'the owner of the session this install ran in could not be ' +
+        'determined, so it is not known whose profile ${user.realUserSid} ' +
+        'is; $how';
+  if (user.sessionUserSid!.toUpperCase() != user.realUserSid.toUpperCase())
+    return 'the install ran as ${user.realUserSid} in a session that belongs ' +
+        'to ${user.sessionUserSid}; granting would open the installing ' +
+        "account's profile, not the session owner's; $how";
+  return null;
+}
+
+WindowsInstallProfileGrant? _installProfileGrantSkip(
+  WindowsInstallOptions opts,
+  WindowsSandboxUserStatus user,
+) {
+  final reason = windowsProfileGrantSkipReason(
+    user,
+    skipProfileGrant: opts.skipProfileGrant,
+  );
+  return reason == null
+      ? null
+      : WindowsInstallProfileGrantSkipped(reason: reason);
+}
+
+/**
+ * What the profile read grant is about to do, in one line, for the person
+ * at the keyboard.
+ */
+String windowsProfileGrantNotice(String profileDir) =>
+    'Making the tool directories of $profileDir readable to sandboxed ' +
+    'commands on this machine: where per-user tools install themselves ' +
+    '(AppData\\Local\\Programs, AppData\\Roaming\\npm, go, .nuget, ' +
+    '.cargo and the like) and package-manager configuration that can ' +
+    'hold feed tokens (.npmrc, pip.ini, NuGet.Config, Maven settings.xml, ' +
+    'gradle.properties, .gitconfig). Documents, Desktop, Downloads and ' +
+    'the rest of the profile are not readable unless added (the names ' +
+    'inside some AppData folders can be listed); credential ' +
+    'stores (SSH and GPG keys, cloud and browser sign-ins, password ' +
+    'managers, registry hives) are denied. Skip with --skip-profile-grant ' +
+    '(skipProfileGrant); undo with `srt-win profile forget` ' +
+    '(forgetWindowsProfileRead()).';
+WindowsProfileGrantOptions _installProfileGrantOptions(
+  WindowsInstallOptions opts,
+  SrtWinSpawn srtWin,
+) => WindowsProfileGrantOptions(
+  exclude: opts.profileExclude,
+  include: opts.profileInclude,
+  timeoutMs: opts.profileGrantTimeoutMs,
+  onProgress: opts.onProfileGrantProgress,
+  srtWin: srtWin,
+);
+/**
+ * The account and the filters are installed and the profile read grant
+ * is not: its own error, so the caller does not take the whole install
+ * for failed.
+ */
+Never _throwInstallProfileGrantFailure(Object e) {
+  final cause = e;
+  // Refused beside other sandbox activity: nothing was written, and a
+  // grant made before is still the current one.
+  if (cause is WindowsSandboxError &&
+      (cause.code == 'profile_grant_blocked_by_session' ||
+          cause.code == 'profile_operation_in_progress'))
+    throw WindowsSandboxError(
+      cause.code,
+      'The Windows sandbox is installed. ${cause.message}',
+      'profile',
+    );
+  final timedOut =
+      cause is WindowsSandboxError && cause.code == 'srt_win_timeout';
+  throw WindowsSandboxError(
+    'profile_grant_failed',
+    'The Windows sandbox is installed, but the read grant on your user ' +
+        "profile ${timedOut ? 'did not finish in time' : 'could not be applied'}" +
+        ': ${errorMessage(cause)}\nNo session starts until it is complete. Run the ' +
+        'install again, or grantWindowsProfileRead(), to finish it; ' +
+        'forgetWindowsProfileRead() removes what was written.',
+    'profile',
+  );
+}
 
 /**
  * Remove the WFP filter set under `sublayerGuid` and the
@@ -1741,8 +2170,22 @@ class MappedDriveCwdError extends WindowsSandboxError {
   final WindowsSandboxErrorCode code = 'mapped_drive_cwd';
   final String? drive;
 
-  MappedDriveCwdError(String message, {this.drive})
-    : super('mapped_drive_cwd', message, 'exec');
+  MappedDriveCwdError(String message, {this.drive, String subcommand = 'exec'})
+    : super('mapped_drive_cwd', message, subcommand);
+}
+
+/** {@link WindowsSandboxError} narrowed to `seclogon_disabled`. */
+class SeclogonDisabledError extends WindowsSandboxError {
+  @override
+  final WindowsSandboxErrorCode code = 'seclogon_disabled';
+
+  /// 'disabled' or 'missing'.
+  final String state;
+  SeclogonDisabledError(
+    String message, {
+    required this.state,
+    String subcommand = 'exec',
+  }) : super('seclogon_disabled', message, subcommand);
 }
 
 /**
@@ -1760,19 +2203,58 @@ class MappedDriveCwdError extends WindowsSandboxError {
  * stderr is pumped through unchanged, so a child that happened to
  * print a matching JSON line would parse here too.
  */
-MappedDriveCwdError? parseWindowsSandboxError(String stderr) {
+WindowsSandboxError? parseWindowsSandboxError(String stderr) =>
+    _parseSrtWinLaunchError(stderr, 'exec');
+
+/** {@link parseWindowsSandboxError} for any runner-launching subcommand. */
+WindowsSandboxError? _parseSrtWinLaunchError(String stderr, String subcommand) {
   for (final line in stderr.split(RegExp(r'\r?\n'))) {
     final t = line.trim();
     if (!t.startsWith('{') || !t.contains('"code"')) continue;
     try {
       final j = jsonDecode(t) as Map<String, dynamic>;
+      // Exit 25: the command needed the lock a profile grant or forget
+      // is holding.
+      if (j['code'] == 'profile_operation_in_progress')
+        return WindowsSandboxError(
+          'profile_operation_in_progress',
+          j['message'] as String? ?? 'a profile grant or forget is in progress',
+          'exec',
+        );
+      // Exit 26: the process named with `heldBy` ended while the
+      // command ran, and the command was terminated with it.
+      if (j['code'] == 'session_ended')
+        return WindowsSandboxError(
+          'session_ended',
+          j['message'] as String? ??
+              'the session that started this command ended; the command was terminated',
+          'exec',
+        );
       if (j['code'] == 'mapped_drive_cwd') {
         // The canonical class carries `code`/`subcommand`; `drive`
         // is this one code's extra payload, attached as a plain
         // property rather than forking the class.
         return MappedDriveCwdError(
-          (j['message'] as String?) ?? 'mapped/network-drive working directory',
+          j['message'] as String? ?? 'mapped/network-drive working directory',
           drive: j['drive'] as String?,
+          subcommand: subcommand,
+        );
+      }
+      // Exit 19: the installed loopback mode is not the one the
+      // command was wrapped for; nothing was launched.
+      if (j['code'] == 'wfp_loopback_mismatch')
+        return WindowsSandboxError(
+          'wfp_loopback_mismatch',
+          j['message'] as String? ??
+              "the installed loopback mode is not this session's",
+          'exec',
+        );
+      if (j['code'] == 'seclogon_disabled') {
+        final state = j['state'] == 'missing' ? 'missing' : 'disabled';
+        return SeclogonDisabledError(
+          j['message'] as String? ?? _seclogonDisabledMessage(state),
+          state: state,
+          subcommand: subcommand,
         );
       }
     } catch (_) {
@@ -2408,6 +2890,13 @@ Map<String, String> windowsProfileReadEnv(
 // ────────────────────────────────────────────────────────────────────
 
 /**
+ * `no_proxy` for a sandboxed child with `network.allowLocalBinding`:
+ * the loopback hosts, so proxy-aware clients connect to local servers
+ * directly. Otherwise `no_proxy` is not set at all.
+ */
+const WINDOWS_LOOPBACK_NO_PROXY = 'localhost,127.0.0.1,::1';
+
+/**
  * Build the spawn descriptor for running `command` inside the Windows
  * sandbox: an `argv` array plus the `env` to spawn it with.
  *
@@ -2469,6 +2958,11 @@ Map<String, String> windowsProfileReadEnv(
   // SID, and is not fenced).
   generated.remove('NO_PROXY');
   generated.remove('no_proxy');
+  // With loopback open the fence permits direct loopback connects, so the
+  // loopback hosts (only: private networks are still fenced) skip the proxy.
+  if (p.allowLoopback == true &&
+      ((p.httpProxyPort ?? 0) != 0 || (p.socksProxyPort ?? 0) != 0))
+    generated['no_proxy'] = WINDOWS_LOOPBACK_NO_PROXY;
 
   // GIT_CONFIG_* set — safe.directory (dubious-ownership) + the
   // schannel CA knobs. Composed against setEnvVars so a caller
@@ -2485,7 +2979,13 @@ Map<String, String> windowsProfileReadEnv(
 
   final argv = <String>[exe, ...prependArgs, 'exec'];
   if (p.quiet != false) argv.add('--quiet');
+  if (p.heldBy != null) argv.addAll(['--held-by', '${p.heldBy}']);
+  argv.add('--write-restricted-token');
+  for (final r in p.writeRoots ?? <String>[]) argv.addAll(['--write-root', r]);
+  if (p.allowLoopback == true) argv.add('--allow-loopback');
   for (final d in p.denyRead ?? <String>[]) argv.addAll(['--deny-read', d]);
+  for (final a in p.denyReadExcept ?? <String>[])
+    argv.addAll(['--deny-read-except', a]);
   for (final d in p.denyWrite ?? <String>[]) argv.addAll(['--deny-write', d]);
   // The two-hop runner starts with the SANDBOX user's profile env
   // (USERPROFILE/TEMP isolated) and overlays exactly what we pass as
@@ -2497,13 +2997,20 @@ Map<String, String> windowsProfileReadEnv(
   // same precedence as the macOS/Linux `env -u … VAR=…
   // sandbox-exec` order. `gitCfg` is last so its GIT_CONFIG_COUNT
   // (which composes against setEnvVars) wins.
-  final overlay = <String, String?>{
-    'PATH': process.env['PATH'],
-    'PATHEXT': process.env['PATHEXT'],
-    ...(p.setEnvVars ?? {}),
-    ...generated,
-    ...gitCfg,
-  };
+  // Merged ignoring case, as Windows reads names: a caller's
+  // `Https_Proxy` is the same variable as ours. Node's built-in clients
+  // read the proxy variables only with NODE_USE_ENV_PROXY set; it sits in
+  // the first layer, so a caller's value, in any case, wins.
+  final overlay = mergeWindowsEnv([
+    {
+      'PATH': process.env['PATH'],
+      'PATHEXT': process.env['PATHEXT'],
+      if ((p.httpProxyPort ?? 0) != 0) 'NODE_USE_ENV_PROXY': '1',
+    },
+    p.setEnvVars ?? {},
+    generated,
+    gitCfg,
+  ]);
   for (final MapEntry(key: k, value: v) in overlay.entries) {
     if (v != null) argv.addAll(['--env', '$k=$v']);
   }
@@ -2525,7 +3032,12 @@ Map<String, String> windowsProfileReadEnv(
     throw WindowsSandboxError(
       'argv_too_long',
       'Windows sandbox argv is ~$cmdlineEstimate chars ' +
-          '(CreateProcessW limit is 32 767).',
+          '(CreateProcessW limit is 32 767). Besides the command itself it ' +
+          'carries ${p.denyRead?.length ?? 0} per-command read denies, ' +
+          '${p.denyReadExcept?.length ?? 0} session grants beneath them, ' +
+          '${p.denyWrite?.length ?? 0} write denies and ' +
+          '${p.writeRoots?.length ?? 0} write roots; the command was not ' +
+          'run with fewer.',
     );
   }
 
@@ -2709,6 +3221,9 @@ SandboxDependencyCheck _interpretDependencyProbes(
  */
 SandboxDependencyCheck checkWindowsDependencies({
   String? sublayerGuid,
+  (int, int)? proxyPortRange,
+  String? sandboxUser,
+  bool? allowLoopback,
   SrtWinSpawn? srtWin,
 }) => throw UnsupportedError('Windows is not supported by this port');
 
@@ -2719,5 +3234,8 @@ SandboxDependencyCheck checkWindowsDependencies({
  */
 Future<SandboxDependencyCheck> checkWindowsDependenciesAsync({
   String? sublayerGuid,
+  (int, int)? proxyPortRange,
+  String? sandboxUser,
+  bool? allowLoopback,
   SrtWinSpawn? srtWin,
 }) async => throw UnsupportedError('Windows is not supported by this port');
