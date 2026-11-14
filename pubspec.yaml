@@ -5,7 +5,6 @@ description: >-
   on Linux, and srt-win on Windows.
 version: 0.0.83
 repository: https://github.com/Telosnex/sandbox-runtime-dart
-publish_to: none
 
 environment:
   sdk: ^3.9.0

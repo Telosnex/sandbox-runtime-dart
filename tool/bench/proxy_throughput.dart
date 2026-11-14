@@ -14,7 +14,6 @@ import 'package:sandbox_runtime/src/sandbox/http_proxy.dart';
 import 'package:sandbox_runtime/src/sandbox/mitm_ca.dart';
 import 'package:sandbox_runtime/src/sandbox/mitm_leaf.dart';
 import 'package:sandbox_runtime/src/sandbox/request_filter.dart';
-import 'package:sandbox_runtime/src/sandbox/sandbox_config.dart';
 
 int mutated = 0;
 

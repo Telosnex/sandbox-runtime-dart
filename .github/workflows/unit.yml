@@ -1,0 +1,35 @@
+name: Unit
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'ci/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: unit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Unit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Telosnex/telosnex_ci_tools/actions/setup-flutter@f97b50830596a30b24ea34c643a3b7dcce349972 # v0.5.15
+      - uses: Telosnex/telosnex_ci_tools/actions/lint@f97b50830596a30b24ea34c643a3b7dcce349972 # v0.5.15
+      - run: dart pub get
+      - run: dart format --output=none --set-exit-if-changed lib test tool bin
+      # Ported comments and identifiers retain upstream style.
+      - run: dart analyze
+      - run: dart test test/config_to_json_test.dart test/config_validation_test.dart test/public_exports_test.dart test/sandbox/mxc_config_test.dart test/sandbox/mxc_test.dart -r expanded

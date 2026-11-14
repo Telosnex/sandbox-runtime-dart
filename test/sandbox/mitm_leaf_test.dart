@@ -7,8 +7,7 @@ import 'dart:io' show Directory;
 import 'package:path/path.dart' show join;
 import 'package:sandbox_runtime/src/node/child_process.dart' show execFileSync;
 import 'package:sandbox_runtime/src/node/crypto.dart' show X509Certificate;
-import 'package:sandbox_runtime/src/node/forge.dart'
-    show Certificate, ForgeRandomApi, forge;
+import 'package:sandbox_runtime/src/node/forge.dart' show ForgeRandomApi, forge;
 import 'package:sandbox_runtime/src/node/fs.dart'
     show mkdtempSync, rmSync, writeFileSync;
 import 'package:sandbox_runtime/src/node/os.dart' show tmpdir;

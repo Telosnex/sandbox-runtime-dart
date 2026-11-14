@@ -1,0 +1,22 @@
+# Development files and test-only TLS private keys are not runtime assets.
+.git/
+.github/
+.dart_tool/
+.upstream/
+build/
+pubspec.lock
+test/
+tool/audit/
+tool/bench/
+tool/spikes/
+PORT_WORKLOG.md
+HTTP_SHIM_DESIGN.md
+.DS_Store
+# Native artifacts are built separately; retain their sources and build tools.
+vendor/seccomp/x64/
+vendor/seccomp/arm64/
+vendor/spawn-helper/
+vendor/srt-win/x64/
+vendor/srt-win/arm64/
+vendor/srt-win/target/
+vendor/java-proxy-agent/srt-proxy-agent.jar

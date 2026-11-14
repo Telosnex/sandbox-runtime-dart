@@ -1,0 +1,4 @@
+sources:
+  - name: anthropics/sandbox-runtime
+    branch: https://github.com/anthropics/sandbox-runtime
+    pin: {file: .github/workflows/integration.yml, pattern: 'ref: ([0-9a-f]{40})'}

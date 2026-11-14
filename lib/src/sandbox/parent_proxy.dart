@@ -578,10 +578,8 @@ String? canonicalizeHost(String h) {
 }
 
 /** Per-dial name resolution the proxies are handed: the guard's `lookup` for `port`, refusals recorded. */
-typedef DirectLookup = net.LookupFunction Function(
-  int port, [
-  String? encodedCommand,
-]);
+typedef DirectLookup =
+    net.LookupFunction Function(int port, [String? encodedCommand]);
 
 /** `host[:port]` as it belongs in a Host header / URL authority: IPv6 bracketed, the default port elided. */
 String formatAuthority(String host, int port, int defaultPort) {

@@ -1,0 +1,28 @@
+# First publish manually; then enable GitHub automated publishing on pub.dev
+# with environment pub.dev and tag pattern pub-sandbox_runtime-v{{version}}.
+name: Pub publish
+
+on:
+  push:
+    tags: ['pub-sandbox_runtime-v[0-9]+.[0-9]+.[0-9]+*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to validate (pub-sandbox_runtime-v0.0.83)
+        required: true
+        type: string
+        default: pub-sandbox_runtime-v0.0.83
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    uses: Telosnex/telosnex_ci_tools/.github/workflows/pub_publish.yml@f97b50830596a30b24ea34c643a3b7dcce349972 # v0.5.15
+    permissions:
+      contents: write
+      id-token: write
+    with:
+      dry-run: ${{ github.event_name == 'workflow_dispatch' }}
+      tag: ${{ inputs.tag || github.ref_name }}
+      test: dart test test/config_to_json_test.dart test/config_validation_test.dart test/public_exports_test.dart test/sandbox/mxc_config_test.dart test/sandbox/mxc_test.dart
