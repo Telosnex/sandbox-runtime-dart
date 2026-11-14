@@ -72,6 +72,7 @@ class NetworkInterfaceAddress {
 /// guard are materialized). An interface with no addresses has a null value,
 /// as in Node's API.
 Map<String, List<NetworkInterfaceAddress>?> networkInterfaces() {
+  if (Platform.isWindows) return _windowsNetworkInterfaces();
   if (!Platform.isMacOS && !Platform.isLinux) {
     throw UnimplementedError(
       'os.networkInterfaces requires POSIX getifaddrs on this platform',
@@ -137,3 +138,97 @@ typedef _GetifaddrsNative = Int32 Function(Pointer<Pointer<_Ifaddrs>> ifap);
 typedef _GetifaddrsDart = int Function(Pointer<Pointer<_Ifaddrs>> ifap);
 typedef _FreeifaddrsNative = Void Function(Pointer<_Ifaddrs> ifa);
 typedef _FreeifaddrsDart = void Function(Pointer<_Ifaddrs> ifa);
+
+/// Windows: GetAdaptersAddresses, as libuv's uv_interface_addresses. Keys are
+/// the adapters' friendly names, as Node's are.
+Map<String, List<NetworkInterfaceAddress>?> _windowsNetworkInterfaces() {
+  final iphlpapi = DynamicLibrary.open('iphlpapi.dll');
+  final getAdaptersAddresses = iphlpapi
+      .lookupFunction<
+        Uint32 Function(
+          Uint32,
+          Uint32,
+          Pointer<Void>,
+          Pointer<Uint8>,
+          Pointer<Uint32>,
+        ),
+        int Function(int, int, Pointer<Void>, Pointer<Uint8>, Pointer<Uint32>)
+      >('GetAdaptersAddresses');
+  // AF_UNSPEC; skip anycast, multicast and DNS servers.
+  const family = 0, flags = 0x2 | 0x4 | 0x8;
+  const errorBufferOverflow = 111;
+  final size = calloc<Uint32>()..value = 16 * 1024;
+  try {
+    for (var attempt = 0; attempt < 3; attempt++) {
+      final buffer = calloc<Uint8>(size.value);
+      try {
+        final status = getAdaptersAddresses(
+          family,
+          flags,
+          nullptr,
+          buffer,
+          size,
+        );
+        if (status == errorBufferOverflow) continue;
+        if (status != 0) {
+          throw StateError('GetAdaptersAddresses failed: $status');
+        }
+        return _readAdapters(buffer);
+      } finally {
+        calloc.free(buffer);
+      }
+    }
+    throw StateError('GetAdaptersAddresses: the adapter list kept growing');
+  } finally {
+    calloc.free(size);
+  }
+}
+
+/// Reads IP_ADAPTER_ADDRESSES_LH records (64-bit layout): Next at 8,
+/// FirstUnicastAddress at 24, FriendlyName at 72. Each
+/// IP_ADAPTER_UNICAST_ADDRESS_LH has Next at 8 and the sockaddr pointer at 16.
+Map<String, List<NetworkInterfaceAddress>?> _readAdapters(
+  Pointer<Uint8> first,
+) {
+  Pointer<Uint8> pointerAt(Pointer<Uint8> base, int offset) =>
+      Pointer<Uint8>.fromAddress((base + offset).cast<IntPtr>().value);
+  final interfaces = <String, List<NetworkInterfaceAddress>?>{};
+  for (
+    var adapter = first;
+    adapter != nullptr;
+    adapter = pointerAt(adapter, 8)
+  ) {
+    final friendly = pointerAt(adapter, 72);
+    final name = friendly == nullptr
+        ? ''
+        : friendly.cast<Utf16>().toDartString();
+    final addresses = interfaces.putIfAbsent(
+      name,
+      () => <NetworkInterfaceAddress>[],
+    )!;
+    for (
+      var unicast = pointerAt(adapter, 24);
+      unicast != nullptr;
+      unicast = pointerAt(unicast, 8)
+    ) {
+      final sockaddr = pointerAt(unicast, 16);
+      if (sockaddr == nullptr) continue;
+      final family = sockaddr.cast<Uint16>().value;
+      // AF_INET 2, AF_INET6 23.
+      final ipv4 = family == 2;
+      if (!ipv4 && family != 23) continue;
+      final raw = ipv4
+          ? List<int>.generate(4, (i) => (sockaddr + 4 + i).value)
+          : List<int>.generate(16, (i) => (sockaddr + 8 + i).value);
+      addresses.add(
+        NetworkInterfaceAddress(
+          InternetAddress.fromRawAddress(
+            Uint8List.fromList(raw),
+            type: ipv4 ? InternetAddressType.IPv4 : InternetAddressType.IPv6,
+          ).address,
+        ),
+      );
+    }
+  }
+  return interfaces;
+}
