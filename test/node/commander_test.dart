@@ -76,6 +76,38 @@ void main() {
     expect(got![1], {'settings': 'f.json', 'controlFd': 5, 'c': 'ls'});
   });
 
+  test(
+    'repeatable option parser receives the default and prior values',
+    () async {
+      final p = Command();
+      p.option(
+        '--profile-exclude <path>',
+        'excluded paths',
+        null,
+        <String>[],
+        (v, acc) => [...(acc as List<String>), v],
+      );
+      p.option(
+        '--profile-include <path>',
+        'included paths',
+        null,
+        <String>[],
+        (v, acc) => [...(acc as List<String>), v],
+      );
+      await p.parse([
+        '--profile-exclude',
+        'first',
+        '--profile-exclude=second',
+        '--profile-exclude',
+        'first',
+      ]);
+      expect(p.opts(), {
+        'profileExclude': ['first', 'second', 'first'],
+        'profileInclude': <String>[],
+      });
+    },
+  );
+
   // Expected codes/messages from commander 12.1.0 with exitOverride().
   Command strict() {
     final p = Command();
