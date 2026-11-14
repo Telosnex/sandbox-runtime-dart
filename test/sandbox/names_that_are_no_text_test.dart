@@ -1,4 +1,5 @@
 // Ported from sandbox-runtime test/sandbox/names-that-are-no-text.test.ts @ 0bbebed.
+// ignore_for_file: non_constant_identifier_names
 // ignore_for_file: slash_for_doc_comments, constant_identifier_names
 import 'dart:convert';
 import 'dart:io' as io;

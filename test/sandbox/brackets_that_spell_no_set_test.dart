@@ -1,4 +1,5 @@
 // Ported from sandbox-runtime test/sandbox/brackets-that-spell-no-set.test.ts @ 0bbebed.
+// ignore_for_file: slash_for_doc_comments
 // ignore_for_file: non_constant_identifier_names
 import 'dart:convert';
 import 'dart:io';
