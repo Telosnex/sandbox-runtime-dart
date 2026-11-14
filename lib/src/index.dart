@@ -1,7 +1,10 @@
-// Ported from sandbox-runtime src/index.ts @ 24eb39e.
+// Ported from sandbox-runtime src/index.ts @ 0bbebed.
 // Library exports
-export 'sandbox/sandbox_manager.dart' show SandboxManager;
-export 'sandbox/sandbox_manager.dart' show WrapWithSandboxOptions;
+export 'sandbox/sandbox_manager.dart'
+    show SandboxManager, SandboxInitializeConflictError;
+export 'sandbox/sandbox_manager.dart' show WindowsProfileReadWarning;
+export 'sandbox/sandbox_manager.dart'
+    show WrapWithSandboxOptions, SandboxInitializeOptions;
 export 'sandbox/sandbox_violation_store.dart' show SandboxViolationStore;
 // Configuration types and schemas
 export 'sandbox/sandbox_config.dart'
@@ -74,12 +77,25 @@ export 'sandbox/windows_sandbox_utils.dart'
         restoreWindowsAcl,
         grantWindowsAcl,
         revokeWindowsAcl,
+        revokeWindowsAclChecked,
+        grantWindowsProfileRead,
+        forgetWindowsProfileRead,
+        forgetWindowsProfileReadAsync,
+        getWindowsProfileReadStatus,
+        getWindowsProfileReadStatusAsync,
+        windowsProfileReadEnv,
+        windowsProfileExclusionConflicts,
+        windowsProfileGrantSkipReason,
+        windowsProfileGrantNotice,
+        WINDOWS_PROFILE_READ_ENV_VARS,
         expandWindowsFsPaths,
         buildGitConfigEnv,
         parseWindowsBinShell,
         parseWindowsSandboxError,
         isUncPath,
         DEFAULT_WINDOWS_PROXY_PORT_RANGE,
+        WINDOWS_ALLOW_LOOPBACK_EFFECT,
+        WINDOWS_LOOPBACK_PROBE_PORT,
         SRT_WIN_DISPATCH_ARG1;
 export 'sandbox/windows_sandbox_utils.dart'
     show
@@ -87,17 +103,43 @@ export 'sandbox/windows_sandbox_utils.dart'
         WindowsSandboxStatus,
         WindowsBinShell,
         MappedDriveCwdError,
+        SeclogonDisabledError,
+        WindowsSeclogonState,
         WindowsInstallOptions,
         WindowsInstallResult,
         WindowsWfpStatus,
         WindowsAclStampOptions,
         WindowsAclGrantOptions,
         WindowsAclAceOutcome,
+        WindowsWfpProbeOutcome,
+        WindowsWfpResidual,
+        WindowsAclRevokeResult,
+        WindowsProfileGrantState,
+        WindowsProfileGrantStatus,
+        WindowsProfileGrantPath,
+        WindowsProfileGrantOptions,
+        WindowsProfileForgetResult,
+        WindowsProfileGrantResult,
+        WindowsProfileGrantItem,
+        WindowsInstallProfileGrant,
+        WindowsProfileExclusionConflict,
         WindowsWfpStatusResult,
         WindowsWfpVerifyResult,
         WindowsSandboxUserStatus,
         WindowsPersistentCa,
         SrtWinSpawn;
+// Windows MXC BaseContainer backend, named by `windows.backend`:
+// commands start through SandboxManager.spawnSandboxed().
+export 'sandbox/mxc_sandbox_utils.dart'
+    show
+        MxcProbeOutput,
+        MxcProcessHandle,
+        MxcRequest,
+        MxcSdk,
+        MxcUiCapabilities,
+        WindowsBackendSelection;
+export 'sandbox/sandbox_manager.dart'
+    show CheckDependenciesOptions, SandboxedProcess, SpawnSandboxedOptions;
 // TLS-termination CA generation/validation (mitm-ca.ts). Embedders that
 // manage CA persistence themselves (rather than relying on the Windows
 // persistent-CA default) use these to generate and validate a pair.
