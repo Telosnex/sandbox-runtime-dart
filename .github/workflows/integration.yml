@@ -6,6 +6,12 @@ on:
   schedule:
     - cron: '41 6 * * *'
   workflow_dispatch:
+    inputs:
+      suite:
+        description: Full suite or repeated descriptor handover diagnostics
+        type: choice
+        options: [full, proxy-descriptors]
+        default: full
 
 permissions:
   contents: read
@@ -53,7 +59,16 @@ jobs:
       - name: Host and fidelity tests
         env:
           SRT_UPSTREAM: ${{ github.workspace }}/.upstream
-        run: dart test -r expanded
+          SUITE: ${{ inputs.suite || 'full' }}
+        run: |
+          if [[ "$SUITE" == proxy-descriptors ]]; then
+            for attempt in {1..10}; do
+              echo "Descriptor handover attempt $attempt/10"
+              dart test test/proxy_cli_test.dart --name 'descriptor forms' -r expanded
+            done
+          else
+            dart test -r expanded
+          fi
   desktop-linux-arm64:
     name: Linux ARM64
     runs-on: ubuntu-24.04-arm

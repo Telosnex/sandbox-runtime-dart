@@ -342,6 +342,9 @@ Future<void> main() async {
             ];
             final pinned = pin ? [TASKSET!, '-c', FIRST_CPU, ...argv] : argv;
             final child = spawn(pinned[0], pinned.sublist(1), {
+              // Include timeout/handshake diagnostics if a hosted runner's
+              // connection closes before its expected HTTP response.
+              'env': {...process.env, 'SRT_DEBUG': '1'},
               'stdio': [
                 'ignore',
                 'ignore',
@@ -352,6 +355,15 @@ Future<void> main() async {
                 'pipe',
                 'pipe',
               ],
+            });
+            // A failed response assertion must still release the descriptor
+            // sockets and child; otherwise they keep the test runner alive.
+            addTearDown(() {
+              child.kill('SIGKILL');
+              for (final stream in child.stdio) {
+                if (stream is net.NodeSocket) stream.destroy();
+              }
+              listener.close();
             });
             listener.close();
             var stderr = '';
@@ -472,7 +484,7 @@ Future<void> main() async {
               c.on('data', onData);
               return completer.future;
             }();
-            expect(reply, startsWith('HTTP/1.1 403'));
+            expect(reply, startsWith('HTTP/1.1 403'), reason: stderr);
             expect(reply, contains('denied by the test decider'));
             expect(asked, hasLength(1));
             expect(asked[0], containsPair('t', 'req'));
