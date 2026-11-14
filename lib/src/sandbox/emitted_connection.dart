@@ -1,4 +1,5 @@
 // Ported from sandbox-runtime src/sandbox/emitted-connection.ts @ 0bbebed.
+// ignore_for_file: curly_braces_in_flow_control_structures
 // ignore_for_file: slash_for_doc_comments, dangling_library_doc_comments
 
 import 'dart:async';

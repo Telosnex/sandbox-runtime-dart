@@ -1,4 +1,5 @@
 // Node-compatible TLS helpers required by sandbox-runtime's MITM proxy.
+// ignore_for_file: avoid_function_literals_in_foreach_calls
 // The checked-in Mozilla bundle is generated from curl's dated cacert.pem;
 // no platform trust store is consulted by rootCertificates/trustedRootContext.
 import 'dart:async';

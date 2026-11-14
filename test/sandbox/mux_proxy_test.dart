@@ -1,4 +1,5 @@
 // Ported from sandbox-runtime test/sandbox/mux-proxy.test.ts @ 0bbebed.
+// ignore_for_file: no_leading_underscores_for_local_identifiers
 library;
 
 // ignore_for_file: slash_for_doc_comments

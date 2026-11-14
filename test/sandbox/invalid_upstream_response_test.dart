@@ -114,7 +114,7 @@ void answer(net.NodeSocket socket) {
       final body = DECLARED[path]!;
       final head = 'HTTP/1.1 200 OK\r\nContent-Length: ${body.length}\r\n\r\n';
       if (path == '/more-in-one-write') {
-        socket.write('${head}${body}EXCESS');
+        socket.write('$head${body}EXCESS');
       } else {
         socket.write(head, () => socket.write('${body}EXCESS'));
       }

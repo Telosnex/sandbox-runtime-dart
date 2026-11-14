@@ -1,4 +1,5 @@
 // `node:net`: isIP, BlockList, Socket, Server, connect and createServer.
+// ignore_for_file: constant_identifier_names, use_super_parameters
 //
 // Socket and Server keep Node's call shape. `connect` returns the socket at
 // once, in the connecting state; it emits 'connect' (or 'error' then
@@ -848,6 +849,15 @@ class NodeSocket extends stream.Duplex {
     super.destroy(error, callback);
     return this;
   }
+
+  /// Node's HTTP parser runs a socket flowing. The raw Dart parser pulls;
+  /// expose only its actual body-backpressure pause, not that implementation
+  /// detail, to callers of socket.isPaused().
+  bool httpParserReading = false;
+  bool httpParserPaused = false;
+
+  @override
+  bool isPaused() => httpParserReading ? httpParserPaused : super.isPaused();
 
   @override
   NodeSocket pause() {
