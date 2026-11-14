@@ -1,4 +1,5 @@
 // Ported from sandbox-runtime test/sandbox/glob-expand.test.ts @ 0bbebed.
+// ignore_for_file: avoid_function_literals_in_foreach_calls, await_only_futures, curly_braces_in_flow_control_structures, no_leading_underscores_for_local_identifiers, prefer_interpolation_to_compose_strings
 // ignore_for_file: slash_for_doc_comments, constant_identifier_names, non_constant_identifier_names
 
 // <reference lib="es2021.weakref" />
@@ -60,6 +61,8 @@ import 'package:sandbox_runtime/src/sandbox/sandbox_utils.dart'
 import 'package:sandbox_runtime/src/sandbox/windows_sandbox_utils.dart'
     show
         WindowsSandboxError,
+        MappedDriveCwdError,
+        SeclogonDisabledError,
         containsGlobCharsWin,
         expandWindowsFsPaths,
         isUncPath,
@@ -2695,8 +2698,8 @@ void main() {
       expect(err, isA<WindowsSandboxError>());
       expect(err?.code, 'mapped_drive_cwd');
       expect(err?.subcommand, 'exec');
-      expect(err?.drive, 'Z:\\');
-      expect(err?.message, contains('DRIVE_REMOTE'));
+      expect((err as MappedDriveCwdError).drive, 'Z:\\');
+      expect(err.message, contains('DRIVE_REMOTE'));
     });
 
     test('parses seclogon_disabled JSON line (srt-win exec exit 18)', () {
@@ -2708,10 +2711,11 @@ void main() {
       expect(err, isA<WindowsSandboxError>());
       expect(err?.code, 'seclogon_disabled');
       expect(err?.subcommand, 'exec');
-      expect((err as dynamic).state, 'disabled');
-      expect(err?.message, contains('seclogon is disabled'));
+      expect((err as SeclogonDisabledError).state, 'disabled');
+      expect(err.message, contains('seclogon is disabled'));
       expect(
-        (parseWindowsSandboxError(line('missing')) as dynamic).state,
+        (parseWindowsSandboxError(line('missing')) as SeclogonDisabledError)
+            .state,
         'missing',
       );
       // No message from srt-win → the actionable default.

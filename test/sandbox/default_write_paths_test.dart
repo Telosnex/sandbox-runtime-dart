@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/default-write-paths.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/default-write-paths.test.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments
 import 'dart:convert';
 import 'dart:io' as io;
@@ -483,4 +483,120 @@ Future<void> main() async {
       );
     },
   );
+  /**
+   * The getter is asked once a path, from permission checks, so what its read
+   * rules compile to is kept. Only that: what it asks of the configuration and
+   * of the disk it asks every time.
+   */
+  group('getFsWriteConfig() is asked once a path', () {
+    late String base;
+    setUpAll(() {
+      base = fs.mkdtempSync(join(tmpdir(), 'srt-home-'));
+    });
+    tearDownAll(() async {
+      await SandboxManager.reset();
+      fs.rmSync(base, {'recursive': true, 'force': true});
+    });
+    /** Runs `body`, which fills `out`, under a new HOME named `name`. */
+    Object? run(String name, String body) {
+      final home = join(base, name);
+      fs.mkdirSync(join(home, NPM_LOGS), {'recursive': true});
+      return runWithHome(home, '''
+import 'dart:convert';
+import 'dart:io';
+import 'package:sandbox_runtime/src/node/fs.dart' as fs;
+import 'package:sandbox_runtime/src/sandbox/sandbox_config.dart';
+import 'package:sandbox_runtime/src/sandbox/sandbox_manager.dart';
+Future<void> main() async {
+  final home = Platform.environment['HOME']!;
+  final logs = home + '/$NPM_LOGS';
+  bool logsWritable() => SandboxManager.getFsWriteConfig().allowOnly.contains(logs);
+  Future<SandboxRuntimeConfig> start(Map<String, List<String>> filesystem) async {
+    final config = SandboxRuntimeConfig(
+      network: NetworkConfig(allowedDomains: [], deniedDomains: []),
+      filesystem: FilesystemConfig(
+        denyRead: (filesystem['denyRead'] ?? []).map(FilesystemPathSpelling.new).toList(),
+        allowRead: filesystem['allowRead']?.map(FilesystemPathSpelling.new).toList(),
+        allowWrite: (filesystem['allowWrite'] ?? []).map(FilesystemPathSpelling.new).toList(),
+        denyWrite: (filesystem['denyWrite'] ?? []).map(FilesystemPathSpelling.new).toList(),
+      ),
+    );
+    await SandboxManager.initialize(config);
+    return config;
+  }
+  final out = [];
+  $body
+  await SandboxManager.reset();
+  stdout.write(jsonEncode(out) + '\\n');
+  await stdout.flush();
+  exit(0);
+}
+''');
+    }
+
+    test('follows a configuration that is changed in place', () {
+      expect(
+        run('in-place', '''
+        final config = await start({'denyRead': []});
+        out.add(logsWritable());
+        config.filesystem.denyRead.add(FilesystemPathSpelling('~/.np[m]'));
+        out.add(logsWritable());
+      '''),
+        [true, false],
+      );
+    });
+    // In a home whose name holds brackets the allowRead is a name only for as
+    // long as nothing on its way is a link.
+    test('follows what is on disk', () {
+      expect(
+        run('[h]ome', '''
+        await start({'denyRead': [home + '/.npm'], 'allowRead': [logs]});
+        out.add(logsWritable());
+        fs.rmSync(logs, {'recursive': true});
+        fs.symlinkSync(home, logs);
+        out.add(logsWritable());
+      '''),
+        [true, false],
+      );
+    });
+    test('reads more pattern text than it keeps', () {
+      expect(
+        run('much', '''
+        final much = List.generate(300, (i) => '/x' + i.toString() + '/' + 'a' * 4000 + '*');
+        await start({'denyRead': much});
+        out.addAll([logsWritable(), logsWritable()]);
+        await SandboxManager.reset();
+        await start({'denyRead': [...much, '~/.np[m]', ...much.map((p) => p + 'b')]});
+        out.addAll([logsWritable(), logsWritable()]);
+      '''),
+        [true, true, false, false],
+      );
+    });
+    for (final unit in ['[', '[z-a]']) {
+      test('does not compile 96 KB of $unit for every path', () async {
+        await SandboxManager.reset();
+        await SandboxManager.initialize(
+          SandboxRuntimeConfig(
+            network: NetworkConfig(allowedDomains: [], deniedDomains: []),
+            filesystem: FilesystemConfig(
+              denyRead: List.generate(
+                24,
+                (i) => FilesystemPathSpelling(
+                  '/x$i/${unit * (4000 ~/ unit.length)}',
+                ),
+              ),
+              allowWrite: [],
+              denyWrite: [],
+            ),
+          ),
+        );
+        final began = Stopwatch()..start();
+        for (var i = 0; i < 60; i++) {
+          SandboxManager.getFsWriteConfig();
+        }
+        // Some 3 ms each. Compiled each time, 40 ms and more.
+        expect(began.elapsedMilliseconds, lessThan(1500));
+      });
+    }
+  }, skip: isLinux || isMacOS ? false : 'requires Linux or macOS');
 }

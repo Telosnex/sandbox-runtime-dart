@@ -1,4 +1,5 @@
 // Ported from sandbox-runtime test/utils/real-path.test.ts @ 0bbebed.
+// ignore_for_file: curly_braces_in_flow_control_structures, non_constant_identifier_names
 // ignore_for_file: slash_for_doc_comments
 // ignore_for_file: no_leading_underscores_for_local_identifiers
 // ignore_for_file: constant_identifier_names
@@ -284,7 +285,7 @@ void main() {
     ]) {
       test('the way to $to leads as far as $real and leaves $rest', () {
         final way = wayTo(_at(to));
-        expect((way.real, way.rest), (_at(real), rest));
+        expect([way.real, way.rest], [_at(real), rest]);
       });
     }
     // root searches a directory of any mode.
@@ -296,7 +297,7 @@ void main() {
         'the way to $to stops at the directory that is shut and leaves $rest',
         () {
           final way = wayTo(_at(to));
-          expect((way.real, way.rest), (_at(r'shut\'), rest));
+          expect([way.real, way.rest], [_at(r'shut\'), rest]);
           expect((way.notThere as NodeError).code, 'EACCES');
         },
         skip: isRoot ? 'root searches a directory of any mode.' : false,
