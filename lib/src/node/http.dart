@@ -1453,7 +1453,9 @@ class ClientRequest extends events.EventEmitter {
     // Node detaches a whole, consumed response from its ClientRequest. A
     // later destroy of that request must not close the agent's idle socket.
     final answerDone =
-        response?.complete == true && response?.readableEnded == true;
+        _requestFinished &&
+        response?.complete == true &&
+        response?.readableEnded == true;
     if (!answerDone || error != null) socket?.destroy(error);
     _lease?.release();
     if (error != null) _emit('error', error);
