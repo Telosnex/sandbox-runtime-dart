@@ -26,7 +26,7 @@ final String here = path.join(
   'vendor',
   'java-proxy-agent',
 );
-final String SRC = path.join(here, '..', 'java-proxy-agent-src');
+final String SRC = path.join(path.dirname(here), 'java-proxy-agent-src');
 final String OUT = path.join(here, 'srt-proxy-agent.jar');
 const String AGENT_CLASS = 'com.anthropic.srt.ProxyAgent';
 
@@ -83,6 +83,7 @@ Future<void> main() async {
     exit(1);
   }
 
+  Directory(here).createSync(recursive: true);
   final work = Directory.systemTemp.createTempSync('srt-java-agent-').path;
   try {
     final classes = path.join(work, 'classes');
