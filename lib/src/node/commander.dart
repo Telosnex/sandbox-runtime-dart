@@ -51,7 +51,8 @@ class Option {
   final bool variadic;
   late final String? short;
   late final String? long;
-  Function? parseArg;
+  Object? Function(String value)? parseArg;
+  Object? Function(String value, Object? previous)? parseArgWithPrevious;
 
   String name() {
     if (long != null) return long!.replaceFirst(RegExp(r'^--'), '');
@@ -160,10 +161,13 @@ class Command {
   Command option(
     String flags, [
     String? description,
-    Function? parseArg,
+    Object? Function(String value)? parseArg,
     Object? defaultValue,
+    Object? Function(String value, Object? previous)? parseArgWithPrevious,
   ]) {
-    final option = Option(flags, description)..parseArg = parseArg;
+    final option = Option(flags, description)
+      ..parseArg = parseArg
+      ..parseArgWithPrevious = parseArgWithPrevious;
     _registerOption(option);
     final name = option.attributeName();
     if (defaultValue != null) {
@@ -174,7 +178,8 @@ class Command {
           "error: option '${option.flags}' argument '$val' is invalid.";
       Object? value = val;
       final oldValue = _optionValues[name];
-      if (val != null && option.parseArg != null) {
+      if (val != null &&
+          (option.parseArg != null || option.parseArgWithPrevious != null)) {
         value = _callParseArg(option, val, invalidValueMessage);
       } else if (val != null && option.variadic) {
         value = option._concatValue(val, oldValue);
@@ -276,13 +281,10 @@ class Command {
 
   Object? _callParseArg(Option target, String value, String message) {
     try {
-      final parseArg = target.parseArg!;
-      return parseArg is Object? Function(String)
-          ? parseArg(value)
-          : Function.apply(parseArg, [
-              value,
-              _optionValues[target.attributeName()],
-            ]);
+      final accumulate = target.parseArgWithPrevious;
+      return accumulate != null
+          ? accumulate(value, _optionValues[target.attributeName()])
+          : target.parseArg!(value);
     } on CommanderError catch (err) {
       if (err.code == 'commander.invalidArgument') {
         error(
