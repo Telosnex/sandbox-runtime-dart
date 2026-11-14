@@ -1,9 +1,10 @@
-// Ported from sandbox-runtime test/sandbox/mux-proxy.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/mux-proxy.test.ts @ 0bbebed.
 library;
 
 // ignore_for_file: slash_for_doc_comments
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'dart:typed_data';
 
 import 'package:sandbox_runtime/src/node/fs.dart' show existsSync;
@@ -127,6 +128,97 @@ void main() {
       expect(text, contains('200 Connection Established'));
       expect(text, contains('http-connect:x:443'));
     });
+
+    test(
+      'ends a client whose backend has closed without a reset, which would cost it what it has not read yet',
+      () async {
+        final errors = <Object>[];
+        final closed = Completer<bool>();
+        late NodeSocket c;
+        c = connect({
+          'port': port,
+          'host': '127.0.0.1',
+          'allowHalfOpen': true,
+        }, () => c.write('CONNECT example.com:443 HTTP/1.1\r\n\r\n'));
+        c.on('error', (Object err) => errors.add(err));
+        c.resume();
+        // Bytes sent to a socket that is closed are answered with a reset,
+        // and the next write fails.
+        c.once('end', () {
+          c.write('late');
+          Timer(const Duration(milliseconds: 100), () => c.write('later'));
+          Timer(const Duration(milliseconds: 200), () => c.end());
+        });
+        c.once('close', (bool hadError) => closed.complete(hadError));
+        final hadError = await closed.future;
+        expect([errors, hadError], [[], false]);
+      },
+    );
+
+    test(
+      'answers 502, with the reason, where the backend cannot be dialled',
+      () async {
+        mux.removeBackendSocketSync();
+        final reply = await send(
+          Uint8List.fromList(
+            utf8.encode('CONNECT x:443 HTTP/1.1\r\nHost: x:443\r\n\r\n'),
+          ),
+        );
+        expect(
+          utf8.decode(reply),
+          'HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\nmux backend dial failed (ENOENT)\n',
+        );
+      },
+      skip: Platform.isWindows ? 'Windows backend uses TCP' : false,
+    );
+
+    for (final (answer, added) in [
+      // Whether a backend that goes away shows here as an error at all is the
+      // platform's. On Linux a write fails first, and it does. On macOS and
+      // Windows this client is just closed, so the case would tell nothing.
+      if (Platform.isLinux) ('', 'HTTP/1.1 502 Bad Gateway\r\n'),
+      ('HTTP/1.1 200 Connection Established\r\n\r\n', ''),
+    ]) {
+      test(
+        'a backend that fails having answered $answer: the mux adds $added',
+        () async {
+          httpStub.removeAllListeners('connect');
+          httpStub.on('connect', (http.IncomingMessage _req, NodeSocket sock) {
+            sock.on('error', () {});
+            sock.resume();
+            if (answer != '') sock.write(answer);
+            Timer(const Duration(milliseconds: 50), () => sock.destroy());
+          });
+          for (var n = 0; n < 5; n++) {
+            final closed = Completer<String>();
+            var text = '';
+            // Still sending when the backend goes: the write that fails then
+            // is the error.
+            final chunk = Uint8List(64 << 10);
+            late NodeSocket c;
+            void pump() {
+              while (!c.destroyed && c.writable && c.write(chunk)) {}
+            }
+
+            c = connect(port, '127.0.0.1', () {
+              c.write('CONNECT x:443 HTTP/1.1\r\nHost: x:443\r\n\r\n');
+              pump();
+            });
+            c.on('drain', pump);
+            c.on('error', () {});
+            c.on('data', (Uint8List d) => text += latin1.decode(d));
+            c.on('close', () => closed.complete(text));
+            final reply = await closed.future;
+            expect(reply.substring(0, answer.length), answer);
+            expect(
+              reply.substring(answer.length).substring(0, added.length),
+              added,
+            );
+            if (added == '') expect(reply, answer);
+          }
+        },
+      );
+    }
 
     test(
       'routes a TLS ClientHello first byte (0x16) to HTTP, not SOCKS',

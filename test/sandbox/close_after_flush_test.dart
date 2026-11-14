@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/close-after-flush.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/close-after-flush.test.ts @ 0bbebed.
 import 'dart:async';
 import 'dart:typed_data';
 
@@ -75,6 +75,36 @@ void main() {
         expect(await how, 'the client ending after the flush');
       },
       timeout: const Timeout(Duration(milliseconds: 60000)),
+    );
+    test(
+      'a client that takes nothing is cut after the time allowed, not before',
+      () async {
+        final began = DateTime.now().millisecondsSinceEpoch;
+        final closed = Completer<String>();
+        final server = createServer((NodeSocket s) {
+          s.on('error', () {});
+          // More than the kernel takes for a client that reads nothing.
+          s.write(_alloc(32 << 20, 0x61));
+          closeAfterFlush(s, (how) => closed.complete(how), 400);
+        });
+        cleanup.add(() => server.close());
+        server.listen(0, '127.0.0.1', () {
+          final c = connect(
+            (server.address() as NodeAddress).port,
+            '127.0.0.1',
+          );
+          c.on('error', () {});
+          c.pause();
+          cleanup.add(() => c.destroy());
+        });
+        final how = await closed.future;
+        expect(how, 'not flushed in 400 ms');
+        expect(
+          DateTime.now().millisecondsSinceEpoch - began,
+          greaterThanOrEqualTo(400),
+        );
+      },
+      timeout: const Timeout(Duration(seconds: 5)),
     );
   });
 }
