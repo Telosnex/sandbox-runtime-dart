@@ -62,16 +62,11 @@ typedef _WriteN = IntPtr Function(Int32, Pointer<Uint8>, IntPtr);
 typedef _WriteD = int Function(int, Pointer<Uint8>, int);
 typedef _LstatNative = Int32 Function(Pointer<Uint8>, Pointer<Void>);
 typedef _LstatDart = int Function(Pointer<Uint8>, Pointer<Void>);
-typedef _ReadlinkNative = IntPtr Function(
-  Pointer<Uint8>,
-  Pointer<Uint8>,
-  IntPtr,
-);
+typedef _ReadlinkNative =
+    IntPtr Function(Pointer<Uint8>, Pointer<Uint8>, IntPtr);
 typedef _ReadlinkDart = int Function(Pointer<Uint8>, Pointer<Uint8>, int);
-typedef _RealpathNative = Pointer<Uint8> Function(
-  Pointer<Uint8>,
-  Pointer<Uint8>,
-);
+typedef _RealpathNative =
+    Pointer<Uint8> Function(Pointer<Uint8>, Pointer<Uint8>);
 typedef _RealpathDart = Pointer<Uint8> Function(Pointer<Uint8>, Pointer<Uint8>);
 typedef _ErrnoLocationNative = Pointer<Int32> Function();
 typedef _ErrnoLocationDart = Pointer<Int32> Function();
@@ -392,9 +387,9 @@ List<Dirent> _readdirSync(String path, {bool withFileTypes = false}) {
   try {
     if (!withFileTypes) {
       // Statically callers read `.name`; use readdirNamesSync for Strings.
-      return readdirNamesSync(path)
-          .map((n) => Dirent(n, FileSystemEntityType.file))
-          .toList();
+      return readdirNamesSync(
+        path,
+      ).map((n) => Dirent(n, FileSystemEntityType.file)).toList();
     }
     return Directory(path).listSync(followLinks: false).map((entity) {
       final type = FileSystemEntity.typeSync(entity.path, followLinks: false);
@@ -832,9 +827,9 @@ int readvSync(int fd, List<List<int>> buffers, [int? position]) {
 String mkdtempSync(String prefix) {
   final libc = _libc;
   if (libc == null) {
-    return Directory(path_utils.dirname(prefix))
-        .createTempSync(path_utils.basename(prefix))
-        .path;
+    return Directory(
+      path_utils.dirname(prefix),
+    ).createTempSync(path_utils.basename(prefix)).path;
   }
   final template = '${prefix}XXXXXX';
   return _withPath(template, (p) {
@@ -1109,5 +1104,23 @@ StatFs statfsSync(String path) {
   } finally {
     calloc.free(nativePath);
     calloc.free(buf);
+  }
+}
+
+/// Node's `fs.symlinkSync` with a byte target, preserving non-UTF-8 link text.
+void symlinkSyncBuffer(Uint8List target, String path) {
+  final libc = _libc;
+  if (libc == null) throw UnsupportedError('fs.symlinkSync needs a POSIX libc');
+  if (target.contains(0)) {
+    throw ArgumentError('The target must be without null bytes');
+  }
+  final nativeTarget = calloc<Uint8>(target.length + 1);
+  nativeTarget.asTypedList(target.length).setAll(0, target);
+  try {
+    final symlink = libc.lookupFunction<_TwoPathN, _TwoPathD>('symlink');
+    final status = _withPath(path, (p) => symlink(nativeTarget, p));
+    if (status != 0) throw _errnoError('symlink', path);
+  } finally {
+    calloc.free(nativeTarget);
   }
 }
