@@ -1,8 +1,9 @@
-// Ported from sandbox-runtime test/sandbox/glob-expand.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/glob-expand.test.ts @ 0bbebed.
 // ignore_for_file: slash_for_doc_comments, constant_identifier_names, non_constant_identifier_names
 
 // <reference lib="es2021.weakref" />
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
@@ -47,14 +48,12 @@ import 'package:sandbox_runtime/src/sandbox/sandbox_utils.dart'
         GlobWalk,
         GlobWalkListings,
         Steps,
-        denyGlobRegex,
         expandGlobPattern,
         expandTilde,
         finish,
         finishInTurns,
         globBaseDirIsRoot,
         globPatternBaseDir,
-        globToRegex,
         normalizePathForSandbox,
         walkGlobPattern,
         walkGlobPatternSteps;
@@ -66,6 +65,8 @@ import 'package:sandbox_runtime/src/sandbox/windows_sandbox_utils.dart'
         isUncPath,
         parseWindowsSandboxError,
         stripExtendedPathPrefix;
+import 'package:sandbox_runtime/src/sandbox/glob_pattern.dart'
+    show globToRegex, denyGlobRegex;
 import 'package:test/test.dart';
 
 import '../helpers/captured_warnings.dart';
@@ -1096,31 +1097,36 @@ void main() {
       }
     });
 
-    test('matches a pattern it cannot split against real paths only', () {
-      // A wildcard inside a bracket expression is rewritten like any other, so
-      // `?[*].pem` reads as one character, any run of `[`, `^` or `/`, then
-      // `].pem`. Nothing can follow that a name at a time, and no two names
-      // for a directory can be told apart, so each is listed under its own
-      // name alone.
+    test('lists through a link for a pattern with a wildcard in a set', () {
       final root = realPath(mkdtempSync(join(tmpdir(), 'glob-walk-split-')));
       try {
-        mkdirSync(join(root, 'cfg'));
-        writeFileSync(join(root, 'cfg', 'a].pem'), 'KEY');
-        symlinkSync('cfg', join(root, 'lnk'));
-        symlinkSync(join('cfg', 'a].pem'), join(root, 'b].pem'));
-
+        mkdirSync(join(root, 'proj'));
+        mkdirSync(join(root, 'outside'));
+        writeFileSync(join(root, 'outside', 'a*.pem'), 'KEY');
+        writeFileSync(join(root, 'outside', 'ab.pem'), 'KEY');
+        symlinkSync(join('..', 'outside'), join(root, 'proj', 'lnk'));
         final walk = walkGlobPattern(
-          join(root, '**/?[*].pem'),
+          join(root, 'proj', '**/?[*].pem'),
           followSymlinkedDirectories: true,
         );
-
-        expect(walk.matches..sort(), [
-          join(root, 'b].pem'),
-          join(root, 'cfg', 'a].pem'),
+        expect(walk.matches.map((m) => walk.realOf[m] ?? m), [
+          join(root, 'outside', 'a*.pem'),
         ]);
-        // A link that is itself a match is still resolved, so that a deny
-        // lands on what it leads to.
-        expect(walk.realOf[join(root, 'b].pem')], join(root, 'cfg', 'a].pem'));
+      } finally {
+        rmSync(root, {'recursive': true, 'force': true});
+      }
+    });
+    test('answers for a pattern of more components than it can follow', () {
+      final root = realPath(mkdtempSync(join(tmpdir(), 'glob-walk-deep-')));
+      try {
+        mkdirSync(join(root, 'a', 'a'), {'recursive': true});
+        writeFileSync(join(root, 'a', 'a', 'z'), '');
+        List<String> found(int components) => walkGlobPattern(
+          '$root/${'a/' * components}*',
+          followSymlinkedDirectories: true,
+        ).matches;
+        expect(found(2), [join(root, 'a', 'a', 'z')]);
+        expect(found(100000), []);
       } finally {
         rmSync(root, {'recursive': true, 'force': true});
       }
@@ -1243,7 +1249,8 @@ void main() {
 
         final readdirCall = fs.readdirSync;
         final statCall = fs.statSync;
-        final realpathCall = fs.realpathSync;
+        // The real path is asked of the `native` form.
+        final realpathCall = fs.realpathSyncNative;
         final spies = <void Function()>[
           () {
             fs.readdirSync = (String p, {bool withFileTypes = true}) {
@@ -1272,7 +1279,7 @@ void main() {
             return () => fs.statSync = statCall;
           }(),
           () {
-            fs.realpathSync = (String p) {
+            fs.realpathSyncNative = (String p) {
               final answer = answerFor('realpathSync', p);
               if (answer == null) return realpathCall(p);
               if (answer.startsWith('=')) {
@@ -1280,7 +1287,7 @@ void main() {
               }
               throw NodeError(answer, code: answer);
             };
-            return () => fs.realpathSync = realpathCall;
+            return () => fs.realpathSyncNative = realpathCall;
           }(),
         ];
         try {
@@ -1570,7 +1577,7 @@ void main() {
       final realCalls = <String, Object>{
         'lstatSync': fs.lstatSync,
         'statSync': fs.statSync,
-        'realpathSync': fs.realpathSync,
+        'realpathSync': fs.realpathSyncNative,
       };
       final spies = <void Function()>[
         () {
@@ -1584,6 +1591,7 @@ void main() {
           return () => fs.readdirSync = readdirSync;
         }(),
         ...QUESTIONS.map((question) {
+          // The real path is asked of the `native` form.
           final real = realCalls[question] as dynamic;
           final code = failing[question];
           dynamic spy(String p) {
@@ -1601,8 +1609,9 @@ void main() {
               fs.statSync = (String p) => spy(p) as fs.Stats;
               return () => fs.statSync = real as fs.Stats Function(String);
             default:
-              fs.realpathSync = (String p) => spy(p) as String;
-              return () => fs.realpathSync = real as String Function(String);
+              fs.realpathSyncNative = (String p) => spy(p) as String;
+              return () =>
+                  fs.realpathSyncNative = real as String Function(String);
           }
         }),
       ];
@@ -1862,6 +1871,9 @@ void main() {
         for (final file in ['a]x', 'deep/a]x', 'deep/er/b]x', 'deep/.env']) {
           writeFileSync(join(root, base, file), '');
         }
+        for (final file in ['*x', 'deep/ax']) {
+          writeFileSync(join(root, base, file), '');
+        }
       }
     });
 
@@ -1902,15 +1914,13 @@ void main() {
         }
 
         for (final (tail, expected) in <(String, List<String>)>[
-          ('/**/[a*]x', ['/a]x', '/deep/a]x']),
-          ('/[a*]x', ['/a]x']),
-          ('/deep/[a*]x', ['/deep/a]x']),
+          ('/**/[a*]x', ['/*x', '/deep/ax']),
+          ('/[a*]x', ['/*x']),
+          ('/deep/[a*]x', ['/deep/ax']),
         ]) {
           test(
-            'matches $tail, which cannot be split, by its spelling from the anchor on',
+            'matches $tail, with a wildcard in a set, from the anchor on',
             () {
-              // A wildcard inside a bracket expression: the walk matches such a
-              // pattern against whole paths, which beneath an anchor start at it.
               final anchor = join(root, name);
               expect(
                 beneath(ordinary, expandGlobPattern(ordinary + tail)),
@@ -2689,86 +2699,54 @@ void main() {
       expect(err?.message, contains('DRIVE_REMOTE'));
     });
 
+    test('parses seclogon_disabled JSON line (srt-win exec exit 18)', () {
+      String line(String state) =>
+          '{"code":"seclogon_disabled","state":"$state","message":"the sandbox cannot start: seclogon is $state"}';
+      final err = parseWindowsSandboxError(
+        ['srt-win: launching runner', line('disabled'), ''].join('\r\n'),
+      );
+      expect(err, isA<WindowsSandboxError>());
+      expect(err?.code, 'seclogon_disabled');
+      expect(err?.subcommand, 'exec');
+      expect((err as dynamic).state, 'disabled');
+      expect(err?.message, contains('seclogon is disabled'));
+      expect(
+        (parseWindowsSandboxError(line('missing')) as dynamic).state,
+        'missing',
+      );
+      // No message from srt-win → the actionable default.
+      expect(
+        parseWindowsSandboxError('{"code":"seclogon_disabled"}')?.message,
+        matches(RegExp('administrator must set its startup type to Manual')),
+      );
+    });
+
     test('returns undefined when no typed-error line present', () {
       expect(parseWindowsSandboxError('srt-win: error: something\n'), null);
       expect(parseWindowsSandboxError(''), null);
     });
+    test(
+      'parses the wfp_loopback_mismatch line exec prints when it launches nothing',
+      () {
+        final message =
+            "the network fence on this machine does not match this session's "
+            'loopback mode (installed: closed; configured: open) — re-run '
+            '`srt-win install --allow-loopback --force` (one UAC prompt)';
+        final err = parseWindowsSandboxError(
+          jsonEncode({'code': 'wfp_loopback_mismatch', 'message': message}) +
+              '\n',
+        );
+        expect(err, isA<WindowsSandboxError>());
+        expect(err?.code, 'wfp_loopback_mismatch');
+        expect(err?.message, message);
+        expect(err?.subcommand, 'exec');
+      },
+    );
   });
 
   // ============================================================================
-  // Tests for globToRegex() after move to sandbox-utils.ts
+  // Tests for globToRegex(); see glob-pattern.test.ts for the parser
   // ============================================================================
-
-  /** One character against the body of a `[…]` set, ranges included. */
-  bool setContains(String set, String char) {
-    for (var i = 0; i < set.length; i++) {
-      if (i + 1 < set.length && set[i + 1] == '-' && i + 2 < set.length) {
-        if (char.compareTo(set[i]) >= 0 && char.compareTo(set[i + 2]) <= 0) {
-          return true;
-        }
-        i += 2;
-      } else if (set[i] == char) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /**
- * The documented glob syntax matched directly, by backtracking rather than
- * by compiling a regex: `*` and `?` stop at a separator, `**` crosses them,
- * `**\/` is zero or more directories, `[…]` is one character from the set.
- * Shares nothing with {@link globToRegex}, so the property below is two
- * implementations checking each other.
- */
-  bool referenceGlobMatch(String pattern, String pathText) {
-    if (pattern == '') return pathText == '';
-    if (pattern.startsWith('**/')) {
-      final rest = pattern.substring(3);
-      if (referenceGlobMatch(rest, pathText)) return true;
-      for (var i = 0; i < pathText.length; i++) {
-        if (pathText[i] != '/') continue;
-        if (referenceGlobMatch(rest, pathText.substring(i + 1))) return true;
-      }
-      return false;
-    }
-    if (pattern.startsWith('**')) {
-      final rest = pattern.substring(2);
-      for (var i = 0; i <= pathText.length; i++) {
-        if (referenceGlobMatch(rest, pathText.substring(i))) return true;
-      }
-      return false;
-    }
-    final head = pattern[0];
-    if (head == '*') {
-      for (var i = 0; i <= pathText.length; i++) {
-        if (i > 0 && pathText[i - 1] == '/') break;
-        if (referenceGlobMatch(pattern.substring(1), pathText.substring(i))) {
-          return true;
-        }
-      }
-      return false;
-    }
-    if (head == '?') {
-      return pathText.isNotEmpty &&
-          pathText[0] != '/' &&
-          referenceGlobMatch(pattern.substring(1), pathText.substring(1));
-    }
-    if (head == '[') {
-      final close = pattern.indexOf(']');
-      if (close > 1) {
-        return pathText.isNotEmpty &&
-            setContains(pattern.substring(1, close), pathText[0]) &&
-            referenceGlobMatch(
-              pattern.substring(close + 1),
-              pathText.substring(1),
-            );
-      }
-    }
-    return pathText.isNotEmpty &&
-        pathText[0] == head &&
-        referenceGlobMatch(pattern.substring(1), pathText.substring(1));
-  }
 
   group('globToRegex (shared)', () {
     test('should convert simple wildcard', () {
@@ -2895,6 +2873,17 @@ void main() {
       }
     });
 
+    for (final unit in ['[', '[a', '[a]', '[z-a]']) {
+      test(
+        'takes time that grows with the length: 100,000 characters of $unit',
+        () {
+          final began = Stopwatch()..start();
+          RegExp(globToRegex('/x/${unit * (100000 ~/ unit.length)}'));
+          expect(began.elapsedMilliseconds, lessThan(2000));
+        },
+      );
+    }
+
     test(
       'matches the path a generated pattern spells, and not one a set would',
       () {
@@ -2933,64 +2922,14 @@ void main() {
       },
     );
 
-    test('keeps a component spelled like a globstar placeholder literal', () {
-      // Dart: it.failing, which passes when its body fails.
-      expect(() {
-        // globToRegex parks `**` under __GLOBSTAR__ / __GLOBSTAR_SLASH__ while
-        // it rewrites `*` and `?`, then restores them by name, so a directory
-        // actually called __GLOBSTAR__ comes back as a wildcard.
-        final parked = globToRegex('/tmp/__GLOBSTAR__/x');
-        expect(RegExp(parked).hasMatch('/tmp/__GLOBSTAR__/x'), true);
-        expect(RegExp(parked).hasMatch('/tmp/anything/x'), false);
-
-        final parkedSlash = globToRegex('/tmp/__GLOBSTAR_SLASH__x');
-        expect(RegExp(parkedSlash).hasMatch('/tmp/__GLOBSTAR_SLASH__x'), true);
-      }, throwsA(isA<TestFailure>()));
-    });
-
-    test(
-      'agrees with a reference matcher over generated patterns and paths',
-      () {
-        // Segments are drawn from the documented syntax only; the corners the
-        // cases above pin (an unclosed bracket, a stray `]`, a negated set, a
-        // literal placeholder) are left out so a disagreement here means the
-        // documented syntax itself diverged.
-        final segment = [
-          'a',
-          'bc',
-          'a*',
-          '*b',
-          '*',
-          '?',
-          'a?c',
-          '[ab]',
-          '[0-9]',
-          '[a-c]c',
-          '**',
-        ];
-        final pathPart = ['a', 'b', 'c', 'bc', 'a1', 'abc', '0', 'ab'];
-        final random = Random(20261010);
-        for (var run = 0; run < 200; run++) {
-          final p =
-              '/' +
-              List.generate(
-                1 + random.nextInt(4),
-                (_) => segment[random.nextInt(segment.length)],
-              ).join('/');
-          final f =
-              '/' +
-              List.generate(
-                1 + random.nextInt(4),
-                (_) => pathPart[random.nextInt(pathPart.length)],
-              ).join('/');
-          expect(
-            RegExp(globToRegex(p)).hasMatch(f),
-            referenceGlobMatch(p, f),
-            reason: 'run $run, pattern $p, path $f',
-          );
-        }
-      },
-    );
+    for (final name in ['__GLOBSTAR__', '__GLOBSTAR_SLASH__']) {
+      test('takes a component named $name for the name', () {
+        final regex = RegExp(globToRegex('/tmp/$name/x'));
+        expect(regex.hasMatch('/tmp/$name/x'), true);
+        expect(regex.hasMatch('/tmp/anything/x'), false);
+        expect(regex.hasMatch('/tmp/x'), false);
+      });
+    }
   });
 
   // ============================================================================
