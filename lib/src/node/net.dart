@@ -1,4 +1,5 @@
 // `node:net`: isIP, BlockList, Socket, Server, connect and createServer.
+// ignore_for_file: constant_identifier_names, use_super_parameters
 //
 // Socket and Server keep Node's call shape. `connect` returns the socket at
 // once, in the connecting state; it emits 'connect' (or 'error' then
@@ -327,7 +328,7 @@ class NodeSocket extends stream.Duplex {
   void _attach(Socket socket) {
     _socket = socket;
     _connecting = false;
-    if (_noDelay != null) {
+    if (_noDelay != null && socket.address.type != InternetAddressType.unix) {
       socket.setOption(SocketOption.tcpNoDelay, _noDelay!);
     }
     _subscription = socket.listen(
@@ -849,6 +850,15 @@ class NodeSocket extends stream.Duplex {
     return this;
   }
 
+  /// Node's HTTP parser runs a socket flowing. The raw Dart parser pulls;
+  /// expose only its actual body-backpressure pause, not that implementation
+  /// detail, to callers of socket.isPaused().
+  bool httpParserReading = false;
+  bool httpParserPaused = false;
+
+  @override
+  bool isPaused() => httpParserReading ? httpParserPaused : super.isPaused();
+
   @override
   NodeSocket pause() {
     super.pause();
@@ -998,7 +1008,9 @@ class NodeSocket extends stream.Duplex {
 
   NodeSocket setNoDelay([bool noDelay = true]) {
     _noDelay = noDelay;
-    if (!_handedOver) _socket?.setOption(SocketOption.tcpNoDelay, noDelay);
+    if (!_handedOver && _socket?.address.type != InternetAddressType.unix) {
+      _socket?.setOption(SocketOption.tcpNoDelay, noDelay);
+    }
     return this;
   }
 

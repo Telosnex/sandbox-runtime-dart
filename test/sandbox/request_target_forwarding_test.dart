@@ -1,4 +1,5 @@
 // Ported from sandbox-runtime test/sandbox/request-target-forwarding.test.ts @ 0bbebed.
+// ignore_for_file: curly_braces_in_flow_control_structures
 library;
 
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, no_leading_underscores_for_local_identifiers, slash_for_doc_comments

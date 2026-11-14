@@ -108,6 +108,10 @@ class IncomingMessage extends stream.Readable {
   Object? _bodyGateBudget;
   void Function()? _budgetWake;
 
+  /// Whether buffered-body gating is performed by this raw HTTP parser.
+  /// A test stand-in for IncomingMessage can use the public stream contract.
+  bool get parserDrivenBody => true;
+
   bool _complete = false;
   bool get complete => _complete;
 
@@ -139,7 +143,9 @@ class IncomingMessage extends stream.Readable {
     if (event == 'data' && a is List<int>) {
       _bodyBuffered = (_bodyBuffered - a.length).clamp(0, 1 << 62);
       _adjustBudget(-a.length);
+      if (readableLength < readableHighWaterMark) _full = false;
       _updateBodyGate();
+      _wake();
     }
     return result;
   }
@@ -167,7 +173,10 @@ class IncomingMessage extends stream.Readable {
     if (destroyed || readableEnded) return;
     if (!_full && !_isBodyGateBlocked()) return;
     _fullWaiter ??= Completer<void>();
+    socket.httpParserPaused = true;
     await _fullWaiter!.future;
+    socket.httpParserPaused = false;
+    socket.emit('resume');
   }
 
   bool _isBodyGateBlocked() {
@@ -259,7 +268,23 @@ class IncomingMessage extends stream.Readable {
 
 /// Node ServerResponse subset with byte-preserving Latin-1 head serialization.
 class ServerResponse extends events.EventEmitter {
-  ServerResponse._(this.socket, this._request);
+  ServerResponse._(this.socket, this._request) {
+    socket.once('close', _onSocketClose);
+  }
+
+  bool _closed = false;
+  void _onSocketClose() {
+    destroyed = true;
+    _emitClose();
+    if (!_done.isCompleted) _done.complete();
+  }
+
+  void _emitClose() {
+    if (_closed) return;
+    _closed = true;
+    socket.off('close', _onSocketClose);
+    _emit('close');
+  }
 
   final net.NodeSocket socket;
   final IncomingMessage _request;
@@ -447,7 +472,7 @@ class ServerResponse extends events.EventEmitter {
       } else {
         writableFinished = true;
         _emit('finish');
-        _emit('close');
+        _emitClose();
       }
       if (!_done.isCompleted) _done.complete();
       if (callback != null)
@@ -470,6 +495,7 @@ class ServerResponse extends events.EventEmitter {
     if (destroyed) return this;
     destroyed = true;
     if (error != null) _emit('error', error);
+    _emitClose();
     socket.destroy(error);
     if (!_done.isCompleted) _done.complete();
     return this;
@@ -619,6 +645,8 @@ class NodeHttpServer extends net.NodeServer {
       return;
     }
     final socket = wrapConnection(accepted);
+    socket.setNoDelay();
+    socket.httpParserReading = true;
     _connections.add(socket);
     _idleConnections.add(socket);
     socket.allowHalfOpen = true;
@@ -732,12 +760,14 @@ class NodeHttpServer extends net.NodeServer {
             request.headers.containsKey('upgrade') &&
             (connectionTokens?.contains('upgrade') ?? false)) {
           final buffered = socket.read() ?? Uint8List(0);
+          socket.httpParserReading = false;
           emit('upgrade', request, socket, buffered);
           return;
         }
         if (request.method == 'CONNECT') {
           _idleConnections.remove(socket);
           final buffered = socket.read() ?? Uint8List(0);
+          socket.httpParserReading = false;
           emit('connect', request, socket, buffered);
           if (listenerCount('connect') == 0) {
             socket.write(
@@ -1244,6 +1274,7 @@ class ClientRequest extends events.EventEmitter {
       _lease = lease;
       reusedSocket = lease.reused;
       socket = lease.socket;
+      socket!.setNoDelay();
       final w = _socketWaiters.toList();
       _socketWaiters.clear();
       for (final f in w) {
@@ -1423,7 +1454,13 @@ class ClientRequest extends events.EventEmitter {
     if (destroyed) return this;
     if (error != null) error = _asNodeError(error);
     destroyed = true;
-    socket?.destroy(error);
+    // Node detaches a whole, consumed response from its ClientRequest. A
+    // later destroy of that request must not close the agent's idle socket.
+    final answerDone =
+        _requestFinished &&
+        response?.complete == true &&
+        response?.readableEnded == true;
+    if (!answerDone || error != null) socket?.destroy(error);
     _lease?.release();
     if (error != null) _emit('error', error);
     return this;
@@ -1899,7 +1936,11 @@ class _ByteReader {
     if (first == null) return null;
     final bytes = BytesBuilder(copy: false)..addByte(first);
     while (bytes.length < max) {
-      final next = socket.read(max - bytes.length) as Uint8List?;
+      final available = socket.readableLength;
+      if (available == 0) break;
+      final wanted = max - bytes.length;
+      final next =
+          socket.read(available < wanted ? available : wanted) as Uint8List?;
       if (next == null || next.isEmpty) break;
       bytes.add(next);
     }

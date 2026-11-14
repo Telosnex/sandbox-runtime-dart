@@ -1,4 +1,5 @@
 // Ported from sandbox-runtime test/sandbox/tls-terminate-keepalive.test.ts @ 0bbebed.
+// ignore_for_file: slash_for_doc_comments, prefer_function_declarations_over_variables
 library;
 
 // ignore_for_file: non_constant_identifier_names

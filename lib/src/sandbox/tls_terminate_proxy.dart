@@ -1,4 +1,5 @@
 // Ported from sandbox-runtime src/sandbox/tls-terminate-proxy.ts @ 0bbebed.
+// ignore_for_file: no_leading_underscores_for_local_identifiers, curly_braces_in_flow_control_structures, prefer_null_aware_operators
 // ignore_for_file: slash_for_doc_comments, dangling_library_doc_comments
 // ignore_for_file: constant_identifier_names, doc_directive_unknown
 // ignore_for_file: non_constant_identifier_names

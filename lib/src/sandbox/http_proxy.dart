@@ -8,7 +8,8 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import '../node/abort.dart' show AbortController;
-import '../node/errno.dart' show errorMessage, errorCode, NodeError;
+import '../node/errno.dart'
+    show errorMessage, errorCode, NodeError, NodeException;
 import '../node/buffer.dart' show Buffer;
 import '../node/http.dart' as http;
 import '../node/http.dart' show Agent, createServer;
@@ -92,7 +93,7 @@ String _describeError(Object? error) {
     final details = error is NodeError ? error : null;
     return inspect(
       {
-        'name': details != null ? 'Error' : error.runtimeType.toString(),
+        'name': error is NodeException ? 'Error' : error.runtimeType.toString(),
         'code': details?.code,
         'errno': details?.errno,
         'syscall': details?.syscall,

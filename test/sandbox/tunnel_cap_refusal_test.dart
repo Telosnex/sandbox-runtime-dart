@@ -126,12 +126,13 @@ proxyWithSlots(int maxTerminatedTunnels) async {
 }
 
 void main() {
+  final test = testWithTls;
   tearDown(() async {
     while (cleanup.isNotEmpty) {
       await cleanup.removeLast()();
     }
   });
-  testWithTls(
+  test(
     'the first refusal of each command is logged and passed on, naming the limit and its option',
     () async {
       final p = await proxyWithSlots(2);
@@ -161,21 +162,18 @@ void main() {
       );
     },
   );
-  testWithTls(
-    'a burst ends once half the slots are free again, not before',
-    () async {
-      final p = await proxyWithSlots(4);
-      await p.fill();
-      expect(await p.refused('A'), ['A']);
-      await p.free(1);
-      await p.fill();
-      expect(await p.refused('A'), ['A']);
-      await p.free(2);
-      await p.fill();
-      expect(await p.refused('A'), ['A', 'A']);
-    },
-  );
-  testWithTls(
+  test('a burst ends once half the slots are free again, not before', () async {
+    final p = await proxyWithSlots(4);
+    await p.fill();
+    expect(await p.refused('A'), ['A']);
+    await p.free(1);
+    await p.fill();
+    expect(await p.refused('A'), ['A']);
+    await p.free(2);
+    await p.fill();
+    expect(await p.refused('A'), ['A', 'A']);
+  });
+  test(
     'the names kept are bounded: past a hundred they are forgotten',
     () async {
       final p = await proxyWithSlots(1);
