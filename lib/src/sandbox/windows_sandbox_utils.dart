@@ -73,8 +73,6 @@ export 'sandbox_utils.dart'
  */
 
 // ────────────────────────────────────────────────────────────────────
-
-// ────────────────────────────────────────────────────────────────────
 // Errors
 // ────────────────────────────────────────────────────────────────────
 
@@ -232,7 +230,7 @@ class WindowsWfpStatusResult {
     required this.state,
     required this.filters,
     this.portRange,
-    this.allowLoopback = false,
+    required this.allowLoopback,
     this.userSid,
     this.hint,
   });
@@ -395,7 +393,7 @@ class WindowsSandboxUserStatus {
     this.seclogon,
     this.persistentGrants,
     this.profileGrant,
-    this.capabilities = const [],
+    required this.capabilities,
     this.sessionUserSid,
   });
 }
@@ -3385,6 +3383,10 @@ WindowsProfileGrantResult _profileGrantResult(List<String> args, _RunResult r) {
               (i) => WindowsProfileGrantItem(
                 path: (i as Map)['path'] as String,
                 reason: i['reason'] as String,
+                callerReads: i['callerReads'],
+                cause: i['cause'] as String?,
+                protectedExclusion: i['protectedExclusion'] as bool?,
+                entry: i['entry'] as String?,
               ),
             )
             .toList() ??
