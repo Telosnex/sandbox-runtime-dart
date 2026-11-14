@@ -342,10 +342,22 @@ Stats _lstatSync(String path) {
 /// tests do with `spyOn(fs, 'lstatSync')`.
 Stats Function(String path) lstatSync = _lstatSync;
 
-void _symlinkSync(String target, String path) => Link(path).createSync(target);
+void _symlinkSync(Object target, String path) {
+  if (target is String) {
+    Link(path).createSync(target);
+    return;
+  }
+  if (target is! List<int>) throw ArgumentError.value(target, 'target');
+  final libc = _requireLibc('symlinkSync byte target');
+  final symlink = libc.lookupFunction<_TwoPathN, _TwoPathD>('symlink');
+  if (_withBytePath(target, (t) => _withPath(path, (p) => symlink(t, p))) !=
+      0) {
+    throw _errnoError('symlink', path);
+  }
+}
 
 /// Node's `fs.symlinkSync(target, path)`. A variable so a test can replace it.
-void Function(String target, String path) symlinkSync = _symlinkSync;
+void Function(Object target, String path) symlinkSync = _symlinkSync;
 
 /// Node's `fs.linkSync(existingPath, newPath)`: a hard link, via `ln` since
 /// dart:io has no link(2).
@@ -470,7 +482,15 @@ String statIdentitySync(String path) {
 }
 
 /// Reproduce `fs.readlinkSync(path)`, preserving the exact target text.
-String readlinkSync(String path) {
+String _readlinkSync(String path) {
+  return utf8.decode(readlinkSyncBuffer(path), allowMalformed: true);
+}
+
+/// Node's fs.readlinkSync; replaceable by tests.
+String Function(String path) readlinkSync = _readlinkSync;
+
+/// The `encoding: 'buffer'` overload of Node's readlinkSync.
+Uint8List readlinkSyncBuffer(String path) {
   _observe('readlinkSync', path);
   final libc = _libc;
   if (libc != null) {
@@ -485,14 +505,14 @@ String readlinkSync(String path) {
         final errno = _readErrno?.call() ?? 0;
         throw nodeError(codeForErrno(errno), 'readlink', path);
       }
-      return utf8.decode(output.asTypedList(count), allowMalformed: true);
+      return Uint8List.fromList(output.asTypedList(count));
     } finally {
       calloc.free(nativePath);
       calloc.free(output);
     }
   }
   try {
-    return Link(path).targetSync();
+    return Uint8List.fromList(utf8.encode(Link(path).targetSync()));
   } on FileSystemException catch (error) {
     throw nodeError(_codeFromIoError(error), 'readlink', path);
   }
@@ -566,6 +586,43 @@ String _realpathSync(String path) {
 /// Node's `fs.realpathSync`. A variable so a test can replace it, as upstream's
 /// tests do with `spyOn(fs, 'realpathSync')`.
 String Function(String path) realpathSync = _realpathSync;
+
+/// Node's `fs.realpathSync.native`, without realpathSync's lexical folding
+/// or its fallback for paths the native implementation cannot resolve.
+String realpathSyncNative(String path) =>
+    utf8.decode(realpathSyncNativeBuffer(path), allowMalformed: true);
+
+/// The `encoding: 'buffer'` overload of Node's realpathSync.native.
+Uint8List realpathSyncNativeBuffer(String path) {
+  _observe('realpathSync.native', path);
+  final libc = _libc;
+  if (libc != null) {
+    final realpath = libc.lookupFunction<_RealpathNative, _RealpathDart>(
+      'realpath',
+    );
+    final free = libc.lookupFunction<_FreeNative, _FreeDart>('free');
+    final nativePath = path.toNativeUtf8(allocator: calloc);
+    try {
+      final result = realpath(nativePath.cast(), nullptr);
+      if (result.address == 0) {
+        final errno = _readErrno?.call() ?? 0;
+        throw nodeError(codeForErrno(errno), 'realpath', path);
+      }
+      try {
+        var length = 0;
+        while (result[length] != 0) {
+          length++;
+        }
+        return Uint8List.fromList(result.asTypedList(length));
+      } finally {
+        free(result.cast());
+      }
+    } finally {
+      calloc.free(nativePath);
+    }
+  }
+  return Uint8List.fromList(utf8.encode(_realpathSync(path)));
+}
 
 String _codeFromIoError(FileSystemException error) {
   final errno = error.osError?.errorCode;
@@ -690,6 +747,17 @@ T _withPath<T>(String path, T Function(Pointer<Uint8>) body) {
   final native = path.toNativeUtf8(allocator: calloc);
   try {
     return body(native.cast());
+  } finally {
+    calloc.free(native);
+  }
+}
+
+T _withBytePath<T>(List<int> path, T Function(Pointer<Uint8>) body) {
+  if (path.contains(0)) throw ArgumentError('Path must not contain NUL');
+  final native = calloc<Uint8>(path.length + 1);
+  native.asTypedList(path.length).setAll(0, path);
+  try {
+    return body(native);
   } finally {
     calloc.free(native);
   }
@@ -845,7 +913,52 @@ String mkdtempSync(String prefix) {
 
 /// Reproduce `fs.mkdirSync(path, {recursive, mode})`. With `recursive`,
 /// returns the first directory created (null if it already existed).
-String? mkdirSync(String path, [Map<String, Object?> options = const {}]) {
+String? _mkdirSync(Object path, [Map<String, Object?> options = const {}]) {
+  if (path is List<int>) {
+    final libc = _requireLibc('mkdirSync byte path');
+    final mkdir = libc.lookupFunction<_PathModeN, _PathModeD>('mkdir');
+    final mode = (options['mode'] as int?) ?? 0x1ff;
+    final recursive = options['recursive'] == true;
+    String? first;
+    void make(List<int> bytes) {
+      if (bytes.isEmpty) return;
+      if (_withBytePath(bytes, (p) => mkdir(p, mode)) == 0) {
+        first ??= utf8.decode(bytes, allowMalformed: true);
+        return;
+      }
+      final code = codeForErrno(_errno());
+      if (recursive && code == 'EEXIST') {
+        final stat = calloc<Uint8>(512);
+        try {
+          final result = _withBytePath(
+            bytes,
+            (p) => libc.lookupFunction<_LstatNative, _LstatDart>(
+              Platform.isMacOS && Abi.current() == Abi.macosX64
+                  ? 'stat\$INODE64'
+                  : 'stat',
+            )(p, stat.cast()),
+          );
+          if (result == 0 &&
+              _parseStat(
+                ByteData.sublistView(stat.asTypedList(512)),
+              ).isDirectory())
+            return;
+        } finally {
+          calloc.free(stat);
+        }
+      }
+      throw nodeError(code, 'mkdir', utf8.decode(bytes, allowMalformed: true));
+    }
+
+    if (recursive) {
+      for (var i = 1; i < path.length; i++) {
+        if (path[i] == 47) make(path.sublist(0, i));
+      }
+    }
+    make(path);
+    return recursive ? first : null;
+  }
+  if (path is! String) throw ArgumentError.value(path, 'path');
   final mode = (options['mode'] as int?) ?? 0x1ff;
   final recursive = options['recursive'] == true;
   final libc = _libc;
@@ -892,6 +1005,10 @@ String? mkdirSync(String path, [Map<String, Object?> options = const {}]) {
   }
   return missing.isEmpty ? null : missing.last;
 }
+
+/// Node's fs.mkdirSync; replaceable by tests.
+String? Function(Object path, [Map<String, Object?> options]) mkdirSync =
+    _mkdirSync;
 
 void renameSync(String from, String to) {
   final libc = _libc;
