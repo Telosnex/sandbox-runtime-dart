@@ -190,7 +190,7 @@ List<String> _getLocalSeccompPaths(String filename) {
     );
   }
   // A source checkout launched without package_config is still rooted at cwd.
-  final currentDirectory = Directory.current.path;
+  final currentDirectory = packageRoot == null ? process.cwd() : '';
   if (packageRoot == null &&
       fs.existsSync(
         path.join(
