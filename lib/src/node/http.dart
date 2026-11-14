@@ -1,7 +1,7 @@
 // Node-shaped HTTP/1.1 subset used by sandbox-runtime proxy modules.
 // This is a byte parser/serializer over NodeSocket; dart:io HttpServer is not
 // used because it discards raw-header spelling and CONNECT head bytes.
-// ignore_for_file: curly_braces_in_flow_control_structures
+// ignore_for_file: curly_braces_in_flow_control_structures, constant_identifier_names
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -15,9 +15,52 @@ import 'tls.dart' as node_tls;
 
 const int defaultMaxHeaderSize = 16 * 1024;
 
+/// The method names accepted by Node's HTTP parser (node:http.METHODS).
+const METHODS = [
+  'ACL',
+  'BIND',
+  'CHECKOUT',
+  'CONNECT',
+  'COPY',
+  'DELETE',
+  'GET',
+  'HEAD',
+  'LINK',
+  'LOCK',
+  'M-SEARCH',
+  'MERGE',
+  'MKACTIVITY',
+  'MKCALENDAR',
+  'MKCOL',
+  'MOVE',
+  'NOTIFY',
+  'OPTIONS',
+  'PATCH',
+  'POST',
+  'PRI',
+  'PROPFIND',
+  'PROPPATCH',
+  'PURGE',
+  'PUT',
+  'QUERY',
+  'REBIND',
+  'REPORT',
+  'SEARCH',
+  'SOURCE',
+  'SUBSCRIBE',
+  'TRACE',
+  'UNBIND',
+  'UNLINK',
+  'UNLOCK',
+  'UNSUBSCRIBE',
+];
+
 /// Node parser error subset. `code` and `message` are stable for clientError.
 class NodeHttpError extends NodeError {
-  NodeHttpError(String code, String message) : super(message, code: code);
+  NodeHttpError(String code, super.message, {this.rawPacket, this.bytesParsed})
+    : super(code: code);
+  final Uint8List? rawPacket;
+  final int? bytesParsed;
   @override
   String toString() => 'Error: $message';
 }
@@ -461,12 +504,9 @@ class ServerResponse extends events.EventEmitter {
     _chunked = !_noBody && !hasLength && !hasTransfer;
     if (!_noBody &&
         hasTransfer &&
-        getHeader('transfer-encoding')
-                ?.toString()
-                .toLowerCase()
-                .split(',')
-                .last
-                .trim() ==
+        getHeader(
+              'transfer-encoding',
+            )?.toString().toLowerCase().split(',').last.trim() ==
             'chunked') {
       _chunked = true;
     }
@@ -498,10 +538,14 @@ class _HeaderValue {
 /// for accepted TLS sockets that are not owned by a listening HTTP server.
 /// Node `http.Server`, which is a `net.Server` that serves each connection.
 class NodeHttpServer extends net.NodeServer {
-  NodeHttpServer({this.maxHeaderSize = defaultMaxHeaderSize}) {
+  NodeHttpServer({
+    this.maxHeaderSize = defaultMaxHeaderSize,
+    this.keepAliveTimeout = 5000,
+  }) {
     on('connection', serveConnection);
   }
   final int maxHeaderSize;
+  int keepAliveTimeout;
   final Set<net.NodeSocket> _connections = {};
   final Set<net.NodeSocket> _idleConnections = {};
   bool _closed = false;
@@ -815,7 +859,12 @@ NodeHttpServer createServer([Object? options, Function? requestListener]) {
   if (options is Map && options['maxHeaderSize'] is int) {
     maxHeaderSize = options['maxHeaderSize'] as int;
   }
-  final server = NodeHttpServer(maxHeaderSize: maxHeaderSize);
+  final server = NodeHttpServer(
+    maxHeaderSize: maxHeaderSize,
+    keepAliveTimeout: options is Map
+        ? options['keepAliveTimeout'] as int? ?? 5000
+        : 5000,
+  );
   if (listener != null) server.on('request', listener);
   return server;
 }
