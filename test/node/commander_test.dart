@@ -105,6 +105,8 @@ void main() {
         'profileExclude': ['first', 'second', 'first'],
         'profileInclude': <String>[],
       });
+      expect(p.helpInformation(), contains('excluded paths (default: [])'));
+      expect(p.helpInformation(), contains('included paths (default: [])'));
     },
   );
 

@@ -1,9 +1,12 @@
 // The parts of npm `commander` 12.1.0 that src/cli.ts and src/proxy-cli.ts
 // use, with commander's parsing, help text, error messages and exit codes.
 // There is no upstream counterpart; commander is the spec.
+import 'dart:convert';
 import 'dart:io' as io;
 
 import 'process.dart' as process;
+
+const _omitted = Object();
 
 /// Commander's `CommanderError`.
 class CommanderError extends Error {
@@ -53,6 +56,7 @@ class Option {
   late final String? long;
   Object? Function(String value)? parseArg;
   Object? Function(String value, Object? previous)? parseArgWithPrevious;
+  Object? defaultValue = _omitted;
 
   String name() {
     if (long != null) return long!.replaceFirst(RegExp(r'^--'), '');
@@ -162,15 +166,16 @@ class Command {
     String flags, [
     String? description,
     Object? Function(String value)? parseArg,
-    Object? defaultValue,
+    Object? defaultValue = _omitted,
     Object? Function(String value, Object? previous)? parseArgWithPrevious,
   ]) {
     final option = Option(flags, description)
       ..parseArg = parseArg
-      ..parseArgWithPrevious = parseArgWithPrevious;
+      ..parseArgWithPrevious = parseArgWithPrevious
+      ..defaultValue = defaultValue;
     _registerOption(option);
     final name = option.attributeName();
-    if (defaultValue != null) {
+    if (!identical(defaultValue, _omitted)) {
       _optionValues[name] = defaultValue;
     }
     _optionListeners[option.name()] = (val) {
@@ -608,7 +613,17 @@ class Command {
 
   String helpInformation([int helpWidth = 80]) {
     final optionItems = [
-      for (final o in _visibleOptions()) (o.flags, o.description),
+      for (final o in _visibleOptions())
+        (
+          o.flags,
+          o.description +
+              (!identical(o.defaultValue, _omitted) &&
+                      (o.required ||
+                          o.optional ||
+                          (o.isBoolean() && o.defaultValue is bool))
+                  ? ' (default: ${jsonEncode(o.defaultValue)})'
+                  : ''),
+        ),
     ];
     final argumentItems = [
       for (final a in _visibleArguments()) (a.name(), a.description),
