@@ -1,11 +1,15 @@
 // Node process values reproduced for the ported files. Overrides let tests
 // model upstream tests which temporarily replace process.platform/env/cwd.
 import 'dart:async';
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io' as io;
 import 'dart:io' show Directory, Platform, ProcessInfo, ProcessSignal;
 
+import 'package:ffi/ffi.dart';
+
 import 'child_process.dart' as child_process;
+import 'errno.dart';
 import 'events.dart' show applyListener;
 import 'stream.dart' as stream;
 
@@ -230,8 +234,48 @@ String get arch => Abi.current().toString().split('_').last;
 Map<String, String> get env => _envOverride ?? _env;
 final Map<String, String> _env = Map.of(Platform.environment);
 
+typedef _GetcwdNative = Pointer<Uint8> Function(Pointer<Uint8>, UintPtr);
+typedef _GetcwdDart = Pointer<Uint8> Function(Pointer<Uint8>, int);
+typedef _ErrnoLocationNative = Pointer<Int32> Function();
+typedef _ErrnoLocationDart = Pointer<Int32> Function();
+
+String _cwd() {
+  if (Platform.isWindows) return Directory.current.path;
+  final libc = DynamicLibrary.process();
+  final getcwd = libc.lookupFunction<_GetcwdNative, _GetcwdDart>('getcwd');
+  final errnoLocation = libc
+      .lookupFunction<_ErrnoLocationNative, _ErrnoLocationDart>(
+        Platform.isMacOS ? '__error' : '__errno_location',
+      );
+  for (var size = 4096; ; size *= 2) {
+    final buffer = calloc<Uint8>(size);
+    try {
+      if (getcwd(buffer, size) == nullptr) {
+        final errno = errnoLocation().value;
+        if (errno == 34) continue; // ERANGE: the name needs a larger buffer.
+        final error = nodeError(codeForErrno(errno), 'uv_cwd', '');
+        // Unlike a file call, uv_cwd has no path argument in Node's error.
+        throw NodeError(
+          error.message.replaceFirst(RegExp(r" ''$"), ''),
+          code: error.code,
+          syscall: 'uv_cwd',
+          errno: -errno,
+        );
+      }
+      var length = 0;
+      while (buffer[length] != 0) {
+        length++;
+      }
+      // Node replaces malformed UTF-8 in cwd, unlike dart:io's fatal decoder.
+      return utf8.decode(buffer.asTypedList(length), allowMalformed: true);
+    } finally {
+      calloc.free(buffer);
+    }
+  }
+}
+
 /// Node's `process.cwd()` value, unless a test has supplied an override.
-String cwd() => _cwdOverride ?? Directory.current.path;
+String cwd() => _cwdOverride ?? _cwd();
 
 /// Override `process.platform` in tests; pass null to use the host value.
 void setPlatformForTesting(String? value) => _platformOverride = value;
