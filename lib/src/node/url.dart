@@ -1,5 +1,6 @@
 // Node `url` compatibility: WHATWG URL host parsing (for canonicalizeHost)
 // and URLSearchParams (for aws-sigv4). No upstream counterpart.
+import 'dart:isolate';
 import 'dart:convert';
 import 'dart:io' show Platform;
 import 'dart:typed_data';
@@ -1409,4 +1410,20 @@ class URLSearchParams {
     if (rune >= 0x61 && rune <= 0x66) return rune - 0x61 + 10;
     return null;
   }
+}
+
+/// The file of [packageUri] (`package:sandbox_runtime/...`), the Dart stand-in
+/// for `fileURLToPath(import.meta.url)`. Null when the program has no package
+/// files: compiled into an application, where dart:isolate cannot resolve
+/// package URIs and throws.
+String? resolveOwnPackageFile(String packageUri) {
+  final Uri? resolved;
+  try {
+    resolved = Isolate.resolvePackageUriSync(Uri.parse(packageUri));
+  } on UnsupportedError {
+    return null;
+  }
+  return resolved != null && resolved.scheme == 'file'
+      ? resolved.toFilePath()
+      : null;
 }

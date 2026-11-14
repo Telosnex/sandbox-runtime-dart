@@ -4,7 +4,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io' as io;
-import 'dart:io' show Directory, Platform, ProcessInfo, ProcessSignal;
+import 'dart:io'
+    show Directory, Platform, ProcessInfo, ProcessSignal, SignalException;
 
 import 'package:ffi/ffi.dart';
 
@@ -154,7 +155,15 @@ void _add(String event, Function fn, bool once) {
   final signal = _signal(event);
   if (signal != null && !_signalWatches.containsKey(event)) {
     // As in Node, a listener replaces the default action (termination).
-    _signalWatches[event] = signal.watch().listen((_) {
+    final Stream<ProcessSignal> signals;
+    try {
+      signals = signal.watch();
+    } on SignalException {
+      // Node accepts a listener for a signal that the platform does not
+      // deliver (SIGTERM on Windows) and never calls it. dart:io throws.
+      return;
+    }
+    _signalWatches[event] = signals.listen((_) {
       for (final l in List.of(_listeners[event] ?? const <_Listener>[])) {
         if (l.once) off(event, l.fn);
         _call(l.fn, event);

@@ -1,14 +1,13 @@
 // Ported from sandbox-runtime src/sandbox/generate-seccomp-filter.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, slash_for_doc_comments
 
-import 'dart:isolate';
-
 import 'package:path/path.dart' as path;
 
 import '../node/child_process.dart' as child_process;
 import '../node/fs.dart' as fs;
 import '../node/os.dart' as os;
 import '../node/process.dart' as process;
+import '../node/url.dart' show resolveOwnPackageFile;
 import '../utils/debug.dart';
 
 // Cache for path lookups (key: explicit path or empty string, value: resolved path or null)
@@ -177,15 +176,13 @@ List<String> _getLocalSeccompPaths(String filename) {
   // Dart libraries do not expose their own file URL. The isolate's package
   // resolver supplies the equivalent of import.meta.url without consulting
   // the current directory (which a caller may have changed since loading).
-  final moduleUri = Isolate.resolvePackageUriSync(
-    Uri.parse(
-      'package:sandbox_runtime/src/sandbox/generate_seccomp_filter.dart',
-    ),
+  final moduleFile = resolveOwnPackageFile(
+    'package:sandbox_runtime/src/sandbox/generate_seccomp_filter.dart',
   );
   String? packageRoot;
-  if (moduleUri != null && moduleUri.scheme == 'file') {
+  if (moduleFile != null) {
     packageRoot = path.normalize(
-      path.join(path.dirname(path.fromUri(moduleUri)), '..', '..', '..'),
+      path.join(path.dirname(moduleFile), '..', '..', '..'),
     );
   }
   // A source checkout launched without package_config is still rooted at cwd.
