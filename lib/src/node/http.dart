@@ -64,7 +64,8 @@ class IncomingMessage extends stream.Readable {
   Object? _bodyGateBudget;
   void Function()? _budgetWake;
 
-  bool get complete => readableEnded;
+  bool _complete = false;
+  bool get complete => _complete;
 
   /// Node `_read`: the consumer wants more, so let the socket flow again
   /// (unless the buffered-body gate holds it).
@@ -104,6 +105,18 @@ class IncomingMessage extends stream.Readable {
     _bodyGateCap = cap;
     _bodyGateBudget = budget;
     _updateBodyGate();
+  }
+
+  /// Release a body's budget even where the runtime never closes its request.
+  void releaseBufferedBody() {
+    final wake = _budgetWake;
+    if (wake != null && _bodyGateBudget != null) {
+      (_bodyGateBudget as dynamic).waiters.remove(wake);
+    }
+    _budgetWake = null;
+    _adjustBudget(-_bodyBuffered);
+    _bodyBuffered = 0;
+    _bodyGateBudget = null;
   }
 
   Future<void> _waitForBodyGate() async {
@@ -170,6 +183,7 @@ class IncomingMessage extends stream.Readable {
   }
 
   void _finish() {
+    _complete = true;
     if (destroyed || readableEnded) return;
     push(null);
   }
@@ -447,9 +461,12 @@ class ServerResponse extends events.EventEmitter {
     _chunked = !_noBody && !hasLength && !hasTransfer;
     if (!_noBody &&
         hasTransfer &&
-        getHeader(
-              'transfer-encoding',
-            )?.toString().toLowerCase().split(',').last.trim() ==
+        getHeader('transfer-encoding')
+                ?.toString()
+                .toLowerCase()
+                .split(',')
+                .last
+                .trim() ==
             'chunked') {
       _chunked = true;
     }

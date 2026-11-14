@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/sandbox/parent-proxy.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/parent-proxy.ts @ 0bbebed.
 // ignore_for_file: slash_for_doc_comments, library_private_types_in_public_api, dangling_library_doc_comments, constant_identifier_names, non_constant_identifier_names
 
 import 'dart:async';
@@ -444,6 +444,34 @@ bool relayResponseHead(
 }
 
 /**
+ * Calls `fail` for an error of a forwarded request, unless its answer has
+ * arrived whole by then. An upstream that sends more than the Content-Length
+ * it declared (one that counts characters for bytes) has those bytes taken for
+ * the start of a next answer, which is an error of the request: it comes after
+ * the answer is complete and before that has been read. The answer is good,
+ * and a client that asks the upstream itself takes it. The runtime has closed
+ * the connection, so nothing that follows on it is read.
+ */
+void onUpstreamError(
+  http.ClientRequest upstream,
+  void Function(Object err) fail,
+) {
+  http.IncomingMessage? answer;
+  upstream.once('response', (http.IncomingMessage res) {
+    answer = res;
+  });
+  upstream.on('error', (Object err) {
+    if (answer?.complete == true) {
+      logForDebugging(
+        'Upstream connection failed after a whole answer: ${errorMessage(err)}',
+      );
+      return;
+    }
+    fail(err);
+  });
+}
+
+/**
  * Strip hop-by-hop and proxy-specific headers before forwarding upstream.
  * Also strips any headers named in the incoming `Connection` header, per
  * RFC 9110 §7.6.1. With `folded`, a name also matches in any spelling of
@@ -550,8 +578,10 @@ String? canonicalizeHost(String h) {
 }
 
 /** Per-dial name resolution the proxies are handed: the guard's `lookup` for `port`, refusals recorded. */
-typedef DirectLookup =
-    net.LookupFunction Function(int port, [String? encodedCommand]);
+typedef DirectLookup = net.LookupFunction Function(
+  int port, [
+  String? encodedCommand,
+]);
 
 /** `host[:port]` as it belongs in a Host header / URL authority: IPv6 bracketed, the default port elided. */
 String formatAuthority(String host, int port, int defaultPort) {
