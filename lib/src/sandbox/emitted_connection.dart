@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/sandbox/emitted-connection.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/emitted-connection.ts @ 0bbebed.
 // ignore_for_file: slash_for_doc_comments, dangling_library_doc_comments
 
 import 'dart:async';
@@ -194,6 +194,8 @@ void gateSocketOnBufferedBody(
   // A 'data' listener on the socket would start it flowing, and the flow
   // loop would drain the buffer the parser reads from.
   req.gateBufferedBody(cap: cap, budget: budget);
+  // Not every runtime closes the request of a socket that closes.
+  req.socket.once('close', req.releaseBufferedBody);
 }
 
 final Expando<bool> _endsGracefully = Expando<bool>();

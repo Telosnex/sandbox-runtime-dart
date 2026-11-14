@@ -1,6 +1,6 @@
-// Ported from sandbox-runtime src/sandbox/sandbox-manager.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/sandbox-manager.ts @ 0bbebed.
 // ignore_for_file: non_constant_identifier_names, constant_identifier_names
-// ignore_for_file: doc_directive_unknown, slash_for_doc_comments
+// ignore_for_file: doc_directive_unknown, slash_for_doc_comments, curly_braces_in_flow_control_structures, unnecessary_nullable_for_final_variable_declarations, unintended_html_in_doc_comment, prefer_function_declarations_over_variables
 
 import 'dart:async';
 import 'dart:convert';
@@ -11,11 +11,11 @@ import '../node/abort.dart';
 import '../node/child_process.dart' show NodeChildProcess;
 import '../node/crypto.dart' show randomBytes;
 import '../node/structured_clone.dart';
-import '../node/errno.dart' show NodeError, NodeException;
+import '../node/errno.dart' show NodeError, NodeException, errorMessage;
 import '../node/fs.dart' as fs;
 import '../node/os.dart' show EOL;
 import '../node/process.dart' as process;
-import '../node/url.dart' show URL;
+import '../node/util.dart' show isDeepStrictEqual;
 import '../utils/debug.dart';
 import '../utils/ripgrep.dart' show RipgrepConfig;
 import '../utils/platform.dart' show getPlatform, getWslVersion;
@@ -63,13 +63,7 @@ import 'macos_sandbox_utils.dart'
         startMacOSSandboxLogMonitor,
         wrapCommandWithSandboxMacOS;
 import 'mitm_ca.dart'
-    show
-        CRL_PATH,
-        MitmCA,
-        certThumbprint,
-        createMitmCA,
-        disposeMitmCA,
-        disposeMitmCASync;
+    show CRL_PATH, MitmCA, createMitmCA, disposeMitmCA, disposeMitmCASync;
 import 'mux_proxy.dart'
     show MuxProxyOptions, MuxProxyServer, createMuxProxyServer;
 import 'own_files.dart' show ownInstallWarning;
@@ -141,6 +135,7 @@ import 'sandbox_utils.dart'
         walkGlobPatternSteps,
         workingDirectory;
 import '../node/generators.dart';
+import 'tls_terminate_proxy.dart' show PartialTunnelTimeouts;
 import 'socks_proxy.dart'
     show SocksProxyServerOptions, SocksProxyWrapper, createSocksProxyServer;
 import 'sandbox_violation_store.dart'
@@ -149,31 +144,8 @@ import 'sandbox_violation_store.dart'
         sanitizeDenialReason,
         sanitizeUnregisteredCommandKey,
         shouldIgnoreViolation;
-import 'windows_sandbox_utils.dart'
-    show
-        DEFAULT_WINDOWS_PROXY_PORT_RANGE,
-        SrtWinSpawn,
-        WindowsAclGrantOptions,
-        WindowsAclStampOptions,
-        WindowsBinShell,
-        WindowsFsAccessSet,
-        WindowsSandboxError,
-        WindowsSandboxParams,
-        checkWindowsDependencies,
-        checkWindowsDependenciesAsync,
-        ensurePersistentWindowsCa,
-        expandWindowsFsPaths,
-        getWindowsSandboxCaCert,
-        getWindowsSandboxUserStatusAsync,
-        grantWindowsAcl,
-        parseWindowsBinShell,
-        rankWindowsFsAccess,
-        resolveSrtWin,
-        restoreWindowsAcl,
-        revokeWindowsAcl,
-        stampWindowsAcl,
-        verifyWindowsWfpEgress,
-        wrapCommandWithSandboxWindows;
+import 'mxc_sandbox_utils.dart';
+import 'windows_sandbox_utils.dart';
 
 class _HostNetworkManagerContext {
   final int httpProxyPort;
@@ -201,6 +173,14 @@ SocksProxyWrapper? _socksProxyServer;
 MuxProxyServer? _muxProxyServer;
 _HostNetworkManagerContext? _managerContext;
 Future<_HostNetworkManagerContext>? _initializationPromise;
+// The initialize() in flight, from its first step: a profile grant refresh
+// can hold it for minutes before initializationPromise exists. reset()
+// moves the generation on, which cancels it.
+({Future<void> promise, int generation, List<Object?> args})?
+_pendingInitialize;
+int _initializeGeneration = 0;
+// Kills the profile grant a refresh is running, at reset().
+AbortController? _windowsProfileGrantAbort;
 bool _cleanupRegistered = false;
 bool _ownInstallLogged = false;
 void Function()? _logMonitorShutdown;
@@ -236,12 +216,209 @@ _RawWindowsFsInputs? _windowsFsRawInputs;
 // user's profile). The WFP fence is install-scoped, not config- or
 // session-scoped — reset() does NOT clear this, so updateConfig()'s
 // reset+reinit and the test suite's per-test reset() don't re-verify.
-bool _windowsWfpVerified = false;
+// Remembered as the sandbox account the check passed for: a different
+// account (a reinstall) is checked again.
+String? _windowsWfpVerifiedFor;
+// And the loopback mode (`network.allowLocalBinding`) it was run with: a
+// session configured with the other is checked, and refused, again.
+bool? _windowsWfpVerifiedLoopback;
+// The `srt-win` builds, by identity, that reported every capability the
+// library relies on. Only a yes is remembered.
+final _windowsCapableSrtWin = <String>{};
+
+/**
+ * What tells one `srt-win` from another: the executable, the arguments
+ * put in front of every call, and — so that a file replaced in place
+ * is a different one — its size and modification time.
+ */
+String _windowsSrtWinIdentity(SrtWinSpawn srtWin) {
+  var stat = '';
+  try {
+    final st = fs.statSync(srtWin.exe);
+    stat = '${st.size}:${st.mtimeMs}';
+  } catch (_) {
+    // Not a path that can be looked at (resolved through PATH, say):
+    // the name and arguments are the identity.
+  }
+  return jsonEncode([srtWin.exe, srtWin.prependArgs, stat]);
+}
+
+const _WINDOWS_CAPABILITIES_WHY =
+    "a session depends on (its read "
+    "denies are written on the profile read grant's paths by srt-win, "
+    "and kept grants are checked and removed there)";
+
+/**
+ * Make sure the `srt-win` this command runs through has reported every
+ * capability the library relies on; asked once per identity.
+ */
+void _assertWindowsSrtWinCapable(SrtWinSpawn srtWin) {
+  final id = _windowsSrtWinIdentity(srtWin);
+  if (_windowsCapableSrtWin.contains(id)) return;
+  final missing = missingWindowsSrtWinCapability(
+    getWindowsProfileReadStatus(srtWin: srtWin).capabilities,
+  );
+  if (missing != null)
+    throw windowsSrtWinOutdatedError(missing, _WINDOWS_CAPABILITIES_WHY);
+  _windowsCapableSrtWin.add(id);
+}
+
+// Windows: whether this session's commands read the user's profile
+// through the profile read grant.
+String? _windowsProfileRead; // 'granted' | 'absent'
+// Windows: what the session has to tell its user about the profile
+// read grant it runs on (getWindowsProfileReadWarnings).
+List<WindowsProfileReadWarning> _windowsProfileReadWarnings = [];
+// Windows: what this initialize() found when it refreshed the grant.
+WindowsProfileGrantResult? _windowsProfileReadRefresh;
+
+/** Something about the profile read grant that the user should be shown. */
+class WindowsProfileReadWarning {
+  /** See {@link windowsProfileReadWarningsOf}. */
+  final String
+  code; // 'profile_exclusion_unprotected' | 'profile_exclusion_unverifiable' | 'profile_stale_allow' | 'profile_file_replaced'
+  final String message;
+  final List<WindowsProfileGrantItem> paths;
+  const WindowsProfileReadWarning({
+    required this.code,
+    required this.message,
+    required this.paths,
+  });
+}
+
+/**
+ * What a session on this grant has to tell its user, from what
+ * `srt-win` found — each message says what was established about its
+ * paths and nothing more.
+ */
+List<WindowsProfileReadWarning> windowsProfileReadWarningsOf({
+  required List<WindowsProfileGrantItem> unprotected,
+  required List<WindowsProfileGrantItem> unverifiable,
+  required List<WindowsProfileGrantItem> staleAllow,
+  List<String>? replacedFiles,
+}) {
+  String list(List<WindowsProfileGrantItem> items) =>
+      items.map((i) => i.path).join(', ');
+  final out = <WindowsProfileReadWarning>[];
+  // Open through an entry this product wrote and could not take
+  // back: the strongest case, said first and as what it is.
+  final byOurs = unprotected.where((i) => i.entry != null).toList();
+  final byList = unprotected.where((i) => i.entry == null).toList();
+  final callerReads = unverifiable.where((i) => i.callerReads == true).toList();
+  final rest = unverifiable.where((i) => i.callerReads != true).toList();
+  if (byOurs.length + byList.length + callerReads.length > 0) {
+    final parts = <String>[];
+    if (byOurs.isNotEmpty) {
+      parts.add(
+        '${byOurs.length} READABLE THROUGH AN ENTRY THIS PRODUCT WROTE and '
+        "could not remove — each path's reason gives the icacls command "
+        "that removes it, to be run as the object's owner or from an "
+        'elevated prompt, followed by the grant again (${list(byOurs)})',
+      );
+    }
+    if (byList.isNotEmpty)
+      parts.add(
+        '${byList.length} by their own access lists, which you may not '
+        'change (${list(byList)})',
+      );
+    if (callerReads.isNotEmpty)
+      parts.add(
+        '${callerReads.length} whose access lists could not be read but '
+        'which you can read all the same, so sandboxed commands may '
+        'too (${list(callerReads)})',
+      );
+    out.add(
+      WindowsProfileReadWarning(
+        code: 'profile_exclusion_unprotected',
+        message:
+            'Paths on the exclusion list of the profile read grant could not '
+            'be denied and are, or may be, readable to sandboxed commands: '
+            '${parts.join('; ')}. Only their owner or an administrator can close them.',
+        paths: [...byOurs, ...byList, ...callerReads],
+      ),
+    );
+  }
+  if (rest.isNotEmpty) {
+    final unreadable = rest.where((i) => i.callerReads == false).toList();
+    final noAccount = rest.where((i) => i.cause == 'account_unknown').toList();
+    final other = rest
+        .where((i) => i.callerReads != false && i.cause != 'account_unknown')
+        .toList();
+    final parts = <String>[];
+    if (unreadable.isNotEmpty)
+      parts.add(
+        '${unreadable.length} whose access lists could not be read; you '
+        'cannot read their content either (${list(unreadable)})',
+      );
+    if (noAccount.isNotEmpty)
+      parts.add(
+        '${noAccount.length} that could not be examined because the '
+        'sandbox account is not known (${list(noAccount)})',
+      );
+    if (other.isNotEmpty)
+      parts.add('${other.length} that were not examined (${list(other)})');
+    out.add(
+      WindowsProfileReadWarning(
+        code: 'profile_exclusion_unverifiable',
+        message:
+            'Paths on the exclusion list of the profile read grant could not '
+            'be denied, and whether sandboxed commands can read them was not '
+            'established: ${parts.join('; ')}.',
+        paths: rest,
+      ),
+    );
+  }
+  if (staleAllow.isNotEmpty)
+    out.add(
+      WindowsProfileReadWarning(
+        code: 'profile_stale_allow',
+        message:
+            '${staleAllow.length} path(s) that have left the profile '
+            'read grant may still carry an entry of it that could not be '
+            'removed, and stay readable to sandboxed commands until it is: '
+            "${list(staleAllow)}. None is on the exclusion list. Each "
+            "path's reason says what stopped it. A session start tries local "
+            'paths again, at most every six hours; with every sandbox session '
+            'closed, `srt-win profile retry-stale` tries them all now.',
+        paths: staleAllow,
+      ),
+    );
+  final replaced = replacedFiles ?? <String>[];
+  if (replaced.isNotEmpty)
+    out.add(
+      WindowsProfileReadWarning(
+        code: 'profile_file_replaced',
+        message:
+            '${replaced.length} configuration file(s) were replaced since the '
+            'profile read grant was made and are not readable to sandboxed '
+            'commands; the variables that point at them are not returned: '
+            '${replaced.join(', ')}. Run grantWindowsProfileRead() '
+            '(`srt-win profile grant`) again.',
+        paths: replaced
+            .map(
+              (path) => WindowsProfileGrantItem(
+                path: path,
+                reason: 'replaced since the grant was made',
+              ),
+            )
+            .toList(),
+      ),
+    );
+  return out;
+}
+
 // Resolved once at initialize() (`resolveSrtWin` stats the disk).
 // Captured so wrapWithSandboxArgv/reset() don't re-resolve per call
 // and so reset()'s revoke/restore addresses the SAME binary the
 // grants/stamps were applied with even if `config` mutated between.
 SrtWinSpawn? _srtWinSpawn;
+// Set iff initialize() selected mxc: the loaded SDK and the session
+// fs sets — the SAME expansion (`computeWindowsFsAccessSet`) the probe
+// validated, applied per spawn inside the MXC request instead of via
+// session ACLs. Its presence IS the "mxc selected" signal
+// spawnSandboxed, wrap and getWindowsBackend dispatch on; srt-win's is
+// `srtWinSpawn`.
+({MxcSdk sdk, WindowsFsAccessSet fsSet})? _windowsMxcState;
 final _sandboxViolationStore = SandboxViolationStore();
 // Per-session sentinel↔real-value map for masked credentials. Lives only in
 // process memory; never written to disk or logged. Cleared on reset().
@@ -288,6 +465,62 @@ void _registerCleanup() {
   process.once('SIGINT', cleanupHandler);
   process.once('SIGTERM', cleanupHandler);
   _cleanupRegistered = true;
+}
+
+// An older srt-win reports 'restored'/'alreadyOriginal' where a
+// current one reports 'revoked'/'stillHeld'.
+const _WINDOWS_ACL_RELEASE_OK = {
+  'revoked',
+  'stillHeld',
+  'restored',
+  'alreadyOriginal',
+};
+
+void _logWindowsAclOutcomes(String kind, List<WindowsAclAceOutcome>? outcomes) {
+  for (final e in outcomes ?? <WindowsAclAceOutcome>[]) {
+    if (!_WINDOWS_ACL_RELEASE_OK.contains(e.status))
+      logForDebugging(
+        "[Sandbox Windows] $kind: '${e.path}' ${e.status} — "
+        'ACE may be left in place; resolve and run '
+        '`srt-win acl recover` to clear',
+        level: 'warn',
+      );
+  }
+}
+
+/**
+ * Whether the deny restore may run: only after a revoke that
+ * completed — otherwise a grant may still be on disk, and the sandbox
+ * account is shared. srt-win enforces the same rule from its records.
+ */
+bool _windowsAclRestoreAllowed(WindowsAclRevokeResult revoke) {
+  _logWindowsAclOutcomes('grant revoke', revoke.outcomes);
+  if (revoke.complete) return true;
+  final paths = revoke.pending;
+  logForDebugging(
+    '[Sandbox Windows] grant revoke did not complete'
+    ' — NOT running the deny restore; deny ACEs stay in place '
+    'while a grant may still be on disk. Grants possibly left in '
+    "place: ${paths.isNotEmpty ? paths.map((p) => "'$p'").join(', ') : '(none reported)'}"
+    '${revoke.detail != null && revoke.detail!.isNotEmpty ? '. srt-win: ${revoke.detail}' : ''}'
+    '. The next revoke retries them; after this process exits, '
+    '`srt-win acl recover` does, and removes its deny ACEs once '
+    'they are released (`--force` drops the record of a grant '
+    'that can no longer be located).',
+    level: 'error',
+  );
+  return false;
+}
+
+void _releaseWindowsSessionAcls(String sandboxUserSid, SrtWinSpawn? srtWin) {
+  if (_windowsAclRestoreAllowed(
+    revokeWindowsAclChecked(sandboxUserSid: sandboxUserSid, srtWin: srtWin),
+  )) {
+    _logWindowsAclOutcomes(
+      'deny restore',
+      restoreWindowsAcl(sandboxUserSid: sandboxUserSid, srtWin: srtWin),
+    );
+  }
 }
 
 /**
@@ -461,25 +694,19 @@ final DirectLookup _directLookup = (port, [encodedCommand]) =>
     );
 
 /**
- * The request URL as it should appear in a model-visible violation line:
- * origin + path, with any query string reduced to a `?…` marker (origin
- * carries no userinfo, so an embedded `name:pass@` is dropped too). Query
- * strings routinely carry credentials (api_key=, access_token=, signed
- * URLs) that the sandboxed client interpolated at runtime and that were
- * never in the model's context, so they must not enter the transcript via
- * the <sandbox_violations> block. The full URL still reaches the embedder's
+ * The request URL as it should appear in a model-visible violation line: as
+ * spelled (parsed, a refused `/a/../b` would read `/b`), with a query string
+ * or fragment reduced to a `?…` or `#…` marker. (The proxy rebuilds the
+ * authority, so an embedded `name:pass@` is gone already.) Query strings
+ * routinely carry credentials (api_key=, access_token=, signed URLs) that
+ * the sandboxed client interpolated at runtime and that were never in the
+ * model's context, so they must not enter the transcript via the
+ * <sandbox_violations> block. The full URL still reaches the embedder's
  * filterRequest callback and its own debug logging.
  */
 String _redactUrlForViolation(String url) {
-  try {
-    final u = URL(url);
-    return '${u.origin}${u.pathname}${u.search.isNotEmpty ? '?…' : ''}';
-  } catch (_) {
-    // Not an absolute URL (shouldn't happen for proxy requests) — drop
-    // anything after '?' rather than risk leaking it.
-    final q = url.indexOf('?');
-    return q == -1 ? url : '${url.substring(0, q)}?…';
-  }
+  final cut = url.indexOf(RegExp(r'[?#]'));
+  return cut == -1 ? url : '${url.substring(0, cut + 1)}…';
 }
 
 /** Whether an ask-callback answer is one of the two documented denials. */
@@ -758,8 +985,7 @@ class _HttpProxyServerOptions implements HttpProxyServerOptions {
     this.stripResponseHeaders,
     this.refuseOpaqueTunnels,
     this.requireHostMatch,
-    this.maxTerminatedTunnels,
-    this.tlsHandshakeTimeoutMs,
+    this.ambiguousRequestTarget,
     this.onFilterRequestDenied,
     this.mutateHeaders,
     this.mutateHeadersPlaintext,
@@ -806,9 +1032,15 @@ class _HttpProxyServerOptions implements HttpProxyServerOptions {
   @override
   final bool? requireHostMatch;
   @override
-  final int? maxTerminatedTunnels;
+  final String? ambiguousRequestTarget;
+  // Read at each CONNECT, so that updateConfig changes them.
   @override
-  final int? tlsHandshakeTimeoutMs;
+  int? get maxTerminatedTunnels => _config?.network.tlsTerminate?.maxTunnels;
+  @override
+  int? get tlsHandshakeTimeoutMs =>
+      _config?.network.tlsTerminate?.handshakeTimeoutMs;
+  @override
+  PartialTunnelTimeouts? get tunnelTimeouts => null;
   @override
   final void Function(
     ({String method, String url, String reason, String? encodedCommand}),
@@ -856,6 +1088,7 @@ class _HttpProxyServerOptions implements HttpProxyServerOptions {
 class _SocksProxyServerOptions implements SocksProxyServerOptions {
   _SocksProxyServerOptions({
     required this.filterFn,
+    this.getMitmSocketPath,
     this.parentProxy,
     this.lookupFor,
     this.proxyAuthToken,
@@ -871,6 +1104,8 @@ class _SocksProxyServerOptions implements SocksProxyServerOptions {
   FutureOr<bool> filter(int port, String host, [String? encodedCommand]) =>
       filterFn(port, host, encodedCommand);
 
+  @override
+  final String? Function(String host)? getMitmSocketPath;
   @override
   final ResolvedParentProxy? parentProxy;
   @override
@@ -912,11 +1147,14 @@ Future<int> _startMuxProxyServer(
       stripResponseHeaders: _config?.network.stripResponseHeaders,
       refuseOpaqueTunnels: _config?.network.refuseOpaqueTunnels,
       requireHostMatch: _config?.network.requireHostMatch,
-      maxTerminatedTunnels: _config?.network.tlsTerminate?.maxTunnels,
-      tlsHandshakeTimeoutMs: _config?.network.tlsTerminate?.handshakeTimeoutMs,
+      ambiguousRequestTarget: _config?.network.ambiguousRequestTarget,
       onFilterRequestDenied: (d) {
+        // A refused CONNECT comes with its authority (`host:port`), not a URL.
+        final target = d.method == 'CONNECT'
+            ? d.url
+            : _redactUrlForViolation(d.url);
         _recordProxyViolation(
-          'deny http-request ${d.method} ${_redactUrlForViolation(d.url)} (${d.reason})',
+          'deny http-request ${d.method} $target (${d.reason})',
           d.encodedCommand,
         );
       },
@@ -945,6 +1183,7 @@ Future<int> _startMuxProxyServer(
     _SocksProxyServerOptions(
       filterFn: (port, host, [encodedCommand]) =>
           _filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand),
+      getMitmSocketPath: _getMitmSocketPath,
       parentProxy: _parentProxy,
       lookupFor: _directLookup,
       proxyAuthToken: _proxyAuthToken,
@@ -1008,13 +1247,137 @@ Future<int> _startMuxProxyServer(
 // Public Module Functions (will be exported via namespace)
 // ============================================================================
 
+/**
+ * A second {@link initialize} while one is in flight asked for something
+ * else: its configuration or callbacks would not have been applied.
+ */
+class SandboxInitializeConflictError extends NodeException {
+  final String name = 'SandboxInitializeConflictError';
+  final String code = 'initialize_conflict';
+  SandboxInitializeConflictError()
+    : super(
+        'initialize() is already running with a different configuration or '
+        'different callbacks: wait for it, or reset() first',
+      );
+  @override
+  String toString() => '$name: $message';
+}
+
+/**
+ * Options of {@link initialize} that are the embedding program's to
+ * set, not part of the configuration a user writes.
+ */
+class SandboxInitializeOptions {
+  /**
+   * Windows: profile exclusions this session may still be granted READ on.
+   * Never applies to a write root or to a path above an exclusion.
+   */
+  final List<String>? dangerouslyAllowReadOfProfileExclusions;
+  /**
+   * Windows: called with each progress line while initialize() narrows
+   * an older profile read grant, which can take minutes. Show the user
+   * why the session has not started yet.
+   */
+  final void Function(String line)? onWindowsProfileGrantProgress;
+  /**
+   * Windows, `windows.backend: 'mxc'`: for embedders that bundle the MXC
+   * SDK, an object with its `probe()` and `spawn()`. The session uses it,
+   * and `@microsoft/mxc-sdk` is not resolved.
+   */
+  final MxcSdk? windowsMxcSdk;
+  const SandboxInitializeOptions({
+    this.dangerouslyAllowReadOfProfileExclusions,
+    this.onWindowsProfileGrantProgress,
+    this.windowsMxcSdk,
+  });
+}
+
 Future<void> _initialize(
   SandboxRuntimeConfig runtimeConfig, [
   SandboxAskCallback? sandboxAskCallback,
   bool enableLogMonitor = false,
+  SandboxInitializeOptions? options,
+]) async {
+  final args = <Object?>[
+    runtimeConfig,
+    sandboxAskCallback,
+    enableLogMonitor,
+    options,
+  ];
+  final pending = _pendingInitialize;
+  if (pending != null) {
+    final (:promise, :generation, args: running) = pending;
+    if (generation == _initializeGeneration) {
+      // Functions compare by identity, the rest by value.
+      if (!isDeepStrictEqual(
+        _initializeArgsForComparison(args),
+        _initializeArgsForComparison(running),
+      )) {
+        throw SandboxInitializeConflictError();
+      }
+      return promise;
+    }
+    // A reset() cancelled that run: this one starts once it has stopped.
+    await promise.catchError((Object _) {});
+    return _initialize(
+      runtimeConfig,
+      sandboxAskCallback,
+      enableLogMonitor,
+      options,
+    );
+  }
+  final entry = (
+    promise: _initializeOnce(
+      runtimeConfig,
+      sandboxAskCallback,
+      enableLogMonitor,
+      options,
+    ),
+    generation: _initializeGeneration,
+    args: args,
+  );
+  _pendingInitialize = entry;
+  try {
+    await entry.promise;
+  } finally {
+    if (_pendingInitialize == entry) _pendingInitialize = null;
+  }
+}
+
+// Dart's immutable config/options objects expose their fields for util's
+// structural comparison; callbacks and the injected SDK retain identity.
+List<Object?> _initializeArgsForComparison(List<Object?> args) {
+  final config = args[0] as SandboxRuntimeConfig;
+  final options = args[3] as SandboxInitializeOptions?;
+  return [
+    {...config.toJson(), 'filterRequest': config.network.filterRequest},
+    args[1],
+    args[2],
+    if (options == null)
+      null
+    else
+      {
+        'dangerouslyAllowReadOfProfileExclusions':
+            options.dangerouslyAllowReadOfProfileExclusions,
+        'onWindowsProfileGrantProgress': options.onWindowsProfileGrantProgress,
+        'windowsMxcSdk': options.windowsMxcSdk,
+      },
+  ];
+}
+
+Future<void> _initializeOnce(
+  SandboxRuntimeConfig runtimeConfig, [
+  SandboxAskCallback? sandboxAskCallback,
+  bool enableLogMonitor = false,
+  SandboxInitializeOptions? options,
 ]) async {
   try {
-    await _initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonitor);
+    await _initializeSteps(
+      runtimeConfig,
+      sandboxAskCallback,
+      enableLogMonitor,
+      options,
+    );
   } catch (error) {
     // Here, not at reset() or 'exit': a step can fail before the clean-up is
     // registered, and the next call makes a CA of its own.
@@ -1028,11 +1391,21 @@ Future<void> _initializeSteps(
   SandboxRuntimeConfig runtimeConfig,
   SandboxAskCallback? sandboxAskCallback,
   bool enableLogMonitor,
+  SandboxInitializeOptions? options,
 ) async {
   // Return if already initializing
   if (_initializationPromise != null) {
     await _initializationPromise;
     return;
+  }
+
+  final generation = _initializeGeneration;
+  // After every await below: a reset() meanwhile means no session starts.
+  void stopIfReset() {
+    if (generation != _initializeGeneration) {
+      _config = null;
+      throw NodeException('initialize() was cancelled by reset()');
+    }
   }
 
   // Store config for use by other functions
@@ -1062,6 +1435,26 @@ Future<void> _initializeSteps(
       'network.tlsTerminate and network.mitmProxy are mutually exclusive',
     );
   }
+  // An mxc session it cannot run is refused before any CA, proxy or
+  // sandbox is set up; what to try next is the caller's decision.
+  MxcSdk? mxcSdk;
+  if (getPlatform() == 'windows' && runtimeConfig.windows?.backend == 'mxc') {
+    if (runtimeConfig.network.tlsTerminate != null) {
+      throw WindowsSandboxError(
+        'backend_unsupported',
+        'network.tlsTerminate is not supported on the mxc backend',
+      );
+    }
+    _assertMxcSessionConfig(
+      PartialSandboxRuntimeConfig(
+        filesystem: runtimeConfig.filesystem,
+        network: runtimeConfig.network,
+      ),
+    );
+    mxcSdk = options?.windowsMxcSdk == null
+        ? await resolveMxcSdk()
+        : await resolveMxcSdk(options!.windowsMxcSdk);
+  }
   // Before any CA, proxy or sandbox is set up: a runtime that cannot
   // terminate TLS in-process fails here, not on each tunnel.
   if (runtimeConfig.network.tlsTerminate != null) {
@@ -1088,8 +1481,21 @@ Future<void> _initializeSteps(
       : null;
 
   // Check dependencies
-  final deps = await _checkDependenciesAsync();
+  final deps = await _checkDependenciesAsync(
+    null,
+    CheckDependenciesOptions(windowsMxcSdk: mxcSdk),
+  );
+  stopIfReset();
   if (deps.errors.isNotEmpty) {
+    if (deps.reinstallRequired != null)
+      throw WindowsSandboxError('reinstall_required', deps.reinstallRequired!);
+    // The session asks for the other loopback mode than the installed
+    // one: refused here, before anything is granted or launched.
+    if (deps.loopbackMismatch != null)
+      throw WindowsSandboxError(
+        'wfp_loopback_mismatch',
+        deps.loopbackMismatch!,
+      );
     throw NodeException(
       'Sandbox dependencies not available: ${deps.errors.join(', ')}',
     );
@@ -1169,19 +1575,198 @@ Future<void> _initializeSteps(
   // wrap-time) means the host gets a single actionable error before
   // any per-exec work happens, instead of exit-15 on every command.
   if (getPlatform() == 'windows') {
+    if (mxcSdk != null) {
+      // Compile the session policy ONCE: the probe checks the same
+      // expanded fs sets and the same policy SHAPE (including the
+      // proxy stanza) that every spawn's request will carry, and
+      // spawnSandboxed reuses the expansion. Each spawn probes its own
+      // request again before it starts.
+      //
+      // Masked credential files are denied here as on the srt-win
+      // path below: there is no masked copy to show the child instead.
+      var maskedFiles = <String>[];
+      try {
+        maskedFiles = _windowsMaskedFileDenies(
+          _getCredentialRestrictions(
+            runtimeConfig.credentials,
+            runtimeConfig.network.allowedDomains,
+          ),
+        );
+      } catch (_) {
+        // onExtractNoMatch: "error" is thrown by every wrap, so nothing runs.
+      }
+      final acc = _computeWindowsFsAccessSet(runtimeConfig, maskedFiles);
+      final MxcRequest probeRequest;
+      try {
+        probeRequest = buildMxcRequest(
+          MxcSandboxParams(
+            command: 'exit 0',
+            // Representative proxy port: the real mux port is bound
+            // later in initialize (inside this same range on Windows),
+            // and the probe only needs the policy shape, not a live
+            // listener.
+            httpProxyPort: DEFAULT_WINDOWS_PROXY_PORT_RANGE.$1,
+            denyRead: acc.denyRead,
+            denyWrite: acc.denyWrite,
+            allowRead: acc.grantRead,
+            allowWrite: acc.grantWrite,
+          ),
+        );
+      } catch (e) {
+        throw WindowsSandboxError(
+          'backend_unsupported',
+          "windows.backend is 'mxc' but the policy did not compile: ${errorMessage(e)}",
+        );
+      }
+      verifyMxcBackend(mxcSdk, probeRequest);
+      // MXC BaseContainer: the OS applies filesystem + network policy
+      // per spawn, in its own elevated context — no sandbox user, no
+      // WFP install, no session ACL stamping, nothing to restore.
+      _windowsMxcState = (sdk: mxcSdk, fsSet: acc);
+    }
+    logForDebugging(
+      '[Sandbox Windows] using ${mxcSdk != null ? 'mxc' : 'srt-win'}',
+    );
+  }
+  if (getPlatform() == 'windows' && _windowsMxcState == null) {
     // Resolve once (stats disk); captured module-level for wrap/reset.
     _srtWinSpawn = resolveSrtWin(runtimeConfig.windows?.srtWin);
-    final srtWin = _srtWinSpawn;
+    final srtWin = _srtWinSpawn!;
     final u = await getWindowsSandboxUserStatusAsync(srtWin: srtWin);
+    stopIfReset();
     if (!u.provisioned || !u.credPresent) {
       _config = null;
       throw WindowsSandboxError(
         'not_provisioned',
         'Windows sandbox user is not provisioned (user='
-            '${u.provisioned}, cred=${u.credPresent}). Run `npx '
-            'sandbox-runtime windows-install` (one UAC prompt) to '
+            '${u.provisioned}, cred=${u.credPresent}). Run '
+            '`$WINDOWS_INSTALL_COMMAND` (one UAC prompt) to '
             'provision it.',
       );
+    }
+    // srt-win refuses to launch on an install of another setup
+    // version; checked before anything is granted.
+    final staleSetup = windowsSetupVersionMismatch(
+      u,
+      runtimeConfig.windows?.sublayerGuid ??
+          runtimeConfig.windows?.wfpSublayerGuid,
+    );
+    if (staleSetup != null && staleSetup.isNotEmpty) {
+      _config = null;
+      throw WindowsSandboxError('reinstall_required', staleSetup);
+    }
+    // initialize() writes the profile read grant only to narrow one
+    // already there (windowsProfileGrantRefreshable).
+    _windowsProfileReadWarnings = [];
+    _windowsProfileReadRefresh = null;
+    var profileRead = 'absent';
+    var profileExclusions = (exclusions: <String>[], ungrantedOnly: <String>[]);
+    try {
+      // Required whether or not a profile grant is recorded.
+      final missing = missingWindowsSrtWinCapability(u.capabilities);
+      if (missing != null)
+        throw windowsSrtWinOutdatedError(missing, _WINDOWS_CAPABILITIES_WHY);
+      _windowsCapableSrtWin.add(_windowsSrtWinIdentity(srtWin));
+      if (u.profileGrant != null) {
+        var grant = await getWindowsProfileReadStatusAsync(srtWin: srtWin);
+        stopIfReset();
+        WindowsProfileGrantResult? refreshed;
+        // Before this session is a holder of anything: the grant is
+        // written only while no session or command holds it. A run that
+        // does not finish throws; one that finishes with paths it could
+        // not revoke starts the session, and they are warned about.
+        if (windowsProfileGrantRefreshable(grant)) {
+          logForDebugging(
+            '[Sandbox Windows] refreshing the profile read grant '
+            '(${grant.state}${grant.reason != null && grant.reason!.isNotEmpty ? ': ${grant.reason}' : ''})',
+          );
+          _windowsProfileGrantAbort = AbortController();
+          try {
+            refreshed = await grantWindowsProfileRead(
+              WindowsProfileGrantOptions(
+                srtWin: srtWin,
+                signal: _windowsProfileGrantAbort!.signal,
+                onProgress: (line) {
+                  logForDebugging('[Sandbox Windows] $line');
+                  // The host's code, called from a stream handler.
+                  try {
+                    options?.onWindowsProfileGrantProgress?.call(line);
+                  } catch (e) {
+                    logForDebugging(
+                      '[Sandbox Windows] progress callback threw: $e',
+                      level: 'warn',
+                    );
+                  }
+                },
+              ),
+            );
+          } catch (_) {
+            stopIfReset();
+            rethrow;
+          } finally {
+            _windowsProfileGrantAbort = null;
+          }
+          stopIfReset();
+          grant = await getWindowsProfileReadStatusAsync(srtWin: srtWin);
+        } else if (grant.state == 'current' &&
+            (grant.staleAllow.isNotEmpty ||
+                grant.unprotected.any((u) => u.entry != null))) {
+          // Bounded, on the noted paths alone, and never a reason not to
+          // start.
+          try {
+            final (:cleared) = await retryWindowsProfileStale(srtWin: srtWin);
+            if (cleared > 0)
+              grant = await getWindowsProfileReadStatusAsync(srtWin: srtWin);
+          } catch (e) {
+            logForDebugging(
+              '[Sandbox Windows] retrying stale profile entries: $e',
+              level: 'warn',
+            );
+          }
+        }
+        stopIfReset();
+        _windowsProfileReadRefresh = refreshed;
+        if (grant.state != 'none' && grant.state != 'current') {
+          throw WindowsSandboxError(
+            'profile_grant_outdated',
+            'The recorded read grant on your user profile cannot be used '
+                '(${grant.state}${grant.reason != null && grant.reason!.isNotEmpty ? ': ${grant.reason}' : ''}). '
+                'Call grantWindowsProfileRead() (`srt-win profile grant`, '
+                'or `$WINDOWS_INSTALL_COMMAND` again) as the '
+                'user who starts sessions to bring it up to date, or '
+                'forgetWindowsProfileRead() (`srt-win profile forget`) to '
+                'run without reading the profile. initialize() does neither '
+                'itself for a grant in this state.',
+          );
+        }
+        if (grant.state == 'current') {
+          profileExclusions = (
+            exclusions: grant.exclusions,
+            ungrantedOnly: grant.ungrantedOnly,
+          );
+          profileRead = 'granted';
+          _windowsProfileReadWarnings = windowsProfileReadWarningsOf(
+            unprotected: grant.unprotected,
+            unverifiable: grant.unverifiable,
+            staleAllow: grant.staleAllow,
+            replacedFiles: grant.replacedFiles,
+          );
+          for (final w in _windowsProfileReadWarnings) {
+            logForDebugging('[Sandbox Windows] ${w.message}', level: 'warn');
+          }
+        }
+      }
+      // Stored once known: `absent` is never reported for a granted session.
+      _windowsProfileRead = profileRead;
+      if (profileRead == 'absent')
+        logForDebugging(
+          '[Sandbox Windows] no profile read grant: the user profile is '
+          'not readable to sandboxed commands in this session',
+        );
+    } catch (_) {
+      _windowsProfileRead = null;
+      _config = null;
+      rethrow;
     }
     // Behavioral proof the WFP egress fence is active for the
     // sandbox user — BFE enumeration (`wfp status`) is admin-gated,
@@ -1191,18 +1776,8 @@ Future<void> _initializeSteps(
     // After the user-status check so the not-provisioned message is
     // the actionable one. Once per process — the fence is install-
     // scoped, not session-scoped.
-    if (!_windowsWfpVerified) {
-      try {
-        await verifyWindowsWfpEgress(
-          proxyPortRange: runtimeConfig.windows?.proxyPortRange,
-          srtWin: srtWin,
-        );
-      } catch (e) {
-        _config = null;
-        rethrow;
-      }
-      _windowsWfpVerified = true;
-    }
+    // The probe runs below, after the grant: the capability SIDs of
+    // the write roots exist only once the roots are granted.
     // Persistent-CA branch (see the deferral comment above).
     // `ensurePersistentWindowsCa` reconciles the registry thumb
     // itself (so initialize() after uninstall→reinstall repairs
@@ -1211,6 +1786,7 @@ Future<void> _initializeSteps(
     if (useWindowsPersistentCa) {
       try {
         final p = await ensurePersistentWindowsCa(status: u, srtWin: srtWin);
+        stopIfReset();
         _mitmCA = createMitmCA(
           caCertPem: p.certPem,
           caKeyPem: p.keyPem,
@@ -1218,40 +1794,9 @@ Future<void> _initializeSteps(
           caKeyPath: p.keyPath,
           extraCaCertPaths: tlsTerminate.extraCaCertPaths,
         );
-      } catch (e) {
+      } catch (_) {
         _config = null;
         rethrow;
-      }
-    }
-    // Explicit-path branch: schannel clients (System32 curl, IWR,
-    // .NET, default-backend git) only trust what's in the sandbox
-    // user's `CurrentUser\Root` — which `srt-win exec` does not (and
-    // must not) write. Compare thumbprints so a stale install-time
-    // CA doesn't pass the gate while schannel rejects the session's
-    // proxy-minted leaves.
-    if (tlsTerminate != null && _mitmCA != null && !useWindowsPersistentCa) {
-      final installed = getWindowsSandboxCaCert(status: u);
-      final sessionThumb = certThumbprint(_mitmCA!.certPem);
-      if (installed == null) {
-        _config = null;
-        throw WindowsSandboxError(
-          'trust_ca_not_installed',
-          'tlsTerminate on Windows requires the sandbox to be '
-              'installed with this CA (thumb=$sessionThumb): run '
-              '`srt-win user trust-ca ${_mitmCA!.certPath}`. Per-exec '
-              'installs into the sandbox user\'s Root store are not '
-              'supported.',
-        );
-      }
-      if (installed.thumb != sessionThumb) {
-        _config = null;
-        throw WindowsSandboxError(
-          'trust_ca_thumbprint_mismatch',
-          'tlsTerminate on Windows: the sandbox\'s installed CA '
-              '(thumb=${installed.thumb}) doesn\'t match this '
-              'session\'s CA (thumb=$sessionThumb). Run `srt-win '
-              'user trust-ca ${_mitmCA!.certPath}` to update it.',
-        );
       }
     }
     // Filesystem grants/denies — additive sandbox-user ACEs.
@@ -1268,87 +1813,123 @@ Future<void> _initializeSteps(
         // onExtractNoMatch: "error" is thrown by every wrap, so nothing runs.
       }
       final acc = _computeWindowsFsAccessSet(runtimeConfig, maskedFiles);
-      // The trust bundle the CA-trust env vars point at
-      // (NODE_EXTRA_CA_CERTS etc.) must be readable by the
-      // srt-sandbox child. It's written into the broker's %TEMP%,
-      // which the sandbox user has no inherent rights on, so it
-      // rides the same session-level `acl grant` read-set as the
-      // working tree. Granted on the mkdtemp DIR (not the file)
-      // so the (OI)(CI) ACE covers both the file open AND the
-      // parent-directory list that cmd's `type`/`FindFirstFile`
-      // does before opening. Mirrors the mac/linux
-      // `ownAllowWithinDeny` in wrapWithSandbox: it is not ranked
-      // against the config's lists, nor one of the config's grants.
+      // No path the session grants, in any form, may reach what the
+      // profile read grant excludes.
+      final ownRead = _mitmCA != null
+          ? [dirname(_mitmCA!.trustBundlePath)]
+          : <String>[];
+      final override =
+          options?.dangerouslyAllowReadOfProfileExclusions ?? <String>[];
+      final refused = [
+        ...windowsProfileExclusionConflicts(
+          acc.grantRead,
+          profileExclusions,
+          override: override,
+        ),
+        ...windowsProfileExclusionConflicts(ownRead, profileExclusions),
+        ...windowsProfileExclusionConflicts(
+          acc.grantWrite,
+          profileExclusions,
+          write: true,
+        ),
+      ];
+      if (refused.isNotEmpty) {
+        String describe(WindowsProfileExclusionConflict c) {
+          final list = c.access == 'write' ? 'allowWrite' : 'allowRead';
+          final what = c.kind == 'ungranted-only'
+              ? '${c.relation == 'equal' ? 'is' : 'contains'} ${c.exclusion}, which is not granted as a whole (grant a directory inside it instead)'
+              : c.relation == 'equal'
+              ? 'is the excluded ${c.exclusion}'
+              : c.relation == 'inside'
+              ? 'lies inside the excluded ${c.exclusion}'
+              : c.unexamined != null
+              ? 'may contain the excluded ${c.exclusion}: ${c.unexamined}, and a path is granted only once it has been looked at'
+              : 'contains the excluded ${c.exclusion}';
+          return '$list ${c.path} $what${c.access == 'write' && c.relation == 'above' ? ': a write grant on it is kept and inherited, so that path would be writable and readable if it is ever created again — choose a narrower working directory' : ''}';
+        }
+
+        throw WindowsSandboxError(
+          'profile_exclusion_read_grant',
+          'The session would grant a path that reaches one excluded from '
+              'reads of your user profile: ${refused.map(describe).join('; ')}'
+              '. Nothing was granted. Remove the entry, or name a path that '
+              'neither is nor contains an excluded one.',
+        );
+      }
+      // A read deny is passed once: `srt-win` adds the recorded profile paths it
+      // covers. The CA trust bundle's directory rides the session's read grants.
       final grantRead = _mitmCA != null
           ? [...acc.grantRead, dirname(_mitmCA!.trustBundlePath)]
           : acc.grantRead;
       // `u` was fetched once above for the provisioning gate; the
       // same status carries the SID — don't re-spawn `srt-win user
       // status` here.
-      if (u.sid == null || u.sid!.isEmpty) {
+      if (u.sid == null || u.sid!.isEmpty)
         throw NodeException(
           'sandbox user SID missing from `srt-win user status` '
           '(provisioned but in an inconsistent state)',
         );
-      }
       final sb = u.sid!;
       // Record module-level state BEFORE the first acl call so the
       // catch's best-effort revoke/restore can address whatever
       // partially landed.
       _windowsFsSbUserSid = sb;
-      // Grant FIRST so the sandbox user has working-tree access by
-      // the time the deny stamp runs. The two are independent
-      // refcounted state-DB sets keyed on the same holder PID.
-      if (grantRead.isNotEmpty || acc.grantWrite.isNotEmpty) {
-        grantWindowsAcl(
-          WindowsAclGrantOptions(
-            sandboxUserSid: sb,
-            read: grantRead,
-            write: acc.grantWrite,
-            srtWin: srtWin,
-          ),
+      // One call, always made: it also records this process as a
+      // session. Write roots are kept at reset(); a failure throws.
+      await grantWindowsAclPersistent(
+        WindowsAclGrantOptions(
+          sandboxUserSid: sb,
+          read: grantRead,
+          write: acc.grantWrite,
+          allowProfileExclusions: override,
+          srtWin: srtWin,
+        ),
+        denyRead: acc.denyRead,
+        denyWrite: acc.denyWrite,
+      );
+      stopIfReset();
+      // Gates running revoke/restore at reset(): every session is
+      // recorded with srt-win, whatever it was given. Set before the
+      // probe, so that a reset() during it releases what was granted.
+      _windowsFsStampedSet = acc;
+      logForDebugging(
+        '[Sandbox Windows] fs applied: '
+        '${acc.grantWrite.length} grantWrite, '
+        '${grantRead.length} grantRead, '
+        '${acc.denyRead.length} denyRead, '
+        '${acc.denyWrite.length} denyWrite',
+      );
+      // The egress probe, under the token this session's commands
+      // get; anything but a refused connect throws, and so does an
+      // install whose loopback mode is not this session's. Remembered
+      // per account and loopback mode.
+      final allowLoopback = runtimeConfig.network.allowLocalBinding == true;
+      if (_windowsWfpVerifiedFor != sb ||
+          _windowsWfpVerifiedLoopback != allowLoopback) {
+        await verifyWindowsWfpEgress(
+          proxyPortRange: runtimeConfig.windows?.proxyPortRange,
+          writeRoots: acc.grantWrite,
+          allowLoopback: allowLoopback,
+          sublayerGuid:
+              runtimeConfig.windows?.sublayerGuid ??
+              runtimeConfig.windows?.wfpSublayerGuid,
+          sandboxUser: runtimeConfig.windows?.sandboxUser,
+          srtWin: srtWin,
         );
-      }
-      if (acc.denyRead.isNotEmpty || acc.denyWrite.isNotEmpty) {
-        stampWindowsAcl(
-          WindowsAclStampOptions(
-            sandboxUserSid: sb,
-            denyRead: acc.denyRead,
-            denyWrite: acc.denyWrite,
-            srtWin: srtWin,
-          ),
-        );
-      }
-      // Only record when something was actually applied — gates
-      // running revoke/restore at reset(). Recorded AFTER success —
-      // the catch below clears `config`, and a non-undefined
-      // stampedSet would leave reset()/updateConfig() seeing state
-      // that never landed.
-      final anyApplied =
-          grantRead.isNotEmpty ||
-          acc.grantWrite.isNotEmpty ||
-          acc.denyRead.isNotEmpty ||
-          acc.denyWrite.isNotEmpty;
-      if (anyApplied) {
-        _windowsFsStampedSet = acc;
-        logForDebugging(
-          '[Sandbox Windows] fs applied: '
-          '${acc.grantWrite.length} grantWrite, '
-          '${grantRead.length} grantRead, '
-          '${acc.denyRead.length} denyRead, '
-          '${acc.denyWrite.length} denyWrite',
-        );
+        stopIfReset();
+        _windowsWfpVerifiedFor = sb;
+        _windowsWfpVerifiedLoopback = allowLoopback;
       }
       _windowsFsRawInputs = _rawWindowsFsInputs(runtimeConfig);
-    } catch (e) {
+    } catch (_) {
       // Best-effort release of whatever WAS applied before the
       // failure (exit-2 partial stamps/grants the resolvable
       // inputs; harmless if nothing was — no holds for this PID).
-      if (_windowsFsSbUserSid != null && _windowsFsSbUserSid!.isNotEmpty) {
-        revokeWindowsAcl(sandboxUserSid: _windowsFsSbUserSid!, srtWin: srtWin);
-        restoreWindowsAcl(sandboxUserSid: _windowsFsSbUserSid!, srtWin: srtWin);
-      }
+      if (_windowsFsSbUserSid != null)
+        _releaseWindowsSessionAcls(_windowsFsSbUserSid!, srtWin);
       _windowsFsSbUserSid = null;
+      _windowsFsStampedSet = null;
+      _windowsProfileRead = null;
       _config = null;
       rethrow;
     }
@@ -1383,6 +1964,7 @@ Future<void> _initializeSteps(
       final muxPort = needLocalProxy
           ? await _startMuxProxyServer(sandboxAskCallback, portRange)
           : null;
+      stopIfReset();
       final httpProxyPort = _config!.network.httpProxyPort ?? muxPort!;
       final socksProxyPort = _config!.network.socksProxyPort ?? muxPort!;
       // JVMs read neither HTTPS_PROXY nor its credential; the agent bridges
@@ -1391,6 +1973,7 @@ Future<void> _initializeSteps(
       _javaAgentJarPath = await getJavaProxyAgentJarPathAsync(
         _config!.javaAgentJarPath,
       );
+      stopIfReset();
       // Leaves are minted lazily per-CONNECT (after this point), so setting
       // the CDP URL now means every leaf carries it. See MitmCA.crlUrl.
       // Windows-only: on Linux the child runs under bwrap --unshare-net and
@@ -1420,6 +2003,7 @@ Future<void> _initializeSteps(
         );
       }
 
+      stopIfReset();
       final context = _HostNetworkManagerContext(
         httpProxyPort: httpProxyPort,
         socksProxyPort: socksProxyPort,
@@ -1432,14 +2016,14 @@ Future<void> _initializeSteps(
       // Clear state on error so initialization can be retried
       _initializationPromise = null;
       _managerContext = null;
-      unawaited(
-        _reset().catchError((Object e) {
-          logForDebugging(
-            'Cleanup failed in initializationPromise $e',
-            level: 'error',
-          );
-        }),
-      );
+      // Awaited: an initialize() queued behind this one must not start
+      // until this clean-up has finished clearing what it shares.
+      await _reset().catchError((Object e) {
+        logForDebugging(
+          'Cleanup failed in initializationPromise $e',
+          level: 'error',
+        );
+      });
       rethrow;
     }
   })();
@@ -1469,7 +2053,14 @@ bool _isSandboxingEnabled() {
  */
 ({
   SandboxDependencyCheck? done,
-  ({String? sublayerGuid, SrtWinSpawn srtWin})? windows,
+  ({
+    String? sublayerGuid,
+    (int, int)? proxyPortRange,
+    String? sandboxUser,
+    SrtWinSpawn srtWin,
+    bool? allowLoopback,
+  })?
+  windows,
 })
 _checkDependenciesCommon([RipgrepConfig? ripgrepConfig]) {
   if (!_isSupportedPlatform()) {
@@ -1528,7 +2119,14 @@ _checkDependenciesCommon([RipgrepConfig? ripgrepConfig]) {
       windows: (
         sublayerGuid:
             _config?.windows?.sublayerGuid ?? _config?.windows?.wfpSublayerGuid,
+        proxyPortRange: _config?.windows?.proxyPortRange,
+        sandboxUser: _config?.windows?.sandboxUser,
         srtWin: srtWin,
+        // With a config to go by, an install whose loopback mode is
+        // not the configured one is an error.
+        allowLoopback: _config == null
+            ? null
+            : _config!.network.allowLocalBinding == true,
       ),
     );
   }
@@ -1555,16 +2153,61 @@ _checkDependenciesCommon([RipgrepConfig? ripgrepConfig]) {
   );
 }
 
+/** Options for {@link checkDependencies}. */
+class CheckDependenciesOptions {
+  /**
+   * The Windows backend to check for. Defaults to the initialized
+   * config's `windows.backend`, else srt-win; pass it when checking
+   * before initialize().
+   */
+  final String? windowsBackend; // 'mxc' | 'srt-win'
+  /**
+   * The SDK that will be passed to initialize() as `windowsMxcSdk`, when
+   * checking before initialize() with `windowsBackend: 'mxc'`. With one,
+   * the mxc check does not look for the package.
+   */
+  final MxcSdk? windowsMxcSdk;
+  const CheckDependenciesOptions({this.windowsBackend, this.windowsMxcSdk});
+}
+
+/**
+ * The mxc backend needs neither srt-win.exe nor the WFP/user install,
+ * only the SDK, injected or as the package. Whether the host can run
+ * it is settled by initialize()'s probe. undefined when the srt-win
+ * check applies.
+ */
+SandboxDependencyCheck? _mxcDependencies(CheckDependenciesOptions? options) {
+  final backend = options?.windowsBackend ?? _config?.windows?.backend;
+  if (backend != 'mxc' || getPlatform() != 'windows') return null;
+  return SandboxDependencyCheck(
+    errors:
+        options?.windowsMxcSdk != null ||
+            _windowsMxcState != null ||
+            isMxcSdkInstalled()
+        ? []
+        : [MXC_SDK_MISSING],
+    warnings: [],
+  );
+}
+
 /**
  * Check sandbox dependencies for the current platform
  * @param ripgrepConfig - Ripgrep command to check. If not provided, uses config from initialization or defaults to 'rg'
  * @returns { warnings, errors } - errors mean sandbox cannot run, warnings mean degraded functionality
  */
-SandboxDependencyCheck _checkDependencies([RipgrepConfig? ripgrepConfig]) {
+SandboxDependencyCheck _checkDependencies([
+  RipgrepConfig? ripgrepConfig,
+  CheckDependenciesOptions? options,
+]) {
+  final mxc = _mxcDependencies(options);
+  if (mxc != null) return mxc;
   final common = _checkDependenciesCommon(ripgrepConfig);
   if (common.done != null) return common.done!;
   return checkWindowsDependencies(
     sublayerGuid: common.windows!.sublayerGuid,
+    proxyPortRange: common.windows!.proxyPortRange,
+    sandboxUser: common.windows!.sandboxUser,
+    allowLoopback: common.windows!.allowLoopback,
     srtWin: common.windows!.srtWin,
   );
 }
@@ -1578,7 +2221,10 @@ SandboxDependencyCheck _checkDependencies([RipgrepConfig? ripgrepConfig]) {
  */
 Future<SandboxDependencyCheck> _checkDependenciesAsync([
   RipgrepConfig? ripgrepConfig,
+  CheckDependenciesOptions? options,
 ]) async {
+  final mxc = _mxcDependencies(options);
+  if (mxc != null) return mxc;
   // Linux: resolve apply-seccomp first so its global-npm fallback
   // (`npm root -g`) runs off the event loop; the sync check below then
   // hits the shared path cache.
@@ -1590,6 +2236,9 @@ Future<SandboxDependencyCheck> _checkDependenciesAsync([
   if (common.done != null) return common.done!;
   return checkWindowsDependenciesAsync(
     sublayerGuid: common.windows!.sublayerGuid,
+    proxyPortRange: common.windows!.proxyPortRange,
+    sandboxUser: common.windows!.sandboxUser,
+    allowLoopback: common.windows!.allowLoopback,
     srtWin: common.windows!.srtWin,
   );
 }
@@ -2080,6 +2729,17 @@ bool _sameWindowsStampSet(SandboxRuntimeConfig newConfig) {
       );
 }
 
+/** Why a loopback mode other than the session's verified one is refused. */
+String _windowsLoopbackModeChanged(bool wanted, bool verified) {
+  String mode(bool open) => open ? 'open' : 'closed';
+  return 'network.allowLocalBinding asks for loopback ${mode(wanted)}, but this '
+      'session verified the network fence with loopback ${mode(verified)}. '
+      'On Windows the loopback mode is fixed by the install and checked at '
+      'initialize(): it cannot change for one command or through '
+      'updateConfig(). Call reset() then initialize() with the new value; '
+      'the installed mode must match it.';
+}
+
 NetworkRestrictionConfig _getNetworkRestrictionConfig() {
   final config = _config;
   if (config == null) {
@@ -2255,6 +2915,7 @@ class PartialSandboxRuntimeConfig {
   final config_types.RipgrepConfig? ripgrep;
   final int? mandatoryDenySearchDepth;
   final bool? allowPty;
+  final bool? allowNestedUserNamespaces;
   final SeccompConfig? seccomp;
   final String? bwrapPath;
   final String? socatPath;
@@ -2273,6 +2934,7 @@ class PartialSandboxRuntimeConfig {
     this.ripgrep,
     this.mandatoryDenySearchDepth,
     this.allowPty,
+    this.allowNestedUserNamespaces,
     this.seccomp,
     this.bwrapPath,
     this.socatPath,
@@ -2644,6 +3306,9 @@ Future<String> _wrapWithSandboxOnce(
 
   // Check custom config to allow pseudo-terminal (can be applied dynamically)
   final allowPty = customConfig?.allowPty ?? _config?.allowPty;
+  final allowNestedUserNamespaces =
+      customConfig?.allowNestedUserNamespaces ??
+      _config?.allowNestedUserNamespaces;
 
   final gitSafeDirectories = _getGitSafeDirectories(customConfig);
 
@@ -2708,6 +3373,7 @@ Future<String> _wrapWithSandboxOnce(
           maskedFileBinds: credentialRestrictions.maskedFileBinds,
           maskedFileStoreDir: credentialRestrictions.maskedFileStoreDir,
           enableWeakerNestedSandbox: _getEnableWeakerNestedSandbox(),
+          allowNestedUserNamespaces: allowNestedUserNamespaces,
           allowAllUnixSockets: _getAllowAllUnixSockets(),
           binShell: binShell,
           ripgrepConfig: _getRipgrepConfig(),
@@ -2777,6 +3443,13 @@ Future<({List<String> argv, Map<String, String?> env})> _wrapWithSandboxArgv(
   final platform = getPlatform();
 
   if (platform == 'windows') {
+    // The MXC SDK starts the process itself, so there is no argv for
+    // the caller to spawn.
+    if (_windowsMxcState != null)
+      throw NodeException(
+        "windows.backend 'mxc' starts commands itself: use "
+        'SandboxManager.spawnSandboxed() instead of wrapWithSandboxArgv().',
+      );
     final hasNetworkConfig =
         customConfig?.network?.allowedDomains != null ||
         _config?.network.allowedDomains != null;
@@ -2860,9 +3533,10 @@ Future<({List<String> argv, Map<String, String?> env})> _wrapWithSandboxArgv(
                 grantWrite: _windowsFsStampedSet!.grantWrite,
               ),
       );
-      perExecDenyRead = ranked.denyRead
-          .where((p) => !sessRead.contains(p))
-          .toList();
+      final denyRead = ranked.denyRead;
+      perExecDenyRead = denyRead.where((p) => !sessRead.contains(p)).toList();
+      // srt-win expands the deny from the record as it is when the command
+      // runs, so a grant made since initialize() is covered.
       perExecDenyWrite = ranked.denyWrite
           .where((p) => !sessRead.contains(p) && !sessWrite.contains(p))
           .toList();
@@ -2875,6 +3549,27 @@ Future<({List<String> argv, Map<String, String?> env})> _wrapWithSandboxArgv(
     // The `denyReadPaths` half of the SESSION-level credentials
     // is already unioned into the stamp set at initialize() time
     // via `computeWindowsFsAccessSet`.
+    // Asked once per srt-win, so an older one is refused as outdated
+    // instead of failing on a flag it does not know.
+    _assertWindowsSrtWinCapable(
+      customConfig?.windows?.srtWin != null
+          ? resolveSrtWin(customConfig!.windows!.srtWin)
+          : (_srtWinSpawn ?? resolveSrtWin(_config?.windows?.srtWin)),
+    );
+    // The loopback mode is the one initialize() probed the fence with.
+    // A command or an updateConfig() asking for the other is refused here.
+    final wantsLoopback =
+        (customConfig?.network?.allowLocalBinding ?? _getAllowLocalBinding()) ==
+        true;
+    if (_windowsWfpVerifiedLoopback != null &&
+        wantsLoopback != _windowsWfpVerifiedLoopback)
+      throw WindowsSandboxError(
+        'wfp_loopback_mismatch',
+        _windowsLoopbackModeChanged(
+          wantsLoopback,
+          _windowsWfpVerifiedLoopback!,
+        ),
+      );
     registerCommandText(command, options);
     return wrapCommandWithSandboxWindows(
       WindowsSandboxParams(
@@ -2883,12 +3578,20 @@ Future<({List<String> argv, Map<String, String?> env})> _wrapWithSandboxArgv(
         httpProxyPort: hasNetworkConfig ? _getProxyPort() : null,
         socksProxyPort: hasNetworkConfig ? _getSocksProxyPort() : null,
         proxyAuthToken: hasNetworkConfig ? _proxyAuthToken : null,
+        // `srt-win exec` launches nothing unless this is the loopback mode
+        // the install recorded: a difference is refused, never ignored.
+        allowLoopback: wantsLoopback,
         // mode:'deny' env vars are structurally absent (fresh
         // srt-sandbox profile env). mode:'mask' sentinels are
         // passed via the --env overlay so the sandboxed child sees
         // the sentinel value, same as macOS/Linux.
         setEnvVars: credentialRestrictions.setEnvVars,
         denyRead: perExecDenyRead,
+        // The session's own grants beneath those denies keep their rank.
+        denyReadExcept: windowsGrantsBeneathDenies([
+          ...?_windowsFsStampedSet?.grantRead,
+          ...?_windowsFsStampedSet?.grantWrite,
+        ], perExecDenyRead),
         denyWrite: perExecDenyWrite,
         // safe.directory: cwd + the resolved session-level write
         // grants + explicit git.safeDirectories — the working-tree
@@ -2898,6 +3601,12 @@ Future<({List<String> argv, Map<String, String?> env})> _wrapWithSandboxArgv(
         allowWrite: _windowsFsStampedSet?.grantWrite,
         gitSafeDirectories: _getGitSafeDirectories(customConfig),
         caCertPath: _mitmCA?.trustBundlePath,
+        // srt-win verifies the holder and otherwise holds for the command
+        // itself.
+        heldBy: _windowsFsSbUserSid != null ? process.pid : null,
+        // The roots initialize() granted persistently; their capability
+        // SIDs are what let this command write them.
+        writeRoots: _windowsFsStampedSet?.grantWrite,
         binShell: parseWindowsBinShell(binShell),
         srtWin: customConfig?.windows?.srtWin != null
             ? resolveSrtWin(customConfig!.windows!.srtWin)
@@ -2923,6 +3632,204 @@ Future<({List<String> argv, Map<String, String?> env})> _wrapWithSandboxArgv(
   );
   final shell = binShell ?? '/bin/bash';
   return (argv: [shell, '-c', wrapped], env: process.env);
+}
+
+/**
+ * Settings the mxc backend cannot honour, refused rather than run with
+ * a different meaning than on the other backends.
+ *
+ * @throws {WindowsSandboxError} `backend_unsupported`.
+ */
+void _assertMxcSessionConfig(PartialSandboxRuntimeConfig c) {
+  Never refuse(String what) => throw WindowsSandboxError(
+    'backend_unsupported',
+    '$what is not supported on the mxc backend',
+  );
+  // MXC is allow-list in both directions: "no filesystem restrictions"
+  // has no faithful mapping, and the nearest request would restrict.
+  if (c.filesystem?.disabled == true) refuse('filesystem.disabled');
+  // A host proxy without a peer identity needs host loopback open, and
+  // MXC promises nothing about other loopback ports either way, so
+  // opening loopback on request is not something srt can guarantee.
+  if (c.network?.allowLocalBinding == true) refuse('network.allowLocalBinding');
+}
+
+/** Options for {@link spawnSandboxed}. */
+class SpawnSandboxedOptions {
+  /** Inner shell, as for `wrapWithSandboxArgv`. Defaults to cmd.exe. */
+  final Object? binShell; // String | WindowsBinShell
+  /** Per-command overrides, as for `wrapWithSandboxArgv`. */
+  final PartialSandboxRuntimeConfig? customConfig;
+  /** The command's working directory. Defaults to `process.cwd()`. */
+  final String? cwd;
+  /** Kill the command after this many milliseconds. */
+  final int? timeoutMs;
+  /** As for `wrapWithSandboxArgv`: see {@link WrapWithSandboxOptions}. */
+  final String? commandId;
+  /** As for `wrapWithSandboxArgv`: see {@link WrapWithSandboxOptions}. */
+  final String? commandText;
+  /**
+   * Variables for the command, laid over the environment the backend
+   * builds for it (the host's base variables, the proxy settings, git's
+   * config), as the `--env` pairs a caller adds to an srt-win argv are.
+   * The command inherits nothing else of this process's environment.
+   */
+  final Map<String, String>? env;
+  const SpawnSandboxedOptions({
+    this.binShell,
+    this.customConfig,
+    this.cwd,
+    this.timeoutMs,
+    this.commandId,
+    this.commandText,
+    this.env,
+  });
+}
+
+/**
+ * A sandboxed command started by {@link spawnSandboxed}. Read each
+ * output stream you want before calling `wait()`: waiting drains any
+ * stream not yet read.
+ */
+abstract interface class SandboxedProcess {
+  /** OS process id of the command. */
+  int get pid;
+  stream.Writable? get stdin;
+  stream.Readable? get stdout;
+  stream.Readable? get stderr;
+  /** Resolves once the command and everything it started have exited. */
+  Future<({int exitCode, bool timedOut})> wait();
+  /** Kill the command and everything it started. */
+  void kill();
+  /** Release native resources once the process is no longer needed. */
+  void dispose();
+}
+
+SandboxedProcess _sandboxedProcessOf(MxcProcessHandle p) =>
+    _SandboxedProcess(p);
+
+class _SandboxedProcess implements SandboxedProcess {
+  final MxcProcessHandle p;
+  _SandboxedProcess(this.p);
+  @override
+  int get pid => p.id;
+  @override
+  stream.Writable? get stdin => p.standardInput;
+  @override
+  stream.Readable? get stdout => p.standardOutput;
+  @override
+  stream.Readable? get stderr => p.standardError;
+  @override
+  Future<({int exitCode, bool timedOut})> wait() => p.wait();
+  @override
+  void kill() => p.kill();
+  @override
+  void dispose() => p.dispose();
+}
+
+/**
+ * Start `command` in the sandbox and return the running process.
+ *
+ * Only for `windows.backend: 'mxc'`, where the MXC SDK starts the
+ * process itself (other backends use `wrapWithSandboxArgv`). Each call
+ * probes its own policy first and refuses to start a command the host
+ * cannot confine exactly.
+ *
+ * @throws {WindowsSandboxError} `backend_unsupported` when the probe
+ * refuses the request.
+ */
+Future<SandboxedProcess> _spawnSandboxed(
+  String command, [
+  SpawnSandboxedOptions? options,
+]) async {
+  options ??= const SpawnSandboxedOptions();
+  final st = _windowsMxcState;
+  if (getPlatform() != 'windows' || st == null)
+    throw NodeException(
+      "spawnSandboxed() needs an initialized windows.backend 'mxc' "
+      'session; other backends use wrapWithSandboxArgv().',
+    );
+  final customConfig = options.customConfig;
+  final cwd = options.cwd;
+  if (customConfig?.network?.allowLocalBinding == true)
+    _assertMxcSessionConfig(
+      PartialSandboxRuntimeConfig(network: customConfig!.network),
+    );
+  final hasNetworkConfig =
+      customConfig?.network?.allowedDomains != null ||
+      _config?.network.allowedDomains != null;
+  if (hasNetworkConfig) await _waitForNetworkInitialization();
+  final credentialRestrictions = _getCredentialRestrictions(
+    customConfig?.credentials ?? _config?.credentials,
+    customConfig?.network?.allowedDomains ?? _config?.network.allowedDomains,
+  );
+  // Every spawn carries the FULL policy, so per-command allowRead and
+  // allowWrite are expressible here (srt-win's grants are session ACL
+  // state and refuse them). Per-command paths go through the same
+  // `expandWindowsFsPaths` as the session's.
+  // `mode: 'mask'` files are denied, as on the srt-win path: nothing
+  // can show the child a masked copy. Like there, they stay in force
+  // under `filesystem.disabled`.
+  final fsCfg = customConfig?.filesystem;
+  final maskedFiles = _windowsMaskedFileDenies(credentialRestrictions);
+  var perExecDenyRead = <String>[];
+  var perExecDenyWrite = <String>[];
+  var perExecAllowRead = <String>[];
+  var perExecAllowWrite = <String>[];
+  if (fsCfg?.disabled != true) {
+    perExecAllowRead = expandWindowsFsPaths(
+      fsCfg?.allowRead ?? [],
+      mode: 'grant',
+    );
+    perExecAllowWrite = expandWindowsFsPaths(
+      fsCfg?.allowWrite ?? [],
+      mode: 'grant',
+    );
+    // Deny mode keeps a missing literal path, so a file created after
+    // this point is still denied.
+    perExecDenyRead = expandWindowsFsPaths([
+      ...?fsCfg?.denyRead,
+      ..._getCredentialDenyReadPaths(
+        customConfig?.credentials,
+      ).map(FilesystemPathSpelling.new),
+    ], mode: 'deny');
+    perExecDenyWrite = expandWindowsFsPaths(
+      fsCfg?.denyWrite ?? [],
+      mode: 'deny',
+    );
+  }
+  List<String> unique(List<String> paths) => paths.toSet().toList();
+  registerCommandText(
+    command,
+    WrapWithSandboxOptions(
+      commandId: options.commandId,
+      commandText: options.commandText,
+    ),
+  );
+  final request = buildMxcRequest(
+    MxcSandboxParams(
+      command: command,
+      commandId: options.commandId,
+      httpProxyPort: hasNetworkConfig ? _getProxyPort() : null,
+      socksProxyPort: hasNetworkConfig ? _getSocksProxyPort() : null,
+      proxyAuthToken: hasNetworkConfig ? _proxyAuthToken : null,
+      setEnvVars: credentialRestrictions.setEnvVars,
+      denyRead: unique([
+        ...st.fsSet.denyRead,
+        ...perExecDenyRead,
+        ...maskedFiles,
+      ]),
+      denyWrite: unique([...st.fsSet.denyWrite, ...perExecDenyWrite]),
+      allowRead: unique([...st.fsSet.grantRead, ...perExecAllowRead]),
+      allowWrite: unique([...st.fsSet.grantWrite, ...perExecAllowWrite]),
+      cwd: cwd,
+      gitSafeDirectories: _getGitSafeDirectories(customConfig),
+      binShell: parseWindowsBinShell(options.binShell),
+      timeoutMs: options.timeoutMs,
+      env: options.env,
+    ),
+  );
+  return _sandboxedProcessOf(await spawnMxcRequest(st.sdk, request));
 }
 
 /**
@@ -2958,9 +3865,23 @@ void _updateConfig(SandboxRuntimeConfig newConfig) {
       !_sameWindowsStampSet(newConfig)) {
     logForDebugging(
       '[Sandbox Windows] updateConfig: the resolved file-access set '
-      '(filesystem.* ∪ credentials.files) changed but the ACL '
-      'stamp/grant is session-wide — call reset() then initialize() '
-      'to apply. The previously-applied set stays in effect.',
+      '(filesystem.* ∪ credentials.files) changed but the session '
+      "state is fixed at initialize() — srt-win's ACL stamp/grant "
+      "is session-wide, and the mxc backend's probed selection + "
+      'fs sets are cached — call reset() then initialize() to '
+      'apply. The previously-applied set stays in effect.',
+      level: 'warn',
+    );
+  }
+  final nextLoopback = newConfig.network.allowLocalBinding == true;
+  if (getPlatform() == 'windows' &&
+      _config != null &&
+      _windowsWfpVerifiedLoopback != null &&
+      nextLoopback != _windowsWfpVerifiedLoopback) {
+    logForDebugging(
+      '[Sandbox Windows] updateConfig: '
+      '${_windowsLoopbackModeChanged(nextLoopback, _windowsWfpVerifiedLoopback!)}'
+      ' Commands are refused until then.',
       level: 'warn',
     );
   }
@@ -3118,46 +4039,33 @@ Future<void> _forceCloseHttpServer(http.NodeHttpServer server) {
 }
 
 Future<void> _reset() async {
-  // Windows: release this session's sandbox-user ACEs. Best-effort
-  // — log anomalies rather than throw, so teardown always
-  // completes. Leftover ACEs are recoverable later via
-  // `srt-win acl recover` (which sweeps by trustee SID).
-  if (_windowsFsStampedSet != null &&
-      _windowsFsSbUserSid != null &&
-      _windowsFsSbUserSid!.isNotEmpty) {
+  _initializeGeneration++;
+  _windowsProfileGrantAbort?.abort();
+  // Windows: release this session's sandbox-user ACEs. Best-effort:
+  // log anomalies rather than throw, so teardown always completes.
+  // Persistent write roots and the denies under them are not released.
+  if (_windowsFsStampedSet != null && _windowsFsSbUserSid != null) {
     final sb = _windowsFsSbUserSid!;
     // Captured at initialize() — the SAME binary the grants/stamps
     // were applied with, immune to `config` mutation between.
     final srtWin = _srtWinSpawn;
-    // 'restored'/'alreadyOriginal' are the pre- same-user-removal
-    // srt-win's success vocabulary; 'revoked'/'stillHeld' are the
-    // post-. Either is non-anomalous.
-    final ok = {'revoked', 'stillHeld', 'restored', 'alreadyOriginal'};
-    void log(String kind, ({String path, String status}) e) {
-      if (!ok.contains(e.status)) {
-        logForDebugging(
-          "[Sandbox Windows] $kind: '${e.path}' ${e.status} — "
-          'ACE may be left in place; resolve and run '
-          '`srt-win acl recover` to clear',
-          level: 'warn',
-        );
-      }
-    }
-
-    for (final e
-        in revokeWindowsAcl(sandboxUserSid: sb, srtWin: srtWin) ?? const []) {
-      log('grant revoke', (path: e.path, status: e.status));
-    }
-    for (final e
-        in restoreWindowsAcl(sandboxUserSid: sb, srtWin: srtWin) ?? const []) {
-      log('deny restore', (path: e.path, status: e.status));
-    }
+    // The 'exit'/signal handler lands here too: this part of
+    // reset() runs synchronously.
+    _releaseWindowsSessionAcls(sb, srtWin);
   }
   _windowsFsStampedSet = null;
   _windowsFsSbUserSid = null;
   _windowsFsRawInputs = null;
   _srtWinSpawn = null;
-  // windowsWfpVerified is NOT cleared — per-process, not per-session.
+  _windowsProfileRead = null;
+  _windowsProfileReadWarnings = [];
+  _windowsProfileReadRefresh = null;
+  _windowsCapableSrtWin.clear();
+  // MXC applies policy per spawn and leaves no host state behind, so
+  // there is no ACL/user state to unwind: only the loaded SDK and the
+  // cached fs sets. Processes a caller started stay theirs to dispose.
+  _windowsMxcState = null;
+  // windowsWfpVerifiedFor is NOT cleared — per-process, not per-session.
 
   // Clean up any leftover bwrap mount points. Force past the
   // active-sandbox counter — reset() means the session is over.
@@ -3257,6 +4165,20 @@ Future<void> _reset() async {
   _commandTextsByKey.clear();
   _commandNetworkListsByKey.clear();
   _maskedFileStore.dispose();
+}
+
+/**
+ * Which Windows enforcement backend initialize() selected (and why).
+ * undefined before initialize() or on non-Windows platforms. Hosts
+ * and the Windows test suite log this so a run's enforcement path is
+ * visible at a glance.
+ */
+WindowsBackendSelection? _getWindowsBackend() {
+  if (_windowsMxcState != null)
+    return const WindowsBackendSelection(backend: 'mxc');
+  if (_srtWinSpawn != null)
+    return const WindowsBackendSelection(backend: 'srt-win');
+  return null;
 }
 
 SandboxViolationStore _getSandboxViolationStore() {
@@ -3362,14 +4284,17 @@ abstract interface class ISandboxManager {
     SandboxRuntimeConfig runtimeConfig, [
     SandboxAskCallback? sandboxAskCallback,
     bool? enableLogMonitor,
+    SandboxInitializeOptions? options,
   ]);
   bool isSupportedPlatform();
   bool isSandboxingEnabled();
   SandboxDependencyCheck checkDependencies([
     ({String command, List<String>? args})? ripgrepConfig,
+    CheckDependenciesOptions? options,
   ]);
   Future<SandboxDependencyCheck> checkDependenciesAsync([
     ({String command, List<String>? args})? ripgrepConfig,
+    CheckDependenciesOptions? options,
   ]);
   FsReadRestrictionConfig getFsReadConfig();
   FsWriteRestrictionConfig getFsWriteConfig();
@@ -3454,11 +4379,36 @@ abstract interface class ISandboxManager {
    * is absent, deny with a plain `false`.
    */
   bool get askCallbackDenyReason;
+  // Optional so downstream ISandboxManager implementers/mocks written
+  // against older versions keep typechecking.
+  WindowsBackendSelection? Function()? get getWindowsBackend;
+  /**
+   * Start a command in the sandbox; `windows.backend: 'mxc'` only.
+   * Optional for the same reason as getWindowsBackend.
+   */
+  Future<SandboxedProcess> Function(
+    String command, [
+    SpawnSandboxedOptions? options,
+  ])?
+  get spawnSandboxed;
   SandboxViolationStore getSandboxViolationStore();
   String annotateStderrWithSandboxFailures(String command, String stderr);
   List<String> getLinuxGlobPatternWarnings();
   SandboxRuntimeConfig? getConfig();
   MitmCA? getMitmCA();
+  /**
+   * Windows: whether the commands of the current session read the
+   * user's profile through the profile read grant.
+   */
+  String? getWindowsProfileRead(); // 'granted' | 'absent'
+  /**
+   * Windows: warnings about the profile read grant for the current session:
+   * excluded paths that are, or may be, readable to sandboxed commands, and
+   * entries that could not be removed. None of them is a rejection.
+   */
+  List<WindowsProfileReadWarning> getWindowsProfileReadWarnings();
+  /** What this `initialize()` found if it refreshed the profile read grant. */
+  WindowsProfileGrantResult? getWindowsProfileReadRefresh();
   SentinelRegistry getSentinelRegistry();
   AwsPairRegistry getAwsPairRegistry();
   MaskedFileStore getMaskedFileStore();
@@ -3484,8 +4434,13 @@ class _SandboxManager implements ISandboxManager {
     SandboxRuntimeConfig runtimeConfig, [
     SandboxAskCallback? sandboxAskCallback,
     bool? enableLogMonitor,
-  ]) =>
-      _initialize(runtimeConfig, sandboxAskCallback, enableLogMonitor ?? false);
+    SandboxInitializeOptions? options,
+  ]) => _initialize(
+    runtimeConfig,
+    sandboxAskCallback,
+    enableLogMonitor ?? false,
+    options,
+  );
 
   @override
   bool isSupportedPlatform() => _isSupportedPlatform();
@@ -3496,6 +4451,7 @@ class _SandboxManager implements ISandboxManager {
   @override
   SandboxDependencyCheck checkDependencies([
     ({String command, List<String>? args})? ripgrepConfig,
+    CheckDependenciesOptions? options,
   ]) => _checkDependencies(
     ripgrepConfig == null
         ? null
@@ -3503,11 +4459,13 @@ class _SandboxManager implements ISandboxManager {
             command: ripgrepConfig.command,
             args: ripgrepConfig.args,
           ),
+    options,
   );
 
   @override
   Future<SandboxDependencyCheck> checkDependenciesAsync([
     ({String command, List<String>? args})? ripgrepConfig,
+    CheckDependenciesOptions? options,
   ]) => _checkDependenciesAsync(
     ripgrepConfig == null
         ? null
@@ -3515,6 +4473,7 @@ class _SandboxManager implements ISandboxManager {
             command: ripgrepConfig.command,
             args: ripgrepConfig.args,
           ),
+    options,
   );
 
   @override
@@ -3617,6 +4576,22 @@ class _SandboxManager implements ISandboxManager {
 
   @override
   MaskedFileStore getMaskedFileStore() => _maskedFileStore;
+
+  @override
+  WindowsBackendSelection? Function() get getWindowsBackend =>
+      _getWindowsBackend;
+  @override
+  Future<SandboxedProcess> Function(String, [SpawnSandboxedOptions?])
+  get spawnSandboxed => _spawnSandboxed;
+  @override
+  String? getWindowsProfileRead() => _windowsProfileRead;
+  @override
+  List<WindowsProfileReadWarning> getWindowsProfileReadWarnings() => [
+    ..._windowsProfileReadWarnings,
+  ];
+  @override
+  WindowsProfileGrantResult? getWindowsProfileReadRefresh() =>
+      _windowsProfileReadRefresh;
 
   @override
   SandboxViolationStore getSandboxViolationStore() =>

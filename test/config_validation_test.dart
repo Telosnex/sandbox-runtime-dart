@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/config-validation.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/config-validation.test.ts @ 0bbebed.
 import 'dart:convert';
 
 import 'package:test/test.dart';
@@ -92,11 +92,33 @@ void main() {
           'git push': ['/usr/bin/nc'],
         },
         'enableWeakerNestedSandbox': true,
+        'allowNestedUserNamespaces': true,
         'enableWeakerNetworkIsolation': false,
       };
 
       final result = SandboxRuntimeConfigSchema.safeParse(config);
       expect(result.success, isTrue);
+      expect(result.data.allowNestedUserNamespaces, true);
+    });
+
+    test('allowNestedUserNamespaces is a boolean, and absent unless given', () {
+      final base = {
+        'network': {'allowedDomains': [], 'deniedDomains': []},
+        'filesystem': {'denyRead': [], 'allowWrite': [], 'denyWrite': []},
+      };
+      expect(
+        SandboxRuntimeConfigSchema.safeParse(
+          base,
+        ).data.allowNestedUserNamespaces,
+        isNull,
+      );
+      expect(
+        SandboxRuntimeConfigSchema.safeParse({
+          ...base,
+          'allowNestedUserNamespaces': 'yes',
+        }).success,
+        false,
+      );
     });
 
     test('should reject missing required fields', () {
@@ -201,6 +223,31 @@ void main() {
         expect(result.success, isFalse);
       }
     });
+
+    test(
+      'network.ambiguousRequestTarget takes its three values and no other',
+      () {
+        ConfigParseResult<SandboxRuntimeConfig> parse(
+          Object? ambiguousRequestTarget, {
+          bool absent = false,
+        }) => SandboxRuntimeConfigSchema.safeParse({
+          'network': {
+            'allowedDomains': [],
+            'deniedDomains': [],
+            if (!absent) 'ambiguousRequestTarget': ambiguousRequestTarget,
+          },
+          'filesystem': {'denyRead': [], 'allowWrite': [], 'denyWrite': []},
+        });
+        for (final value in [null, 'refuse', 'asSpelled', 'normalize']) {
+          final result = parse(value, absent: value == null);
+          expect(result.success, true);
+          expect(result.data.network.ambiguousRequestTarget, value);
+        }
+        for (final value in ['', 'normalized', 'asspelled', true, null]) {
+          expect(parse(value).success, false);
+        }
+      },
+    );
 
     test('should validate config with enableWeakerNetworkIsolation', () {
       final config = {
@@ -2606,6 +2653,75 @@ void main() {
             expect(parse({'handshakeTimeoutMs': v}).success, isFalse);
           }
         });
+      });
+    });
+    group('network.allowLocalBinding', () {
+      ConfigParseResult<SandboxRuntimeConfig> parse(
+        Map<String, Object?> network,
+      ) => SandboxRuntimeConfigSchema.safeParse({
+        'network': {'allowedDomains': [], 'deniedDomains': [], ...network},
+        'filesystem': {'denyRead': [], 'allowWrite': [], 'denyWrite': []},
+      });
+      test('is unset by default and takes a boolean, nothing else', () {
+        final none = parse({});
+        expect(none.success, true);
+        if (none.success) {
+          expect(none.data.network.allowLocalBinding, isNull);
+        }
+        for (final v in [true, false]) {
+          final r = parse({'allowLocalBinding': v});
+          expect(r.success, true);
+          if (r.success) expect(r.data.network.allowLocalBinding, v);
+        }
+        // No port list, range or mode word: it is a toggle.
+        for (final v in [
+          'all',
+          1,
+          [3000, 3099],
+          null,
+        ]) {
+          expect(parse({'allowLocalBinding': v}).success, false);
+        }
+      });
+      test('its description says what it does on each platform', () {
+        final text =
+            NetworkConfigSchema.shape['allowLocalBinding']?.description ?? '';
+        for (final platform in ['macOS', 'Windows', 'Linux']) {
+          expect(text, contains(platform));
+        }
+      });
+    });
+    group('reading the user profile on Windows is not a setting', () {
+      ConfigParseResult<SandboxRuntimeConfig> parse([Object? windows]) =>
+          SandboxRuntimeConfigSchema.safeParse({
+            'network': {'allowedDomains': [], 'deniedDomains': []},
+            'filesystem': {'denyRead': [], 'allowWrite': [], 'denyWrite': []},
+            if (windows != null) 'windows': windows,
+          });
+      test(
+        'the windows block has no key that turns it on, lists exclusions, or re-admits one',
+        () {
+          final keys = WindowsConfigSchema.shape.keys;
+          for (final gone in [
+            'profileRead',
+            'profileReadExclude',
+            'profileReadInclude',
+            'dangerouslyAllowReadOfProfileExclusions',
+          ]) {
+            expect(keys, isNot(contains(gone)));
+          }
+          final r = parse({
+            'profileRead': false,
+            'profileReadExclude': ['.x'],
+          });
+          expect(r.success, true);
+          expect(r.success ? r.data.windows?.toJson().keys ?? [] : [], isEmpty);
+        },
+      );
+      test('windows.backend is optional and limited to the known backends', () {
+        expect(parse({}).success, true);
+        expect(parse({'backend': 'mxc'}).success, true);
+        expect(parse({'backend': 'auto'}).success, false);
       });
     });
   });
