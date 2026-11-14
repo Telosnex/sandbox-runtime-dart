@@ -1,4 +1,5 @@
-// Ported from sandbox-runtime src/sandbox/windows-sandbox-utils.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/windows-sandbox-utils.ts @ 0bbebed.
+// ignore_for_file: doc_directive_unknown, dangling_library_doc_comments, curly_braces_in_flow_control_structures, prefer_adjacent_string_concatenation, overridden_fields
 // Windows is not supported by this port (PORT_WORKLOG.md); pure helpers are ported, the rest throws.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments
 // ignore_for_file: unused_element, unused_element_parameter, prefer_is_empty, curly_braces_in_flow_control_structures
@@ -1379,7 +1380,7 @@ String _windowsPathKey(String p) {
 }
 
 /** The one of `dirs` that a path is, or lies beneath. */
-String? Function(String) _coveringWindowsPath(List<String> dirs) {
+String? Function(String) coveringWindowsPath(List<String> dirs) {
   final keys = dirs.map(_windowsPathKey).toList();
   return (p) {
     if (keys.length == 0) return null;
@@ -1433,8 +1434,8 @@ WindowsFsAccessSet rankWindowsFsAccess({
   required List<String> credentialDeny,
   ({List<String> grantRead, List<String> grantWrite})? held,
 }) {
-  final credentialDenyOver = _coveringWindowsPath(credentialDeny);
-  final writeDenyOver = _coveringWindowsPath(denyWrite);
+  final credentialDenyOver = coveringWindowsPath(credentialDeny);
+  final writeDenyOver = coveringWindowsPath(denyWrite);
   final grantRead = <String>{};
   final grantWrite = <String>{};
   void rank(String list, String p) {
@@ -1684,7 +1685,7 @@ List<WindowsAclAceOutcome>? revokeWindowsAcl({
   // trust comes from the registry write `srt-win user trust-ca`
   // did at install time; the env-var layer here covers the
   // OpenSSL-backed tools.
-  final generated = _envListToObject(
+  final generated = envListToObject(
     generateProxyEnvVars(
       p.httpProxyPort,
       p.socksProxyPort,
@@ -1780,11 +1781,49 @@ List<WindowsAclAceOutcome>? revokeWindowsAcl({
 }
 
 /**
+ * The one spelling each proxy variable has in a sandboxed command's
+ * environment. Must match `PROXY_NAME_SPELLING` in launch.rs.
+ */
+const _WINDOWS_PROXY_NAME_SPELLING = [
+  'http_proxy',
+  'https_proxy',
+  'ftp_proxy',
+  'all_proxy',
+  'no_proxy',
+  'grpc_proxy',
+  'RSYNC_PROXY',
+];
+
+/**
+ * Merge environment layers ignoring case, as Windows reads names: a later
+ * layer's entry replaces an earlier one, name and value; an `undefined`
+ * value sets nothing. Two names that differ only by case in one block make
+ * .NET's `Process.Start` throw.
+ */
+Map<String, String?> mergeWindowsEnv(List<Map<String, String?>> layers) {
+  final byName = <String, (String, String?)>{};
+  for (final layer in layers) {
+    for (final MapEntry(key: name, value: value) in layer.entries) {
+      if (value == null) continue;
+      final folded = name.toUpperCase();
+      final spelling =
+          _WINDOWS_PROXY_NAME_SPELLING
+              .where((n) => n.toUpperCase() == folded)
+              .firstOrNull ??
+          name;
+      byName[folded] = (spelling, value);
+    }
+  }
+  return {for (final (name, value) in byName.values) name: value};
+}
+
+/**
  * Parse a list of `KEY=VALUE` strings (as produced by
  * {@link generateProxyEnvVars}) into an object. Splits on the FIRST
- * `=` only, so values containing `=` survive intact.
+ * `=` only, so values containing `=` survive intact. Shared with the
+ * MXC backend's child-environment assembly.
  */
-Map<String, String?> _envListToObject(List<String> list) {
+Map<String, String?> envListToObject(List<String> list) {
   final out = <String, String?>{};
   for (final entry in list) {
     final eq = entry.indexOf('=');
