@@ -589,8 +589,10 @@ String Function(String path) realpathSync = _realpathSync;
 
 /// Node's `fs.realpathSync.native`, without realpathSync's lexical folding
 /// or its fallback for paths the native implementation cannot resolve.
-String realpathSyncNative(String path) =>
+String _realpathSyncNative(String path) =>
     utf8.decode(realpathSyncNativeBuffer(path), allowMalformed: true);
+
+String Function(String path) realpathSyncNative = _realpathSyncNative;
 
 /// The `encoding: 'buffer'` overload of Node's realpathSync.native.
 Uint8List realpathSyncNativeBuffer(String path) {
