@@ -1,4 +1,5 @@
 // Ported from sandbox-runtime test/sandbox/rules-through-links-on-every-runtime.test.ts @ 0bbebed.
+// ignore_for_file: curly_braces_in_flow_control_structures
 // ignore_for_file: slash_for_doc_comments, constant_identifier_names, non_constant_identifier_names
 import 'dart:convert';
 import 'dart:io' as io;

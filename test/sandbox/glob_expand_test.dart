@@ -1,4 +1,5 @@
 // Ported from sandbox-runtime test/sandbox/glob-expand.test.ts @ 0bbebed.
+// ignore_for_file: avoid_function_literals_in_foreach_calls, await_only_futures, curly_braces_in_flow_control_structures, no_leading_underscores_for_local_identifiers, prefer_interpolation_to_compose_strings
 // ignore_for_file: slash_for_doc_comments, constant_identifier_names, non_constant_identifier_names
 
 // <reference lib="es2021.weakref" />
@@ -2698,7 +2699,7 @@ void main() {
       expect(err?.code, 'mapped_drive_cwd');
       expect(err?.subcommand, 'exec');
       expect((err as MappedDriveCwdError).drive, 'Z:\\');
-      expect(err?.message, contains('DRIVE_REMOTE'));
+      expect(err.message, contains('DRIVE_REMOTE'));
     });
 
     test('parses seclogon_disabled JSON line (srt-win exec exit 18)', () {
@@ -2711,7 +2712,7 @@ void main() {
       expect(err?.code, 'seclogon_disabled');
       expect(err?.subcommand, 'exec');
       expect((err as SeclogonDisabledError).state, 'disabled');
-      expect(err?.message, contains('seclogon is disabled'));
+      expect(err.message, contains('seclogon is disabled'));
       expect(
         (parseWindowsSandboxError(line('missing')) as SeclogonDisabledError)
             .state,

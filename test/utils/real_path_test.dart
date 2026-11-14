@@ -1,4 +1,5 @@
 // Ported from sandbox-runtime test/utils/real-path.test.ts @ 0bbebed.
+// ignore_for_file: curly_braces_in_flow_control_structures, non_constant_identifier_names
 // ignore_for_file: slash_for_doc_comments
 // ignore_for_file: no_leading_underscores_for_local_identifiers
 // ignore_for_file: constant_identifier_names

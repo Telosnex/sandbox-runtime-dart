@@ -1,3 +1,4 @@
+// ignore_for_file: non_constant_identifier_names, curly_braces_in_flow_control_structures
 // Node `fs` compatibility: the synchronous calls the ported files make.
 // No upstream counterpart. POSIX calls go to libc directly, so a failure keeps
 // its errno (and so Node's `code`); dart:io would turn it into a lossy
@@ -597,7 +598,7 @@ String _realpathSyncNative(String path) =>
 String Function(String path) realpathSyncNative = _realpathSyncNative;
 
 /// The `encoding: 'buffer'` overload of Node's realpathSync.native.
-Uint8List realpathSyncNativeBuffer(String path) {
+Uint8List _realpathSyncNativeBuffer(String path) {
   _observe('realpathSync.native', path);
   final libc = _libc;
   if (libc != null) {
@@ -627,6 +628,10 @@ Uint8List realpathSyncNativeBuffer(String path) {
   }
   return Uint8List.fromList(utf8.encode(_realpathSync(path)));
 }
+
+/// Replaceable buffer overload, paired with realpathSyncNative.
+Uint8List Function(String path) realpathSyncNativeBuffer =
+    _realpathSyncNativeBuffer;
 
 String _codeFromIoError(FileSystemException error) {
   final errno = error.osError?.errorCode;
