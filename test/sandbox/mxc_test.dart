@@ -817,23 +817,27 @@ void main() {
       //       ? it.failing
       //       : it.skip
     });
-    test('G5: Git Bash runs (known failure under mxc: 0xC0000005)', () {
-      //   knownMxcFailure(
-      //     'G5: Git Bash runs (known failure under mxc: 0xC0000005)',
-      //     async () => {
-      //       const r = await runSandboxed('echo BASH-MARK', {
-      //         binShell: GIT_BASH,
-      //       })
-      //       console.log(
-      //         `G5 Git Bash under mxc: exit ${r.status} ` +
-      //           `(0x${((r.status ?? 0) >>> 0).toString(16)}) stderr=${JSON.stringify(r.stderr.slice(0, 200))}`,
-      //       )
-      //       expectStatus('G5', r, [0])
-      //       expect(r.stdout).toContain('BASH-MARK')
-      //     },
-      //     60_000,
-      //   )
-      // })
-    });
+    final knownMxcFailure = test;
+    knownMxcFailure(
+      'G5: Git Bash runs (known failure under mxc: 0xC0000005)',
+      () {
+        //   knownMxcFailure(
+        //     'G5: Git Bash runs (known failure under mxc: 0xC0000005)',
+        //     async () => {
+        //       const r = await runSandboxed('echo BASH-MARK', {
+        //         binShell: GIT_BASH,
+        //       })
+        //       console.log(
+        //         `G5 Git Bash under mxc: exit ${r.status} ` +
+        //           `(0x${((r.status ?? 0) >>> 0).toString(16)}) stderr=${JSON.stringify(r.stderr.slice(0, 200))}`,
+        //       )
+        //       expectStatus('G5', r, [0])
+        //       expect(r.stdout).toContain('BASH-MARK')
+        //     },
+        //     60_000,
+        //   )
+        // })
+      },
+    );
   });
 }
