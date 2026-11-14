@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/tls-terminate-runtime.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/tls-terminate-runtime.test.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, non_constant_identifier_names, slash_for_doc_comments
 import 'dart:async';
 import 'dart:convert';
@@ -12,6 +12,8 @@ import 'package:sandbox_runtime/src/sandbox/http_proxy.dart';
 import 'package:sandbox_runtime/src/sandbox/mitm_ca.dart';
 import 'package:sandbox_runtime/src/sandbox/sandbox_config.dart';
 import 'package:sandbox_runtime/src/sandbox/sandbox_manager.dart';
+import 'package:sandbox_runtime/src/sandbox/sandbox_utils.dart'
+    show encodeSandboxedCommand, proxyUsernameFor;
 import 'package:test/test.dart';
 
 import '../helpers/emitted_connections.dart';
@@ -153,10 +155,17 @@ void main() {
     );
   });
 
-  /** A CONNECT to a.test:443 through the manager's proxy: the reply head and the socket. */
-  Future<({String head, net.NodeSocket sock})> connectThroughManager() {
+  /** A CONNECT to a.test:443 through the manager's proxy, as `command` if given: the reply head and the socket. */
+  Future<({String head, net.NodeSocket sock})> connectThroughManager([
+    String? command,
+  ]) {
     final port = SandboxManager.getProxyPort()!;
-    final auth = Buffer.from('srt:${SandboxManager.getProxyAuthToken()!}');
+    final user = proxyUsernameFor(
+      command != null && command.isNotEmpty
+          ? encodeSandboxedCommand(command)
+          : null,
+    );
+    final auth = Buffer.from('$user:${SandboxManager.getProxyAuthToken()!}');
     final resolve = Completer<({String head, net.NodeSocket sock})>();
     late final net.NodeSocket sock;
     sock = net.connect({'port': port, 'host': '127.0.0.1'}, () {
@@ -213,6 +222,58 @@ void main() {
         },
         timeout: const Timeout(Duration(milliseconds: 20000)),
       );
+      test(
+        "the cap's 503 is recorded as a violation of the command it refused",
+        () async {
+          cleanup.add(() => SandboxManager.reset());
+          await SandboxManager.initialize(
+            baseConfig(const TlsTerminateConfig(maxTunnels: 1)),
+          );
+          await connectThroughManager('holds the slot');
+          final refused = await connectThroughManager('curl https://a.test/');
+          expect(refused.head, startsWith('HTTP/1.1 503'));
+          expect(
+            SandboxManager.getSandboxViolationStore()
+                .getViolationsForCommand('curl https://a.test/')
+                .map((v) => v.line)
+                .toList(),
+            [
+              "deny http-request CONNECT a.test:443 (the sandbox's limit of 1 "
+                  'TLS-terminated tunnels at once is reached; '
+                  'the limit is network.tlsTerminate.maxTunnels in the '
+                  "sandbox's configuration)",
+            ],
+          );
+        },
+        timeout: const Timeout(Duration(seconds: 20)),
+      );
+
+      test('updateConfig changes both for the CONNECTs that follow', () async {
+        cleanup.add(() => SandboxManager.reset());
+        await SandboxManager.initialize(
+          baseConfig(const TlsTerminateConfig(maxTunnels: 1)),
+        );
+        await connectThroughManager();
+        expect(
+          (await connectThroughManager()).head,
+          startsWith('HTTP/1.1 503'),
+        );
+        SandboxManager.updateConfig(
+          baseConfig(
+            const TlsTerminateConfig(maxTunnels: 2, handshakeTimeoutMs: 300),
+          ),
+        );
+        final second = await connectThroughManager();
+        expect(second.head, startsWith('HTTP/1.1 200'));
+        final openedAt = DateTime.now().millisecondsSinceEpoch;
+        final closed = Completer<void>();
+        second.sock.once('close', () => closed.complete());
+        await closed.future;
+        expect(
+          DateTime.now().millisecondsSinceEpoch - openedAt,
+          lessThan(5000),
+        );
+      }, timeout: const Timeout(Duration(seconds: 20)));
     },
   );
 }
