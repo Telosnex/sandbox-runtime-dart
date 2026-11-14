@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime test/sandbox/request-rewriting.test.ts @ 24eb39e.
+// Ported from sandbox-runtime test/sandbox/request-rewriting.test.ts @ 0bbebed.
 // Dart: a Promise settles once; every `if (!x.isCompleted)` guard below stands for that.
 library;
 
@@ -70,6 +70,7 @@ void upstreamHandler(http.IncomingMessage req, http.ServerResponse res) {
 class _Extra {
   const _Extra({
     this.plaintextHeaderSet,
+    this.ambiguousRequestTarget,
     this.mutateHeaders,
     this.mutateHeadersPlaintext,
     this.stripResponseHeaders,
@@ -79,6 +80,7 @@ class _Extra {
     this.onFilterRequestDenied,
   });
   final bool? plaintextHeaderSet;
+  final AmbiguousRequestTarget? ambiguousRequestTarget;
   final MutateForwardedHeaders? mutateHeaders;
   final MutateForwardedHeaders? mutateHeadersPlaintext;
   final List<String>? stripResponseHeaders;
@@ -111,6 +113,9 @@ class _HttpOptions implements HttpProxyServerOptions {
   bool Function(String hostname, int port)? shouldTerminateTLS;
   @override
   bool? get plaintextHeaderSet => extra.plaintextHeaderSet;
+  @override
+  AmbiguousRequestTarget? get ambiguousRequestTarget =>
+      extra.ambiguousRequestTarget;
   @override
   MutateForwardedHeaders? get mutateHeaders => extra.mutateHeaders;
   @override
@@ -1040,74 +1045,79 @@ Future<void> main() async {
     });
   });
 
-  group('the request-target the callback sees is the one forwarded', () {
-    // Every case runs a TLS-terminating proxy: skipped where none can run.
-    // Each spelling would pass a naive "/public/" prefix rule, or dodge a
-    // "/admin" deny rule, if the callback saw it raw while the proxy (or the
-    // runtime's HTTP client) forwarded a normalized form.
-    final spellings = [
-      '/public/%2e%2e/admin',
-      '/public/%2E%2E/admin',
-      '/public/../admin',
-      '/public/./../admin?q=1',
-      '/public/..%2fadmin',
-      '/public/%2fadmin',
-      '//admin',
-      '///admin?q=1',
-      '//public/../admin',
-    ];
-    for (final (label, send) in <(String, Future<Reply> Function(int, String))>[
-      ('plain HTTP', (port, path) => viaPlain(port, path)),
-      ('TLS-terminated', (port, path) => viaTls(port, path)),
-    ]) {
-      for (final spelling in spellings) {
+  group(
+    "'normalize': the normalized request-target the callback sees is the one forwarded",
+    () {
+      // Every case runs a TLS-terminating proxy: skipped where none can run.
+      const normalize = _Extra(ambiguousRequestTarget: 'normalize');
+      // Each spelling would pass a naive "/public/" prefix rule, or dodge a
+      // "/admin" deny rule, if the callback saw it raw while the proxy (or the
+      // runtime's HTTP client) forwarded a normalized form.
+      final spellings = [
+        '/public/%2e%2e/admin',
+        '/public/%2E%2E/admin',
+        '/public/../admin',
+        '/public/./../admin?q=1',
+        '/public/..%2fadmin',
+        '/public/%2fadmin',
+        '//admin',
+        '///admin?q=1',
+        '//public/../admin',
+      ];
+      for (final (label, send)
+          in <(String, Future<Reply> Function(int, String))>[
+            ('plain HTTP', (port, path) => viaPlain(port, path)),
+            ('TLS-terminated', (port, path) => viaTls(port, path)),
+          ]) {
+        for (final spelling in spellings) {
+          test(
+            '$label: $spelling',
+            () async {
+              String? sinkGot;
+              final before = seen.length;
+              await withProxy(
+                (_, [info]) async {
+                  sinkGot = info?.normalizedRequestTarget;
+                  return const RequestDecision(action: 'allow');
+                },
+                normalize,
+                (port) async {
+                  expect((await send(port, spelling)).status, 200);
+                },
+              );
+              expect(seen.length, before + 1);
+              expect(sinkGot, lastSeen().url);
+            },
+            skip: _tlsSkip,
+            timeout: const Timeout(Duration(milliseconds: 15000)),
+          );
+        }
         test(
-          '$label: $spelling',
+          '$label: dot segments and leading slashes are normalized before the callback sees them',
           () async {
             String? sinkGot;
-            final before = seen.length;
             await withProxy(
               (_, [info]) async {
-                sinkGot = info?.requestTarget;
+                sinkGot = info?.normalizedRequestTarget;
                 return const RequestDecision(action: 'allow');
               },
-              const _Extra(),
+              normalize,
               (port) async {
-                expect((await send(port, spelling)).status, 200);
+                await send(port, '/public/%2e%2e/admin');
+                expect(sinkGot, '/admin');
+                expect(lastSeen().url, '/admin');
+                await send(port, '//admin');
+                expect(sinkGot, '/admin');
+                expect(lastSeen().url, '/admin');
               },
             );
-            expect(seen.length, before + 1);
-            expect(sinkGot, lastSeen().url);
           },
           skip: _tlsSkip,
           timeout: const Timeout(Duration(milliseconds: 15000)),
         );
       }
-      test(
-        '$label: dot segments and leading slashes are normalized before the callback sees them',
-        () async {
-          String? sinkGot;
-          await withProxy(
-            (_, [info]) async {
-              sinkGot = info?.requestTarget;
-              return const RequestDecision(action: 'allow');
-            },
-            const _Extra(),
-            (port) async {
-              await send(port, '/public/%2e%2e/admin');
-              expect(sinkGot, '/admin');
-              expect(lastSeen().url, '/admin');
-              await send(port, '//admin');
-              expect(sinkGot, '/admin');
-              expect(lastSeen().url, '/admin');
-            },
-          );
-        },
-        skip: _tlsSkip,
-        timeout: const Timeout(Duration(milliseconds: 15000)),
-      );
-    }
-  });
+    },
+  );
 
   group('a request-target of any other shape is refused with 400', () {
     // Every case runs a TLS-terminating proxy: skipped where none can run.
@@ -1907,6 +1917,7 @@ Future<void> main() async {
         'stripResponseHeaders': ['set-cookie'],
         'refuseOpaqueTunnels': true,
         'requireHostMatch': true,
+        'ambiguousRequestTarget': 'asSpelled',
       });
       expect(ok.success, true);
       expect(

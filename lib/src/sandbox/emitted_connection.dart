@@ -184,18 +184,46 @@ void adjustByteBudget(ByteBudget budget, int delta) {
  * the socket is listened to: a 'data' listener on req would start the body
  * flowing before anyone reads it.
  */
-void gateSocketOnBufferedBody(
-  http.IncomingMessage req,
-  int cap, [
-  ByteBudget? budget,
-]) {
-  // Dart: the shim's parser reads the socket itself and holds it back while
-  // the body is over the cap or the budget (IncomingMessage.gateBufferedBody).
-  // A 'data' listener on the socket would start it flowing, and the flow
-  // loop would drain the buffer the parser reads from.
-  req.gateBufferedBody(cap: cap, budget: budget);
+void gateSocketOnBufferedBody(dynamic req, int cap, [ByteBudget? budget]) {
+  if (req is http.IncomingMessage) {
+    // Dart: the shim parser reads the socket itself, so a socket data listener
+    // would steal its bytes; the shim gates the parser's buffered body instead.
+    req.gateBufferedBody(cap: cap, budget: budget);
+    final socket = req.socket;
+    late void Function() release;
+    release = () {
+      socket.off('close', release);
+      req.releaseBufferedBody();
+    };
+    req.once('end', release);
+    req.once('close', release);
+    // Not every runtime closes the request of a socket that closes.
+    socket.once('close', release);
+    return;
+  }
+  final dynamic socket = req.socket;
+  var counted = 0;
+  void check() {
+    final held = req.readableLength as int;
+    if (budget != null) adjustByteBudget(budget, held - counted);
+    counted = held;
+    if (held > cap ||
+        (budget != null && budget.used > budget.limit && held > 0))
+      socket.pause();
+  }
+
+  late void Function() release;
+  release = () {
+    socket.off('data', check);
+    socket.off('close', release);
+    if (budget != null) adjustByteBudget(budget, -counted);
+    counted = 0;
+  };
+  socket.on('data', check);
+  req.once('end', release);
+  req.once('close', release);
   // Not every runtime closes the request of a socket that closes.
-  req.socket.once('close', req.releaseBufferedBody);
+  socket.once('close', release);
 }
 
 final Expando<bool> _endsGracefully = Expando<bool>();

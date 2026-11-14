@@ -64,6 +64,9 @@ class EventEmitter {
     return this;
   }
 
+  /// Node EventEmitter.eventNames().
+  List<String> eventNames() => _events.keys.toList();
+
   int listenerCount(String event) => _events[event]?.length ?? 0;
 
   List<Function> listeners(String event) => [
