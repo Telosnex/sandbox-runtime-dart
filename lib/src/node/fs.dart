@@ -524,7 +524,7 @@ Uint8List readlinkSyncBuffer(String path) {
 
 /// The real path of [path] as the kernel names it, by opening it with O_PATH
 /// and reading /proc/self/fd. Null when that cannot be done or says nothing.
-String? _realpathViaProc(String path) {
+Uint8List? _realpathViaProcBuffer(String path) {
   final libc = _libc;
   if (libc == null) return null;
   const oPath = 0x200000; // O_PATH, asm-generic (arm64) value is 0x200000
@@ -532,9 +532,10 @@ String? _realpathViaProc(String path) {
   final fd = _withPath(path, (p) => open(p, oPath | 0x80000, 0));
   if (fd < 0) return null;
   try {
-    final target = readlinkSync('/proc/self/fd/$fd');
+    final bytes = readlinkSyncBuffer('/proc/self/fd/$fd');
+    final target = utf8.decode(bytes, allowMalformed: true);
     return target.startsWith('/') && !target.endsWith(' (deleted)')
-        ? target
+        ? bytes
         : null;
   } on Object {
     return null;
@@ -566,8 +567,9 @@ String _realpathSync(String path) {
           // through a directory it cannot search, but the kernel resolves it
           // (as Bun's realpathSync does, which upstream's tests run under):
           // ask it for the opened object's location.
-          final viaProc = _realpathViaProc(resolvedPath);
-          if (viaProc != null) return viaProc;
+          final viaProc = _realpathViaProcBuffer(resolvedPath);
+          if (viaProc != null)
+            return utf8.decode(viaProc, allowMalformed: true);
         }
         throw nodeError(codeForErrno(errno), 'realpath', path);
       }
@@ -612,6 +614,13 @@ Uint8List _realpathSyncNativeBuffer(String path) {
       final result = realpath(nativePath.cast(), nullptr);
       if (result.address == 0) {
         final errno = _readErrno?.call() ?? 0;
+        // glibc may exceed PATH_MAX while expanding a short symlink path
+        // even when the kernel can follow it. Keep the native byte spelling
+        // and ask the kernel for the opened object's absolute location.
+        if (Platform.isLinux && codeForErrno(errno) == 'ENAMETOOLONG') {
+          final viaProc = _realpathViaProcBuffer(path);
+          if (viaProc != null) return viaProc;
+        }
         throw nodeError(codeForErrno(errno), 'realpath', path);
       }
       try {

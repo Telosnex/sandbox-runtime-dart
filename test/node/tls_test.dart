@@ -791,6 +791,45 @@ void chainTests() {
         '-out',
         '$tag-ca.csr',
       ], '$tag-ca.csr');
+      if (expired) {
+        // `ca` supports explicit validity dates on OpenSSL 3.0 too, unlike
+        // the newer `x509 -not_before/-not_after` options.
+        File('${dir.path}/$tag.index').writeAsStringSync('');
+        File('${dir.path}/$tag.serial').writeAsStringSync('01\n');
+        File('${dir.path}/$tag.cnf').writeAsStringSync('''
+[ca]
+default_ca=fixture
+[fixture]
+database=$tag.index
+serial=$tag.serial
+new_certs_dir=.
+default_md=sha256
+policy=fixture_policy
+x509_extensions=fixture_extensions
+[fixture_policy]
+commonName=supplied
+[fixture_extensions]
+$ext
+''');
+        return _ossl(dir, [
+          'ca',
+          '-batch',
+          '-selfsign',
+          '-config',
+          '$tag.cnf',
+          '-keyfile',
+          '$tag-ca.key',
+          '-in',
+          '$tag-ca.csr',
+          '-startdate',
+          '20200101000000Z',
+          '-enddate',
+          '20200201000000Z',
+          '-notext',
+          '-out',
+          '$tag-ca.pem',
+        ], '$tag-ca.pem');
+      }
       return _ossl(dir, [
         'x509',
         '-req',
@@ -798,14 +837,8 @@ void chainTests() {
         '$tag-ca.csr',
         '-signkey',
         '$tag-ca.key',
-        ...(expired
-            ? [
-                '-not_before',
-                '20200101000000Z',
-                '-not_after',
-                '20200201000000Z',
-              ]
-            : ['-days', '$days']),
+        '-days',
+        '$days',
         '-sha256',
         '-extfile',
         '$tag.ext',
