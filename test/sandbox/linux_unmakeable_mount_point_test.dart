@@ -817,7 +817,7 @@ void main() {
         },
         skip: (process.geteuid?.call() == 0)
             ? 'skipped when process.geteuid?.call() === 0'
-            : false,
+            : null,
       );
 
       test('holds the path against a command that opens the directory', () async {

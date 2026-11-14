@@ -320,7 +320,7 @@ void main() {
           expect(result, isNot(contains('/dev/null ${join(PROJ, 'name')}')));
         },
         skip: process.getuid?.call() != 0
-            ? false
+            ? null
             : 'root searches a directory of any mode',
       );
     }
@@ -336,7 +336,7 @@ void main() {
         expect(result, isNot(contains('/dev/null ${join(PROJ, 'name')}')));
       },
       skip: process.getuid?.call() != 0
-          ? false
+          ? null
           : 'root searches a directory of any mode',
     );
 
