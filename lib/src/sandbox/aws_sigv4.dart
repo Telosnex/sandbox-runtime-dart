@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/sandbox/aws-sigv4.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/aws-sigv4.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, dangling_library_doc_comments, slash_for_doc_comments
 
 import 'dart:typed_data';
@@ -183,8 +183,8 @@ String uriEncode(String s) {
  * awslabs/aws-sigv4-proxy, which disables path escaping for s3 only.
  *
  * rawPath is the target the proxy forwards, so the signature covers the
- * path on the wire: the client's bytes unchanged when no filterRequest is
- * configured, the normalized target when one is.
+ * path on the wire: the client's bytes unchanged, or the normalized target
+ * under ambiguousRequestTarget 'normalize'.
  */
 String canonicalUri(String rawPath, String service) {
   if (rawPath.isEmpty) return '/';
