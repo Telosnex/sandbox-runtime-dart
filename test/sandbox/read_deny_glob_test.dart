@@ -743,9 +743,8 @@ void main() {
 
       test(
         'keeps a link as spelled, with where its short name leads, when no real path answers',
-        skip: isLinux && process.getuid?.call() != 0
-            ? null
-            : 'requires Linux and a non-root user',
+        skip:
+            'Bun-only: Bun resolves /proc/self/cwd beneath an unsearchable ancestor; libc realpath (and Node) return EACCES',
         () {
           // Nothing is made to fail. The working directory lies behind one that
           // cannot be searched, so what is in it answers by /proc/self/cwd alone,

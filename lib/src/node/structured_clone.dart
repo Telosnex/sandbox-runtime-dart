@@ -93,6 +93,7 @@ Object? _clone(Object? v) {
         requireHostMatch: v.requireHostMatch,
         tlsTerminate: structuredClone(v.tlsTerminate),
         parentProxy: v.parentProxy,
+        ambiguousRequestTarget: v.ambiguousRequestTarget,
       );
     case FilesystemConfig():
       return FilesystemConfig(
@@ -152,6 +153,7 @@ Object? _clone(Object? v) {
         ripgrep: structuredClone(v.ripgrep),
         mandatoryDenySearchDepth: v.mandatoryDenySearchDepth,
         allowPty: v.allowPty,
+        allowNestedUserNamespaces: v.allowNestedUserNamespaces,
         seccomp: v.seccomp,
         bwrapPath: v.bwrapPath,
         socatPath: v.socatPath,

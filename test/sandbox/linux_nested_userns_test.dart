@@ -193,7 +193,6 @@ void main() {
       return path;
     }
 
-    ;
     final HELP_WITHOUT = 'usage: bwrap [OPTIONS...] [--] COMMAND [ARGS...]\n';
     final HELP_WITH =
         HELP_WITHOUT +
@@ -483,7 +482,6 @@ void main() {
           // The configuration outlives a reset, and the next file's tests.
           SandboxManager.updateConfig(before ?? configured());
         }
-        ;
       },
       skip: (APPLY_SECCOMP != null) ? false : 'requires APPLY_SECCOMP !== null',
     );
@@ -541,7 +539,6 @@ void main() {
           // The configuration outlives a reset, and the next file's tests.
           SandboxManager.updateConfig(before ?? configured());
         }
-        ;
       },
       skip:
           'Dart types reject a non-bool allowNestedUserNamespaces at compile time',
