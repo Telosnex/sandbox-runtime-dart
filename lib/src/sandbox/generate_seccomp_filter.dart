@@ -2,7 +2,6 @@
 // ignore_for_file: constant_identifier_names, slash_for_doc_comments
 
 import 'dart:isolate';
-import 'dart:io';
 
 import 'package:path/path.dart' as path;
 
