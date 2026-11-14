@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/sandbox/sandbox-config.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/sandbox-config.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, dangling_library_doc_comments
 // ignore_for_file: slash_for_doc_comments, curly_braces_in_flow_control_structures
 // ignore_for_file: prefer_interpolation_to_compose_strings, non_constant_identifier_names
@@ -63,7 +63,9 @@ typedef _ConfigParser<T> =
 /** Hand-written counterpart of the upstream Zod schemas. */
 class ConfigSchema<T> {
   final _ConfigParser<T> _parser;
-  const ConfigSchema(this._parser);
+  final Map<String, ConfigSchema<Object?>> shape;
+  final String? description;
+  const ConfigSchema(this._parser, {this.shape = const {}, this.description});
 
   ConfigParseResult<T> safeParse(Object? value) {
     final issues = <ConfigIssue>[];
@@ -776,156 +778,171 @@ final ConfigSchema<CredentialsConfig> CredentialsConfigSchema = _notNull((
 /**
  * Network configuration schema for validation
  */
-final ConfigSchema<NetworkConfig> NetworkConfigSchema = _notNull((
-  value,
-  issues,
-  path,
-) {
-  final obj = _object(value, path, issues);
-  if (obj == null) return null;
-  final allowed = _stringList(
-    obj['allowedDomains'],
-    [...path, 'allowedDomains'],
-    issues,
-    itemSchema: _domainPortPatternSchema,
-  );
-  final denied = _stringList(
-    obj['deniedDomains'],
-    [...path, 'deniedDomains'],
-    issues,
-    itemSchema: _deniedDomainPatternSchema,
-  );
-  Map<String, String>? reasons;
-  if (_has(obj, 'deniedDomainReasons')) {
-    final raw = _object(obj['deniedDomainReasons'], [
-      ...path,
-      'deniedDomainReasons',
-    ], issues);
-    if (raw != null) {
-      reasons = {};
-      for (final entry in raw.entries) {
-        final val = _string(
-          entry.value,
-          [...path, 'deniedDomainReasons', entry.key],
-          issues,
-          min: 1,
-        );
-        if (val != null) reasons[entry.key] = val;
-      }
-    }
-  }
-  bool? boolean(String key) =>
-      _has(obj, key) ? _boolean(obj[key], [...path, key], issues) : null;
-  List<String>? strings(String key, {int min = 0}) => _has(obj, key)
-      ? _stringList(obj[key], [...path, key], issues, itemMin: min)
-      : null;
-  final strict = boolean('strictAllowlist');
-  final deniedAddresses = _has(obj, 'deniedResolvedAddresses')
-      ? _stringList(
-          obj['deniedResolvedAddresses'],
-          [...path, 'deniedResolvedAddresses'],
-          issues,
-          itemSchema: _addressRangeSchema,
-        )
-      : null;
-  final unix = strings('allowUnixSockets');
-  final allUnix = boolean('allowAllUnixSockets');
-  final localBinding = boolean('allowLocalBinding');
-  List<String>? mach;
-  if (_has(obj, 'allowMachLookup')) {
-    mach = _stringList(obj['allowMachLookup'], [
-      ...path,
-      'allowMachLookup',
-    ], issues);
-    if (mach != null) {
-      for (var i = 0; i < mach.length; i++) {
-        final val = mach[i];
-        final prefix = val.endsWith('*')
-            ? val.substring(0, val.length - 1)
-            : val;
-        if (prefix.contains('*'))
-          _addIssue(
+final ConfigSchema<NetworkConfig> NetworkConfigSchema = ConfigSchema(
+  (value, issues, path) {
+    final obj = _object(value, path, issues);
+    if (obj == null) return null;
+    final allowed = _stringList(
+      obj['allowedDomains'],
+      [...path, 'allowedDomains'],
+      issues,
+      itemSchema: _domainPortPatternSchema,
+    );
+    final denied = _stringList(
+      obj['deniedDomains'],
+      [...path, 'deniedDomains'],
+      issues,
+      itemSchema: _deniedDomainPatternSchema,
+    );
+    Map<String, String>? reasons;
+    if (_has(obj, 'deniedDomainReasons')) {
+      final raw = _object(obj['deniedDomainReasons'], [
+        ...path,
+        'deniedDomainReasons',
+      ], issues);
+      if (raw != null) {
+        reasons = {};
+        for (final entry in raw.entries) {
+          final val = _string(
+            entry.value,
+            [...path, 'deniedDomainReasons', entry.key],
             issues,
-            [...path, 'allowMachLookup', i],
-            'Wildcards are only allowed as a single trailing "*" (e.g., "com.example.*" or "*" for all services).',
+            min: 1,
           );
+          if (val != null) reasons[entry.key] = val;
+        }
       }
     }
-  }
-  int? port(String key) => _has(obj, key)
-      ? _number(
-          obj[key],
-          [...path, key],
-          issues,
-          min: 1,
-          max: 65535,
-          integer: true,
-        )?.toInt()
-      : null;
-  final httpPort = port('httpProxyPort');
-  final socksPort = port('socksProxyPort');
-  final mitm = _has(obj, 'mitmProxy')
-      ? _MitmProxyConfigSchema._parser(obj['mitmProxy'], issues, [
-          ...path,
-          'mitmProxy',
-        ])
-      : null;
-  final rawFilter = _has(obj, 'filterRequest') ? obj['filterRequest'] : null;
-  final filter = rawFilter is Function
-      ? (fetch.Request request, [RequestInfo? info]) async =>
-            await Function.apply(rawFilter, [request, info]) as RequestDecision
-      : null;
-  if (_has(obj, 'filterRequest') && filter == null)
-    _addIssue(issues, [
-      ...path,
-      'filterRequest',
-    ], 'filterRequest must be a function');
-  final plaintextHeaderSet = boolean('allowPlaintextHeaderSet');
-  final stripHeaders = _has(obj, 'stripResponseHeaders')
-      ? _stringList(
-          obj['stripResponseHeaders'],
-          [...path, 'stripResponseHeaders'],
-          issues,
-          itemMin: 1,
-        )
-      : null;
-  final opaque = boolean('refuseOpaqueTunnels');
-  final hostMatch = boolean('requireHostMatch');
-  final tls = _has(obj, 'tlsTerminate')
-      ? _parseTlsTerminate(obj['tlsTerminate'], issues, [
-          ...path,
-          'tlsTerminate',
-        ])
-      : null;
-  final parent = _has(obj, 'parentProxy')
-      ? _ParentProxyConfigSchema._parser(obj['parentProxy'], issues, [
-          ...path,
-          'parentProxy',
-        ])
-      : null;
-  if (allowed == null || denied == null) return null;
-  return NetworkConfig(
-    allowedDomains: allowed,
-    deniedDomains: denied,
-    deniedDomainReasons: reasons,
-    strictAllowlist: strict,
-    deniedResolvedAddresses: deniedAddresses,
-    allowUnixSockets: unix,
-    allowAllUnixSockets: allUnix,
-    allowLocalBinding: localBinding,
-    allowMachLookup: mach,
-    httpProxyPort: httpPort,
-    socksProxyPort: socksPort,
-    mitmProxy: mitm,
-    filterRequest: filter,
-    allowPlaintextHeaderSet: plaintextHeaderSet,
-    stripResponseHeaders: stripHeaders,
-    refuseOpaqueTunnels: opaque,
-    requireHostMatch: hostMatch,
-    tlsTerminate: tls,
-    parentProxy: parent,
-  );
-});
+    bool? boolean(String key) =>
+        _has(obj, key) ? _boolean(obj[key], [...path, key], issues) : null;
+    List<String>? strings(String key, {int min = 0}) => _has(obj, key)
+        ? _stringList(obj[key], [...path, key], issues, itemMin: min)
+        : null;
+    final strict = boolean('strictAllowlist');
+    final deniedAddresses = _has(obj, 'deniedResolvedAddresses')
+        ? _stringList(
+            obj['deniedResolvedAddresses'],
+            [...path, 'deniedResolvedAddresses'],
+            issues,
+            itemSchema: _addressRangeSchema,
+          )
+        : null;
+    final unix = strings('allowUnixSockets');
+    final allUnix = boolean('allowAllUnixSockets');
+    final localBinding = boolean('allowLocalBinding');
+    List<String>? mach;
+    if (_has(obj, 'allowMachLookup')) {
+      mach = _stringList(obj['allowMachLookup'], [
+        ...path,
+        'allowMachLookup',
+      ], issues);
+      if (mach != null) {
+        for (var i = 0; i < mach.length; i++) {
+          final val = mach[i];
+          final prefix = val.endsWith('*')
+              ? val.substring(0, val.length - 1)
+              : val;
+          if (prefix.contains('*'))
+            _addIssue(
+              issues,
+              [...path, 'allowMachLookup', i],
+              'Wildcards are only allowed as a single trailing "*" (e.g., "com.example.*" or "*" for all services).',
+            );
+        }
+      }
+    }
+    int? port(String key) => _has(obj, key)
+        ? _number(
+            obj[key],
+            [...path, key],
+            issues,
+            min: 1,
+            max: 65535,
+            integer: true,
+          )?.toInt()
+        : null;
+    final httpPort = port('httpProxyPort');
+    final socksPort = port('socksProxyPort');
+    final mitm = _has(obj, 'mitmProxy')
+        ? _MitmProxyConfigSchema._parser(obj['mitmProxy'], issues, [
+            ...path,
+            'mitmProxy',
+          ])
+        : null;
+    final rawFilter = _has(obj, 'filterRequest') ? obj['filterRequest'] : null;
+    final filter = rawFilter is Function
+        ? (fetch.Request request, [RequestInfo? info]) async =>
+              await Function.apply(rawFilter, [request, info])
+                  as RequestDecision
+        : null;
+    if (_has(obj, 'filterRequest') && filter == null)
+      _addIssue(issues, [
+        ...path,
+        'filterRequest',
+      ], 'filterRequest must be a function');
+    final plaintextHeaderSet = boolean('allowPlaintextHeaderSet');
+    final stripHeaders = _has(obj, 'stripResponseHeaders')
+        ? _stringList(
+            obj['stripResponseHeaders'],
+            [...path, 'stripResponseHeaders'],
+            issues,
+            itemMin: 1,
+          )
+        : null;
+    final opaque = boolean('refuseOpaqueTunnels');
+    final hostMatch = boolean('requireHostMatch');
+    final ambiguous = _has(obj, 'ambiguousRequestTarget')
+        ? _enumValue(
+            obj['ambiguousRequestTarget'],
+            [...path, 'ambiguousRequestTarget'],
+            issues,
+            const ['refuse', 'asSpelled', 'normalize'],
+          )
+        : null;
+    final tls = _has(obj, 'tlsTerminate')
+        ? _parseTlsTerminate(obj['tlsTerminate'], issues, [
+            ...path,
+            'tlsTerminate',
+          ])
+        : null;
+    final parent = _has(obj, 'parentProxy')
+        ? _ParentProxyConfigSchema._parser(obj['parentProxy'], issues, [
+            ...path,
+            'parentProxy',
+          ])
+        : null;
+    if (allowed == null || denied == null) return null;
+    return NetworkConfig(
+      allowedDomains: allowed,
+      deniedDomains: denied,
+      deniedDomainReasons: reasons,
+      strictAllowlist: strict,
+      deniedResolvedAddresses: deniedAddresses,
+      allowUnixSockets: unix,
+      allowAllUnixSockets: allUnix,
+      allowLocalBinding: localBinding,
+      allowMachLookup: mach,
+      httpProxyPort: httpPort,
+      socksProxyPort: socksPort,
+      mitmProxy: mitm,
+      filterRequest: filter,
+      allowPlaintextHeaderSet: plaintextHeaderSet,
+      stripResponseHeaders: stripHeaders,
+      refuseOpaqueTunnels: opaque,
+      requireHostMatch: hostMatch,
+      ambiguousRequestTarget: ambiguous,
+      tlsTerminate: tls,
+      parentProxy: parent,
+    );
+  },
+  shape: {
+    'allowLocalBinding': ConfigSchema(
+      (v, _, _) => v,
+      description:
+          'Whether sandboxed commands may use local ports directly (default: false). macOS: allows binding and accepting on any local port and connecting to localhost on any port. Windows: allows connecting to loopback addresses (127.0.0.0/8, ::1) on any TCP or UDP port; it is part of the machine-wide filter set, so it MUST match how `srt-win install` was run (`--allow-loopback` or not) and a session that differs from the install is refused. Linux: ignored — the sandbox has its own network namespace, whose loopback is always usable and is not the host one. Every service listening on localhost becomes reachable, including any local proxy or forwarder that would carry traffic off the machine.',
+    ),
+  },
+);
 
 /**
  * Filesystem configuration schema for validation
@@ -1048,83 +1065,105 @@ final ConfigSchema<SrtWinConfig> SrtWinConfigSchema = _notNull((
  * `.transform()` so this stays a plain `ZodObject` for consumers that
  * `.extend()`/`.shape` it.
  */
-final ConfigSchema<WindowsConfig> WindowsConfigSchema = _notNull((
-  value,
-  issues,
-  path,
-) {
-  final obj = _object(value, path, issues);
-  if (obj == null) return null;
-  final user = _has(obj, 'sandboxUser')
-      ? _string(
-          obj['sandboxUser'],
-          [...path, 'sandboxUser'],
-          issues,
-          min: 1,
-          max: 20,
-          maxMessage: 'Windows local usernames are limited to 20 characters',
-        )
-      : null;
-  String? uuidField(String key) {
-    if (!_has(obj, key)) return null;
-    final val = _string(obj[key], [...path, key], issues);
-    if (val != null && !_uuid(val))
-      _addIssue(issues, [...path, key], 'Invalid uuid', code: 'invalid_string');
-    return val;
-  }
-
-  final sublayer = uuidField('sublayerGuid');
-  final oldSublayer = uuidField('wfpSublayerGuid');
-  (int, int)? range;
-  if (_has(obj, 'proxyPortRange')) {
-    final raw = _array(obj['proxyPortRange'], [
-      ...path,
-      'proxyPortRange',
-    ], issues);
-    if (raw == null || raw.length != 2) {
-      if (raw != null)
+final ConfigSchema<WindowsConfig> WindowsConfigSchema = ConfigSchema(
+  (value, issues, path) {
+    final obj = _object(value, path, issues);
+    if (obj == null) return null;
+    // Optional, not `.default()`: a default would make the inferred type
+    // required, which would break existing callers.
+    final backend = _has(obj, 'backend')
+        ? _enumValue(
+            obj['backend'],
+            [...path, 'backend'],
+            issues,
+            const ['mxc', 'srt-win'],
+          )
+        : null;
+    final user = _has(obj, 'sandboxUser')
+        ? _string(
+            obj['sandboxUser'],
+            [...path, 'sandboxUser'],
+            issues,
+            min: 1,
+            max: 20,
+            maxMessage: 'Windows local usernames are limited to 20 characters',
+          )
+        : null;
+    String? uuidField(String key) {
+      if (!_has(obj, key)) return null;
+      final val = _string(obj[key], [...path, key], issues);
+      if (val != null && !_uuid(val))
         _addIssue(
           issues,
-          [...path, 'proxyPortRange'],
-          'Array must contain 2 element(s)',
-          code: 'invalid_tuple',
+          [...path, key],
+          'Invalid uuid',
+          code: 'invalid_string',
         );
-    } else {
-      final lo = _number(
-        raw[0],
-        [...path, 'proxyPortRange', 0],
-        issues,
-        min: 1,
-        integer: true,
-      )?.toInt();
-      final hi = _number(
-        raw[1],
-        [...path, 'proxyPortRange', 1],
-        issues,
-        max: 65535,
-        integer: true,
-      )?.toInt();
-      if (lo != null && hi != null) {
-        range = (lo, hi);
-        if (lo > hi || hi - lo > 64)
-          _addIssue(issues, [
-            ...path,
-            'proxyPortRange',
-          ], 'low must be ≤ high and range width ≤ 64');
+      return val;
+    }
+
+    final sublayer = uuidField('sublayerGuid');
+    final oldSublayer = uuidField('wfpSublayerGuid');
+    (int, int)? range;
+    if (_has(obj, 'proxyPortRange')) {
+      final raw = _array(obj['proxyPortRange'], [
+        ...path,
+        'proxyPortRange',
+      ], issues);
+      if (raw == null || raw.length != 2) {
+        if (raw != null)
+          _addIssue(
+            issues,
+            [...path, 'proxyPortRange'],
+            'Array must contain 2 element(s)',
+            code: 'invalid_tuple',
+          );
+      } else {
+        final lo = _number(
+          raw[0],
+          [...path, 'proxyPortRange', 0],
+          issues,
+          min: 1,
+          integer: true,
+        )?.toInt();
+        final hi = _number(
+          raw[1],
+          [...path, 'proxyPortRange', 1],
+          issues,
+          max: 65535,
+          integer: true,
+        )?.toInt();
+        if (lo != null && hi != null) {
+          range = (lo, hi);
+          if (lo > hi || hi - lo > 64)
+            _addIssue(issues, [
+              ...path,
+              'proxyPortRange',
+            ], 'low must be ≤ high and range width ≤ 64');
+        }
       }
     }
-  }
-  final srtWin = _has(obj, 'srtWin')
-      ? SrtWinConfigSchema._parser(obj['srtWin'], issues, [...path, 'srtWin'])
-      : null;
-  return WindowsConfig(
-    sandboxUser: user,
-    sublayerGuid: sublayer,
-    wfpSublayerGuid: oldSublayer,
-    proxyPortRange: range,
-    srtWin: srtWin,
-  );
-});
+    final srtWin = _has(obj, 'srtWin')
+        ? SrtWinConfigSchema._parser(obj['srtWin'], issues, [...path, 'srtWin'])
+        : null;
+    return WindowsConfig(
+      backend: backend,
+      sandboxUser: user,
+      sublayerGuid: sublayer,
+      wfpSublayerGuid: oldSublayer,
+      proxyPortRange: range,
+      srtWin: srtWin,
+    );
+  },
+  shape: {
+    'backend': ConfigSchema((v, _, _) => v),
+    'sandboxUser': ConfigSchema((v, _, _) => v),
+    'sublayerGuid': ConfigSchema((v, _, _) => v),
+    'wfpSublayerGuid': ConfigSchema((v, _, _) => v),
+    'proxyPortRange': ConfigSchema((v, _, _) => v),
+    'srtWin': ConfigSchema((v, _, _) => v),
+  },
+);
 
 /**
  * Seccomp configuration schema (Linux only)
@@ -1587,6 +1626,7 @@ SandboxRuntimeConfigSchema = ConfigSchema((value, issues, path) {
   bool? boolField(String key) =>
       _has(obj, key) ? _boolean(obj[key], [...path, key], issues) : null;
   final weakerNested = boolField('enableWeakerNestedSandbox');
+  final nestedUser = boolField('allowNestedUserNamespaces');
   final weakerNetwork = boolField('enableWeakerNetworkIsolation');
   final appleEvents = boolField('allowAppleEvents');
   final ripgrep = _has(obj, 'ripgrep')
@@ -1634,6 +1674,7 @@ SandboxRuntimeConfigSchema = ConfigSchema((value, issues, path) {
     credentials: credentials,
     ignoreViolations: ignore,
     enableWeakerNestedSandbox: weakerNested,
+    allowNestedUserNamespaces: nestedUser,
     enableWeakerNetworkIsolation: weakerNetwork,
     allowAppleEvents: appleEvents,
     ripgrep: ripgrep,
@@ -1980,7 +2021,7 @@ class NetworkConfig {
   /// If true, allow all Unix sockets (disables blocking on both platforms). On Linux this also unblocks VM sockets (AF_VSOCK).
   final bool? allowAllUnixSockets;
 
-  /// Whether to allow binding to local ports (default: false)
+  /// Whether sandboxed commands may use local ports directly (default: false). macOS: allows binding and accepting on any local port and connecting to localhost on any port. Windows: allows connecting to loopback addresses (127.0.0.0/8, ::1) on any TCP or UDP port; it is part of the machine-wide filter set, so it MUST match how `srt-win install` was run (`--allow-loopback` or not) and a session that differs from the install is refused. Linux: ignored — the sandbox has its own network namespace, whose loopback is always usable and is not the host one. Every service listening on localhost becomes reachable, including any local proxy or forwarder that would carry traffic off the machine.
   final bool? allowLocalBinding;
 
   /// macOS only: Additional XPC/Mach service names to allow looking up. Supports trailing-wildcard prefix matching (e.g., "2BUA8C4S2C.com.1password.*"). Needed for tools like 1Password CLI, Playwright, or the iOS Simulator that communicate via XPC.
@@ -1995,7 +2036,7 @@ class NetworkConfig {
   /// Optional MITM proxy configuration. Routes matching domains through an upstream proxy via Unix socket while SRT still handles allow/deny filtering.
   final MitmProxyConfig? mitmProxy;
 
-  /// Per-request filter callback. Receives the parsed HTTP request (web-standard Request) and request details, and returns {action, reason?, status?} or, for an allow, header edits (removeHeaders, setHeaders) and an onResponse observer. Denied requests get the status (403 by default) with the reason. If the callback throws, the request is denied. Applies to plain HTTP through the proxy and, when tlsTerminate is configured, to terminated HTTPS. SRT does not provide a policy language; library consumers own matching. This and the four options after it are read when the proxy starts; updateConfig does not change them.
+  /// Per-request filter callback. Receives the parsed HTTP request (web-standard Request) and request details, and returns {action, reason?, status?} or, for an allow, header edits (removeHeaders, setHeaders) and an onResponse observer. Denied requests get the status (403 by default) with the reason. If the callback throws, the request is denied. Applies to plain HTTP through the proxy and, when tlsTerminate is configured, to terminated HTTPS. SRT does not provide a policy language; library consumers own matching. This and the five options after it are read when the proxy starts; updateConfig does not change them.
   final FilterRequestCallback? filterRequest;
 
   /// Let a filterRequest allow set headers on plain-HTTP requests. Off by default: a header set there travels in cleartext, so while it is off an allow that carries setHeaders is refused with 403 for every request the proxy receives in cleartext, an absolute https:// URI included. An allow without setHeaders is unaffected and removals always apply.
@@ -2009,6 +2050,9 @@ class NetworkConfig {
 
   /// Answer 421 to a request whose Host header, TLS server name or absolute-form authority does not name the host and port it is sent to, before filterRequest is asked. Refusals are recorded as violations.
   final bool? requireHostMatch;
+
+  /// While filterRequest is set: what becomes of a request whose target names another path once normalized than as the client spelled it (a dot segment, "%2e" included, leading slashes or "\"), so that the upstream may act on another resource than the callback judged. "refuse" (default): 400 before filterRequest is asked, recorded as a violation. "asSpelled": forwarded as spelled; the callback has to hold for every reading of it, and gets requestTarget, normalizedRequestTarget and requestTargetIsAmbiguous. "normalize": forwarded normalized, which breaks a signature over the path and names another resource to an upstream that takes the path literally.
+  final String? ambiguousRequestTarget;
 
   /// [EXPERIMENTAL] Enable in-process TLS termination so HTTPS request/response bodies are visible to SRT. Provide a CA cert+key, or omit both to have SRT generate an ephemeral one. Needs Node, or Bun 1.4 or later: SandboxManager.initialize throws on an older runtime.
   final TlsTerminateConfig? tlsTerminate;
@@ -2033,6 +2077,7 @@ class NetworkConfig {
     this.stripResponseHeaders,
     this.refuseOpaqueTunnels,
     this.requireHostMatch,
+    this.ambiguousRequestTarget,
     this.tlsTerminate,
     this.parentProxy,
   });
@@ -2057,6 +2102,8 @@ class NetworkConfig {
       'stripResponseHeaders': stripResponseHeaders,
     if (refuseOpaqueTunnels != null) 'refuseOpaqueTunnels': refuseOpaqueTunnels,
     if (requireHostMatch != null) 'requireHostMatch': requireHostMatch,
+    if (ambiguousRequestTarget != null)
+      'ambiguousRequestTarget': ambiguousRequestTarget,
     if (tlsTerminate != null) 'tlsTerminate': tlsTerminate!.toJson(),
     if (parentProxy != null) 'parentProxy': parentProxy!.toJson(),
   };
@@ -2419,6 +2466,10 @@ class SrtWinConfig {
 }
 
 class WindowsConfig {
+  /// The Windows enforcement backend. Defaults to srt-win. initialize() refuses a configuration the named backend cannot enforce; there is no fallback between backends. Under mxc, commands start with SandboxManager.spawnSandboxed() rather than wrapWithSandboxArgv(), and sandboxed programs can open windows on the desktop (UI is on so that ordinary tools start; clipboard and input injection stay blocked).
+  // 'mxc' | 'srt-win'
+  final String? backend;
+
   /// Name for the dedicated sandbox user account that `srt-win install` creates and the sandboxed child runs as. Default: `srt-sandbox`. Install refuses if an account by this name already exists and srt-win did not create it (it will not rotate the password of an account it does not own). Must match what `srt-win install --sandbox-user` was run with.
   final String? sandboxUser;
 
@@ -2434,6 +2485,7 @@ class WindowsConfig {
   /// How to locate/invoke the srt-win helper binary. `srtWin.path` is required to use the Windows sandbox — your own (multicall) binary, or the exported VENDORED_SRT_WIN_EXE constant for the packaged exe.
   final SrtWinConfig? srtWin;
   const WindowsConfig({
+    this.backend,
     this.sandboxUser,
     this.sublayerGuid,
     this.wfpSublayerGuid,
@@ -2442,6 +2494,7 @@ class WindowsConfig {
   });
 
   Map<String, Object?> toJson() => {
+    if (backend != null) 'backend': backend,
     if (sandboxUser != null) 'sandboxUser': sandboxUser,
     if (sublayerGuid != null) 'sublayerGuid': sublayerGuid,
     if (wfpSublayerGuid != null) 'wfpSublayerGuid': wfpSublayerGuid,
@@ -2466,6 +2519,9 @@ class SandboxRuntimeConfig {
 
   /// Enable weaker nested sandbox mode (for Docker environments)
   final bool? enableWeakerNestedSandbox;
+
+  /// Let the sandboxed command create user namespaces of its own (Linux only), as a browser sandbox, rootless podman or a nested bubblewrap does. This gives up the write denies against a hostile command, which can then take the read-only binds that enforce denyWrite and the mandatory denies out of its own view. Default: false.
+  final bool? allowNestedUserNamespaces;
 
   /// Enable weaker network isolation to allow access to com.apple.trustd.agent (macOS only). This is needed for Go programs (gh, gcloud, terraform, kubectl, etc.) to verify TLS certificates when using httpProxyPort with a MITM proxy and custom CA. Enabling this opens a potential data exfiltration vector through the trustd service. Only enable if you need Go TLS verification.
   final bool? enableWeakerNetworkIsolation;
@@ -2505,6 +2561,7 @@ class SandboxRuntimeConfig {
     this.credentials,
     this.ignoreViolations,
     this.enableWeakerNestedSandbox,
+    this.allowNestedUserNamespaces,
     this.enableWeakerNetworkIsolation,
     this.allowAppleEvents,
     this.ripgrep,
@@ -2525,6 +2582,8 @@ class SandboxRuntimeConfig {
     if (ignoreViolations != null) 'ignoreViolations': ignoreViolations,
     if (enableWeakerNestedSandbox != null)
       'enableWeakerNestedSandbox': enableWeakerNestedSandbox,
+    if (allowNestedUserNamespaces != null)
+      'allowNestedUserNamespaces': allowNestedUserNamespaces,
     if (enableWeakerNetworkIsolation != null)
       'enableWeakerNetworkIsolation': enableWeakerNetworkIsolation,
     if (allowAppleEvents != null) 'allowAppleEvents': allowAppleEvents,

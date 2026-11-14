@@ -1,4 +1,4 @@
-// Ported from sandbox-runtime src/sandbox/macos-sandbox-utils.ts @ 24eb39e.
+// Ported from sandbox-runtime src/sandbox/macos-sandbox-utils.ts @ 0bbebed.
 // ignore_for_file: constant_identifier_names, dangling_library_doc_comments
 // ignore_for_file: doc_directive_unknown, slash_for_doc_comments, curly_braces_in_flow_control_structures
 // ignore_for_file: prefer_interpolation_to_compose_strings, non_constant_identifier_names
@@ -20,6 +20,7 @@ import 'sandbox_config.dart' show IgnoreViolationsConfig;
 import 'credential_mask_files.dart' show MaskedFileBind;
 import 'sandbox_schemas.dart'
     show FsReadRestrictionConfig, FsWriteRestrictionConfig;
+import 'glob_pattern.dart' show denyGlobRegex, escapeRegexLiteral, globToRegex;
 import 'sandbox_utils.dart';
 import 'sandbox_violation_store.dart';
 
@@ -212,7 +213,7 @@ String _anchorRegex(_GlobPathEntry entry, String Function(String) compile) {
   final anchor = entry.anchor;
   if (anchor == null) return compile(entry.path);
   final pattern = entry.path.substring(anchor.length);
-  return '^${_escapeRegexLiteral(anchor)}${compile(pattern).substring(1)}';
+  return '^${escapeRegexLiteral(anchor)}${compile(pattern).substring(1)}';
 }
 
 /// The regex for a glob entry: [globToRegex], anchor respected.
@@ -689,10 +690,6 @@ const int _SBPL_STRING_MAX_BYTES = 900;
 ///
 const int _MIN_DENY_GROUP_SIZE = 4;
 
-/// Escape a literal path component for use inside a regex.
-String _escapeRegexLiteral(String text) =>
-    text.replaceAllMapped(RegExp(r'[.*+?^${}()|[\]\\]'), (m) => '\\${m[0]}');
-
 ///
 /// Literal deny paths of the shape `<dir>/<name>/<leaf>` that share `dir` and
 /// the same set of leaves, e.g. git's per-worktree registry
@@ -753,7 +750,7 @@ class _LiteralDenyGroup {
       group.names = group.names
           .where(
             (name) =>
-                fixedLength + _regexLength(_escapeRegexLiteral(name)) <=
+                fixedLength + _regexLength(escapeRegexLiteral(name)) <=
                 _SBPL_STRING_MAX_BYTES,
           )
           .toList();
@@ -775,9 +772,9 @@ class _LiteralDenyGroup {
 int _regexLength(String fragment) =>
     utf8.encode(_escapePath(fragment)).length - 2;
 String _groupRegexPrefix(_LiteralDenyGroup group) =>
-    '^${_escapeRegexLiteral(group.dir)}/(';
+    '^${escapeRegexLiteral(group.dir)}/(';
 String _groupDenyTail(_LiteralDenyGroup group) =>
-    ')/(${group.leaves.map(_escapeRegexLiteral).join('|')})(/.*)?' + r'$';
+    ')/(${group.leaves.map(escapeRegexLiteral).join('|')})(/.*)?' + r'$';
 
 ///
 /// Regex filters for a {@link LiteralDenyGroup}, chunked so no regex exceeds
@@ -794,7 +791,7 @@ String _groupDenyTail(_LiteralDenyGroup group) =>
   final chunks = <List<String>>[];
   var chunk = <String>[];
   var chunkLength = 0;
-  for (final name in group.names.map(_escapeRegexLiteral)) {
+  for (final name in group.names.map(escapeRegexLiteral)) {
     final nameLength = _regexLength(name) + (chunk.isEmpty ? 0 : 1);
     if (chunk.isNotEmpty &&
         fixedLength + chunkLength + nameLength > _SBPL_STRING_MAX_BYTES) {
