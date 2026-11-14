@@ -108,6 +108,10 @@ class IncomingMessage extends stream.Readable {
   Object? _bodyGateBudget;
   void Function()? _budgetWake;
 
+  /// Whether buffered-body gating is performed by this raw HTTP parser.
+  /// A test stand-in for IncomingMessage can use the public stream contract.
+  bool get parserDrivenBody => true;
+
   bool _complete = false;
   bool get complete => _complete;
 

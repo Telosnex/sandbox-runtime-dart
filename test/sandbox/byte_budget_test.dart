@@ -2,16 +2,26 @@
 import 'package:sandbox_runtime/src/sandbox/emitted_connection.dart'
     show adjustByteBudget, createByteBudget, gateSocketOnBufferedBody;
 import 'package:test/test.dart';
-import 'package:sandbox_runtime/src/node/events.dart';
+import 'package:sandbox_runtime/src/node/net.dart' as net;
+import 'package:sandbox_runtime/src/node/http.dart' as http;
+import 'package:sandbox_runtime/src/node/stream.dart' as stream;
 
-class _Socket extends EventEmitter {
-  void pause() {}
+class _Socket extends net.NodeSocket {
+  _Socket() : super.pending();
+  @override
+  net.NodeSocket pause() => this;
 }
 
-class _Request extends EventEmitter {
+class _Request extends stream.Readable implements http.IncomingMessage {
   _Request(this.socket);
+  @override
   final _Socket socket;
-  final readableLength = 10;
+  @override
+  int get readableLength => 10;
+  @override
+  bool get parserDrivenBody => false;
+  @override
+  dynamic noSuchMethod(Invocation i) => null;
 }
 
 void main() {

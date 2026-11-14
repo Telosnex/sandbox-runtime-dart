@@ -185,8 +185,12 @@ void adjustByteBudget(ByteBudget budget, int delta) {
  * the socket is listened to: a 'data' listener on req would start the body
  * flowing before anyone reads it.
  */
-void gateSocketOnBufferedBody(dynamic req, int cap, [ByteBudget? budget]) {
-  if (req is http.IncomingMessage) {
+void gateSocketOnBufferedBody(
+  http.IncomingMessage req,
+  int cap, [
+  ByteBudget? budget,
+]) {
+  if (req.parserDrivenBody) {
     // Dart: the shim parser reads the socket itself, so a socket data listener
     // would steal its bytes; the shim gates the parser's buffered body instead.
     req.gateBufferedBody(cap: cap, budget: budget);
@@ -202,10 +206,10 @@ void gateSocketOnBufferedBody(dynamic req, int cap, [ByteBudget? budget]) {
     socket.once('close', release);
     return;
   }
-  final dynamic socket = req.socket;
+  final socket = req.socket;
   var counted = 0;
   void check() {
-    final held = req.readableLength as int;
+    final held = req.readableLength;
     if (budget != null) adjustByteBudget(budget, held - counted);
     counted = held;
     if (held > cap ||
