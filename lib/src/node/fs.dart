@@ -1216,7 +1216,7 @@ StatFs _statfsSync(String path) {
   final libc = _libc;
   if (libc == null) throw UnsupportedError('fs.statfsSync needs a POSIX libc');
   final nativePath = path.toNativeUtf8();
-  final buf = calloc<Uint8>(256);
+  final buf = calloc<Uint8>(4096);
   try {
     final statfs = libc.lookupFunction<_LstatNative, _LstatDart>('statfs');
     if (statfs(nativePath.cast(), buf.cast()) != 0) {
