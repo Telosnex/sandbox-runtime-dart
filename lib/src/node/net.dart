@@ -328,7 +328,7 @@ class NodeSocket extends stream.Duplex {
   void _attach(Socket socket) {
     _socket = socket;
     _connecting = false;
-    if (_noDelay != null) {
+    if (_noDelay != null && socket.address.type != InternetAddressType.unix) {
       socket.setOption(SocketOption.tcpNoDelay, _noDelay!);
     }
     _subscription = socket.listen(
@@ -1008,7 +1008,9 @@ class NodeSocket extends stream.Duplex {
 
   NodeSocket setNoDelay([bool noDelay = true]) {
     _noDelay = noDelay;
-    if (!_handedOver) _socket?.setOption(SocketOption.tcpNoDelay, noDelay);
+    if (!_handedOver && _socket?.address.type != InternetAddressType.unix) {
+      _socket?.setOption(SocketOption.tcpNoDelay, noDelay);
+    }
     return this;
   }
 

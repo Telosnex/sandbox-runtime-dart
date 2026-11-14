@@ -1448,7 +1448,11 @@ class ClientRequest extends events.EventEmitter {
     if (destroyed) return this;
     if (error != null) error = _asNodeError(error);
     destroyed = true;
-    socket?.destroy(error);
+    // Node detaches a whole, consumed response from its ClientRequest. A
+    // later destroy of that request must not close the agent's idle socket.
+    final answerDone =
+        response?.complete == true && response?.readableEnded == true;
+    if (!answerDone || error != null) socket?.destroy(error);
     _lease?.release();
     if (error != null) _emit('error', error);
     return this;
