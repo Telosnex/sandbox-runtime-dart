@@ -101,6 +101,7 @@ class IncomingMessage extends stream.Readable {
   final Map<String, Object?> headers;
   final Map<String, Object?> trailers = {};
   final List<String> rawTrailers = [];
+  int keepAliveTimeout = 5000;
   bool aborted = false;
   int _bodyBuffered = 0;
   int? _bodyGateCap;
@@ -446,6 +447,7 @@ class ServerResponse extends events.EventEmitter {
       } else {
         writableFinished = true;
         _emit('finish');
+        _emit('close');
       }
       if (!_done.isCompleted) _done.complete();
       if (callback != null)
@@ -493,6 +495,10 @@ class ServerResponse extends events.EventEmitter {
         'Connection',
         _request.headers['connection']?.toString() ?? 'keep-alive',
       );
+    }
+    if (getHeader('connection')?.toString().toLowerCase() == 'keep-alive' &&
+        !hasHeader('keep-alive')) {
+      setHeader('Keep-Alive', 'timeout=${_request.keepAliveTimeout ~/ 1000}');
     }
     final hasLength = hasHeader('content-length');
     final hasTransfer = hasHeader('transfer-encoding');
@@ -653,7 +659,11 @@ class NodeHttpServer extends net.NodeServer {
           return;
         }
         _idleConnections.remove(socket);
-        final parsed = _parseHead(head, request: true);
+        final parsed = _parseHead(
+          head,
+          request: true,
+          strictTarget: socket is node_tls.TLSSocket,
+        );
         final parser = socket.parser ??= _newServerParser(socket);
         final versionParts = parsed.version.split('.');
         final major = int.tryParse(versionParts.first) ?? 1;
@@ -707,6 +717,7 @@ class NodeHttpServer extends net.NodeServer {
           shouldKeepAlive,
         ]);
         final request = parser.incoming! as IncomingMessage;
+        request.keepAliveTimeout = keepAliveTimeout;
         final response = ServerResponse._(socket, request);
         pendingResponses.add(response.done);
         pendingPairs.removeWhere((p) => p.$2.writableEnded);
@@ -1492,7 +1503,11 @@ Future<List<Uint8List>?> _readHead(
   return lines;
 }
 
-_ParsedHead _parseHead(List<Uint8List> lines, {required bool request}) {
+_ParsedHead _parseHead(
+  List<Uint8List> lines, {
+  required bool request,
+  bool strictTarget = false,
+}) {
   final start = latin1.decode(lines.first);
   final pieces = start.split(' ');
   if (request) {
@@ -1504,6 +1519,30 @@ _ParsedHead _parseHead(List<Uint8List> lines, {required bool request}) {
         'Parse Error: Invalid request line',
       );
     }
+    if (!METHODS.contains(pieces[0])) {
+      throw NodeHttpError(
+        'HPE_INVALID_METHOD',
+        'Parse Error: Invalid method encountered',
+      );
+    }
+    final targetBytes = pieces[1].codeUnits;
+    final bad = targetBytes.indexWhere(
+      (b) => b <= 0x20 || b == 0x7f || (strictTarget && b >= 0x80),
+    );
+    if (bad >= 0) {
+      throw NodeHttpError(
+        'HPE_INVALID_URL',
+        'Parse Error: Invalid characters in url',
+        rawPacket: Uint8List.fromList([
+          for (final line in lines) ...[...line, 13, 10],
+          13,
+          10,
+        ]),
+        bytesParsed: pieces[0].length + 1 + bad,
+      );
+    }
+    if (!strictTarget)
+      pieces[1] = utf8.decode(targetBytes, allowMalformed: true);
     final version = pieces[2].substring(5);
     final rawHeaders = <String>[];
     final values = <String, Object?>{};
@@ -1522,7 +1561,14 @@ _ParsedHead _parseHead(List<Uint8List> lines, {required bool request}) {
           'Parse Error: Invalid header token',
         );
       final value = line.substring(colon + 1).trim();
-      _checkHeaderValue(value);
+      try {
+        _checkHeaderValue(value);
+      } catch (_) {
+        throw NodeHttpError(
+          'HPE_INVALID_HEADER_TOKEN',
+          'Parse Error: Invalid header value char',
+        );
+      }
       rawHeaders
         ..add(name)
         ..add(value);
@@ -1790,7 +1836,10 @@ class _ByteReader {
       if (value == null)
         return output.isEmpty && !sawCr
             ? null
-            : throw const SocketException('Unexpected EOF in line');
+            : throw NodeHttpError(
+                'HPE_INVALID_EOF_STATE',
+                'Parse Error: Invalid EOF state',
+              );
       if (sawCr) {
         if (value != 10)
           throw NodeHttpError(
