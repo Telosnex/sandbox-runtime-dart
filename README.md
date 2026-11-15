@@ -26,9 +26,8 @@ exercise a real Windows MXC installation.
 
 ## Releases
 
-The first pub.dev version must be published manually. Then enable automated
-publishing from `Telosnex/sandbox-runtime-dart`, environment `pub.dev`, tag
-pattern `pub-sandbox_runtime-v{{version}}`. Tags use the pubspec version.
+pub.dev publishes from `Telosnex/sandbox_runtime_dart`, environment `pub.dev`,
+tag pattern `pub-sandbox_runtime-v{{version}}`. Tags use the pubspec version.
 The shared Telosnex workflow runs analysis, tests and the pana quality gate
 before publication. Upstream watch checks the pinned upstream commit daily.
 

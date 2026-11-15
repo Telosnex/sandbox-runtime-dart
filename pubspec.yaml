@@ -4,7 +4,7 @@ description: >-
   restrictions for arbitrary processes, via sandbox-exec on macOS, bubblewrap
   on Linux, and an injected MXC SDK adapter on Windows.
 version: 0.0.83
-repository: https://github.com/Telosnex/sandbox-runtime-dart
+repository: https://github.com/Telosnex/sandbox_runtime_dart
 
 environment:
   sdk: ^3.9.0
