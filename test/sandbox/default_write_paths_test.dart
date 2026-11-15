@@ -19,7 +19,7 @@ import 'package:sandbox_runtime/src/sandbox/sandbox_config.dart'
         SandboxRuntimeConfig;
 import 'package:sandbox_runtime/src/sandbox/sandbox_manager.dart';
 import 'package:sandbox_runtime/src/sandbox/sandbox_utils.dart'
-    show getDefaultWritePaths, isAtOrUnder;
+    show denyGlobCompilesForTesting, getDefaultWritePaths, isAtOrUnder;
 import 'package:test/test.dart';
 
 import '../helpers/platform.dart' show isLinux, isMacOS, isWindows;
@@ -572,55 +572,39 @@ Future<void> main() async {
         [true, true, false, false],
       );
     });
-    // Dart: upstream asks for 60 calls under 1,500 ms. Here that is about
-    // 750 ms for `[` on a fast machine, and slow macOS CI runners took 2 s.
-    // Compiling every time takes about 1,400 ms on the fast machine, so no
-    // fixed limit tells the two apart on every machine. The calls are timed
-    // against the same calls for 24 patterns of plain text of the same length,
-    // in the same process. Measured on macOS and Linux:
-    //   `[`      1.9-2.0 times plain; compiled every time, 3.4-3.5
-    //   `[z-a]`  1.4-1.5 times plain; compiled every time, 2.2-2.3
-    // The fastest of three rounds is kept for each.
-    Future<int> sixtyCalls(String Function(int i) pattern) async {
-      await SandboxManager.reset();
-      await SandboxManager.initialize(
-        SandboxRuntimeConfig(
-          network: NetworkConfig(allowedDomains: [], deniedDomains: []),
-          filesystem: FilesystemConfig(
-            denyRead: List.generate(
-              24,
-              (i) => FilesystemPathSpelling(pattern(i)),
-            ),
-            allowWrite: [],
-            denyWrite: [],
-          ),
-        ),
-      );
-      final began = Stopwatch()..start();
-      for (var i = 0; i < 60; i++) {
-        SandboxManager.getFsWriteConfig();
-      }
-      return began.elapsedMilliseconds;
-    }
-
-    for (final (unit, limit) in [('[', 2.6), ('[z-a]', 1.8)]) {
+    for (final unit in ['[', '[z-a]']) {
       test('does not compile 96 KB of $unit for every path', () async {
-        var units = 1 << 62;
-        var plain = 1 << 62;
-        for (var round = 0; round < 3; round++) {
-          final u = await sixtyCalls(
-            (i) => '/x$i/${unit * (4000 ~/ unit.length)}',
-          );
-          final p = await sixtyCalls((i) => '/x$i/${'a' * 3999}*');
-          if (u < units) units = u;
-          if (p < plain) plain = p;
-        }
-        // Some 3 ms each. Compiled each time, 40 ms and more.
-        expect(
-          units / plain,
-          lessThan(limit),
-          reason: '$unit took $units ms, plain text $plain ms',
+        await SandboxManager.reset();
+        await SandboxManager.initialize(
+          SandboxRuntimeConfig(
+            network: NetworkConfig(allowedDomains: [], deniedDomains: []),
+            filesystem: FilesystemConfig(
+              denyRead: List.generate(
+                24,
+                (i) => FilesystemPathSpelling(
+                  '/x$i/${unit * (4000 ~/ unit.length)}',
+                ),
+              ),
+              allowWrite: [],
+              denyWrite: [],
+            ),
+          ),
         );
+        final compiles = denyGlobCompilesForTesting;
+        final began = Stopwatch()..start();
+        for (var i = 0; i < 60; i++) {
+          SandboxManager.getFsWriteConfig();
+        }
+        // Dart: upstream asks for 60 calls under 1,500 ms ("Some 3 ms each.
+        // Compiled each time, 40 ms and more."). Here the 60 calls take about
+        // 750 ms on a fast machine and up to 2 s on a slow CI runner, and
+        // compiling every time takes about 1,400 ms on the fast machine: no
+        // time limit tells the two apart on every machine. So the compiles
+        // are counted: at most once for each of the 24 rules. The time limit
+        // is kept, far above both, for reading the pattern text in more than
+        // linear time.
+        expect(denyGlobCompilesForTesting - compiles, lessThanOrEqualTo(24));
+        expect(began.elapsedMilliseconds, lessThan(10000));
       });
     }
   }, skip: isLinux || isMacOS ? false : 'requires Linux or macOS');

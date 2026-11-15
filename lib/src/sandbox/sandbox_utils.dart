@@ -628,6 +628,7 @@ bool Function(String p) _readRuleCovers(FilesystemPathEntry entry) {
 RegExp? _compiledDenyGlob(String normalizedGlob) {
   var regex = _compiledDenyGlobs[normalizedGlob];
   if (!_compiledDenyGlobs.containsKey(normalizedGlob)) {
+    _denyGlobCompiles++;
     try {
       regex = RegExp(denyGlobRegex(normalizedGlob));
       // V8 finds a pattern too large only when it first runs it.
@@ -647,8 +648,13 @@ RegExp? _compiledDenyGlob(String normalizedGlob) {
 
 final _compiledDenyGlobs = <String, RegExp?>{};
 var _compiledDenyGlobChars = 0;
+var _denyGlobCompiles = 0;
 /** Past this much pattern text all that is kept is let go, to begin again. */
 const _MAX_COMPILED_DENY_GLOB_CHARS = 1 << 20;
+
+/// Dart: how many read-rule globs {@link _compiledDenyGlob} has compiled.
+/// Tests check that a rule is compiled once without timing it.
+int get denyGlobCompilesForTesting => _denyGlobCompiles;
 
 /**
  * Generate proxy environment variables for sandboxed processes
