@@ -572,30 +572,55 @@ Future<void> main() async {
         [true, true, false, false],
       );
     });
-    for (final unit in ['[', '[z-a]']) {
-      test('does not compile 96 KB of $unit for every path', () async {
-        await SandboxManager.reset();
-        await SandboxManager.initialize(
-          SandboxRuntimeConfig(
-            network: NetworkConfig(allowedDomains: [], deniedDomains: []),
-            filesystem: FilesystemConfig(
-              denyRead: List.generate(
-                24,
-                (i) => FilesystemPathSpelling(
-                  '/x$i/${unit * (4000 ~/ unit.length)}',
-                ),
-              ),
-              allowWrite: [],
-              denyWrite: [],
+    // Dart: upstream asks for 60 calls under 1,500 ms. Here that is about
+    // 750 ms for `[` on a fast machine, and slow macOS CI runners took 2 s.
+    // Compiling every time takes about 1,400 ms on the fast machine, so no
+    // fixed limit tells the two apart on every machine. The calls are timed
+    // against the same calls for 24 patterns of plain text of the same length,
+    // in the same process. Measured on macOS and Linux:
+    //   `[`      1.9-2.0 times plain; compiled every time, 3.4-3.5
+    //   `[z-a]`  1.4-1.5 times plain; compiled every time, 2.2-2.3
+    // The fastest of three rounds is kept for each.
+    Future<int> sixtyCalls(String Function(int i) pattern) async {
+      await SandboxManager.reset();
+      await SandboxManager.initialize(
+        SandboxRuntimeConfig(
+          network: NetworkConfig(allowedDomains: [], deniedDomains: []),
+          filesystem: FilesystemConfig(
+            denyRead: List.generate(
+              24,
+              (i) => FilesystemPathSpelling(pattern(i)),
             ),
+            allowWrite: [],
+            denyWrite: [],
           ),
-        );
-        final began = Stopwatch()..start();
-        for (var i = 0; i < 60; i++) {
-          SandboxManager.getFsWriteConfig();
+        ),
+      );
+      final began = Stopwatch()..start();
+      for (var i = 0; i < 60; i++) {
+        SandboxManager.getFsWriteConfig();
+      }
+      return began.elapsedMilliseconds;
+    }
+
+    for (final (unit, limit) in [('[', 2.6), ('[z-a]', 1.8)]) {
+      test('does not compile 96 KB of $unit for every path', () async {
+        var units = 1 << 62;
+        var plain = 1 << 62;
+        for (var round = 0; round < 3; round++) {
+          final u = await sixtyCalls(
+            (i) => '/x$i/${unit * (4000 ~/ unit.length)}',
+          );
+          final p = await sixtyCalls((i) => '/x$i/${'a' * 3999}*');
+          if (u < units) units = u;
+          if (p < plain) plain = p;
         }
         // Some 3 ms each. Compiled each time, 40 ms and more.
-        expect(began.elapsedMilliseconds, lessThan(1500));
+        expect(
+          units / plain,
+          lessThan(limit),
+          reason: '$unit took $units ms, plain text $plain ms',
+        );
       });
     }
   }, skip: isLinux || isMacOS ? false : 'requires Linux or macOS');
