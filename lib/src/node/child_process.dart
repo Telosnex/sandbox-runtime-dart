@@ -216,8 +216,11 @@ bool killPid(int pid, [Object signal = 'SIGTERM']) {
 // --- launching ----------------------------------------------------------------
 
 class _Launched {
-  _Launched(this.pid, this.fds, [this.statusFd = -1]);
+  _Launched(this.pid, this.fds, {this.statusFd = -1, this.kq = -1});
   final int pid;
+
+  /// macOS: kqueue already watching [pid] for exit, or -1.
+  final int kq;
 
   /// Linux spawn helper: pipe that delivers the exact wait status, or -1.
   final int statusFd;
@@ -362,7 +365,13 @@ _Launched _launch(
       n.attrSigDefault(attr, sigset);
       n.sigemptyset(sigset);
       n.attrSigMask(attr, sigset);
-      n.attrFlags(attr, 0x04 | 0x08 | (io.Platform.isMacOS ? 0x4000 : 0));
+      // macOS: POSIX_SPAWN_CLOEXEC_DEFAULT (0x4000), and
+      // POSIX_SPAWN_START_SUSPENDED (0x0080) so the exit watch is in place
+      // before the child can run and exit (see _ExitWatcher).
+      n.attrFlags(
+        attr,
+        0x04 | 0x08 | (io.Platform.isMacOS ? 0x4000 | 0x0080 : 0),
+      );
 
       final argv = arena<Pointer<Utf8>>(args.length + 2);
       argv[0] = ((options['argv0'] as String?) ?? command).toNativeUtf8(
@@ -479,7 +488,13 @@ _Launched _launch(
           n.close(statusRead);
           throw _LaunchError(codeForErrno(err));
         }
-        return _Launched(realPid, List.of(parentEnds), statusRead);
+        return _Launched(realPid, List.of(parentEnds), statusFd: statusRead);
+      }
+      if (io.Platform.isMacOS) {
+        // The child is suspended: watch it, then let it run.
+        final kq = _ExitWatcher.watch(n, pid.value);
+        n.kill(pid.value, signalNumber('SIGCONT'));
+        return _Launched(pid.value, List.of(parentEnds), kq: kq);
       }
       return _Launched(pid.value, List.of(parentEnds));
     } finally {
@@ -534,7 +549,9 @@ NodeError _spawnError(
 // The Dart VM reaps children with waitpid(-1) while any dart:io Process is
 // alive, and drops the status of a pid it did not start. On macOS the status
 // is taken from kqueue (EVFILT_PROC, NOTE_EXITSTATUS), which sees the exit
-// before anyone reaps. On Linux a pidfd tells when the child exits, then
+// before anyone reaps. The child starts suspended and is resumed only after
+// the kqueue watch is registered; otherwise a short child can exit, and be
+// reaped by the VM, before the watch exists. On Linux a pidfd tells when the child exits, then
 // waitpid reads the status; if the VM reaped it first the status is lost and
 // the result fails closed (status null, error ECHILD).
 
@@ -592,23 +609,11 @@ String? _spawnHelper() {
 }
 
 class _ExitWatcher {
-  _ExitWatcher(this._n, this.pid, [this._statusFd = -1]) {
+  _ExitWatcher(this._n, _Launched launched)
+    : pid = launched.pid,
+      _statusFd = launched.statusFd {
     if (io.Platform.isMacOS) {
-      final kq = _libc!.lookupFunction<Int32 Function(), int Function()>(
-        'kqueue',
-      )();
-      _fd = kq;
-      final ev = calloc<Uint8>(32);
-      try {
-        _setKevent(ev, pid);
-        if (_kevent(kq, ev, 1, nullptr, 0, nullptr) != 0) {
-          // Already gone from the process table: the status is lost.
-          _fd = -1;
-          _n.close(kq);
-        }
-      } finally {
-        calloc.free(ev);
-      }
+      _fd = launched.kq;
     } else if (_statusFd < 0) {
       final syscall = _libc!.lookupFunction<_SyscallN, _SyscallD>('syscall');
       _fd = syscall(434, pid, 0); // pidfd_open
@@ -624,6 +629,26 @@ class _ExitWatcher {
   static final _KeventD _kevent = _libc!.lookupFunction<_KeventN, _KeventD>(
     'kevent',
   );
+
+  /// macOS: a kqueue that reports [pid]'s exit status, or -1 when [pid] is
+  /// already gone from the process table (its status is then lost).
+  static int watch(_Libc n, int pid) {
+    final kq = _libc!.lookupFunction<Int32 Function(), int Function()>(
+      'kqueue',
+    )();
+    if (kq < 0) return -1;
+    final ev = calloc<Uint8>(32);
+    try {
+      _setKevent(ev, pid);
+      if (_kevent(kq, ev, 1, nullptr, 0, nullptr) != 0) {
+        n.close(kq);
+        return -1;
+      }
+      return kq;
+    } finally {
+      calloc.free(ev);
+    }
+  }
 
   static void _setKevent(Pointer<Uint8> ev, int pid) {
     final d = ByteData.sublistView(ev.asTypedList(32));
@@ -799,7 +824,7 @@ SpawnSyncResult _spawnSync(
     );
   }
 
-  final watcher = _ExitWatcher(native, launched.pid, launched.statusFd);
+  final watcher = _ExitWatcher(native, launched);
   final fds = launched.fds;
   final outputs = <List<int>?>[
     null,
@@ -1126,7 +1151,7 @@ ChildProcess spawn(
     child.stdio.add(socket);
   }
   Timer.run(() => child.emit('spawn'));
-  final watcher = _ExitWatcher(native, launched.pid, launched.statusFd);
+  final watcher = _ExitWatcher(native, launched);
   Timer.periodic(const Duration(milliseconds: 10), (timer) {
     final exit = watcher.wait(0);
     if (!exit.exited) return;
