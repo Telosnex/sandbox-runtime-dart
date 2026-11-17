@@ -8,10 +8,10 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to validate (pub-sandbox_runtime-v0.0.83)
+        description: Release tag to validate (pub-sandbox_runtime-v0.0.84)
         required: true
         type: string
-        default: pub-sandbox_runtime-v0.0.83
+        default: pub-sandbox_runtime-v0.0.84
 
 permissions:
   contents: read

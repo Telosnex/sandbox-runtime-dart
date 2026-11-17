@@ -3,7 +3,7 @@ description: >-
   Dart port of Anthropic Sandbox Runtime (srt): filesystem and network
   restrictions for arbitrary processes, via sandbox-exec on macOS, bubblewrap
   on Linux, and an injected MXC SDK adapter on Windows.
-version: 0.0.83
+version: 0.0.84
 repository: https://github.com/Telosnex/sandbox_runtime_dart
 
 environment:
