@@ -15,13 +15,13 @@ import 'package:sandbox_runtime/src/sandbox/proxy_only.dart';
 import 'package:test/test.dart';
 
 import '../helpers/emitted_connections.dart'
-    show SERVES_EMITTED_CONNECTIONS, testWithTls;
+    show canServeEmittedConnections, testWithTls;
 import '../helpers/fake_decider.dart' show Frame, fakeDecider;
 
 typedef Path = String; // 'tls' | 'plain'
 
 /** A tunnel is terminated only where the runtime can do it in-process. */
-bool cannotServe(Path path) => path == 'tls' && !SERVES_EMITTED_CONNECTIONS;
+bool cannotServe(Path path) => path == 'tls' && !canServeEmittedConnections;
 
 /**
  * A proxy-only proxy in front of an upstream on loopback (HTTPS with a leaf

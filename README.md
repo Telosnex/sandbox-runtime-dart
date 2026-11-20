@@ -15,6 +15,12 @@ Provides filesystem and network restrictions for child processes. Import
 
 This source package does not include prebuilt native helpers. Applications that need them must build and bundle them. Sandbox strength depends on the host platform and configuration; do not assume that unsupported configurations provide isolation.
 
+## Example
+
+Run `dart run example/main.dart` on macOS or a Linux host that meets the
+platform requirements. The example validates a restrictive policy and runs
+a simple command inside the sandbox.
+
 ## Development
 
 Run `dart pub get`, `dart analyze`, and `dart test`.

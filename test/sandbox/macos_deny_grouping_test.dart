@@ -144,9 +144,8 @@ void main() {
           expect(
             firstDeny,
             contains(
-              r'(odd\\.name\\+\\(1\\)\\{2\\}\\^\\$\\|\\\\\"q|' +
-                  UNICODE_NAME +
-                  '|',
+              r'(odd\\.name\\+\\(1\\)\\{2\\}\\^\\$\\|\\\\\"q|'
+              '$UNICODE_NAME|',
             ),
           );
           // The lone path is still a plain subpath filter.

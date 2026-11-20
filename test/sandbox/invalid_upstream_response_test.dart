@@ -29,7 +29,7 @@ import 'package:sandbox_runtime/src/sandbox/parent_proxy.dart'
     show DirectLookup, relayResponseHead;
 import 'package:test/test.dart';
 
-import '../helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
+import '../helpers/emitted_connections.dart' show canServeEmittedConnections;
 
 final FIXTURE_DIR = join(
   Directory.current.path, // import.meta.dir, '..'
@@ -165,7 +165,7 @@ Future<({int status, String raw})> exchange(
 void main() {
   group('invalid upstream status line', () {
     // Every case runs a TLS-terminating proxy: skipped where none can run.
-    final Object? tlsSkip = SERVES_EMITTED_CONNECTIONS
+    final Object? tlsSkip = canServeEmittedConnections
         ? null
         : 'TLS termination unavailable';
     final ca = createMitmCA(caCertPath: CA_CERT, caKeyPath: CA_KEY);
@@ -218,7 +218,7 @@ void main() {
       tlsPort = await listen(tlsUpstream);
       proxy = createHttpProxyServer(
         _HttpOptions(
-          mitmCA: SERVES_EMITTED_CONNECTIONS ? ca : null,
+          mitmCA: canServeEmittedConnections ? ca : null,
           tlsTerminateUpstreamCA: CA_PEM,
           lookupFor: (int port, [String? encodedCommand]) => lookup,
         ),

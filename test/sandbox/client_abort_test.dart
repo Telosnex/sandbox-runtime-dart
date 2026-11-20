@@ -23,7 +23,7 @@ import 'package:sandbox_runtime/src/sandbox/request_filter.dart'
 import 'package:test/test.dart';
 
 import '../helpers/emitted_connections.dart'
-    show SERVES_EMITTED_CONNECTIONS, testWithTls;
+    show canServeEmittedConnections, testWithTls;
 
 // Dart: the object literal upstream hands createHttpProxyServer; every
 // option not named here is absent (null).
@@ -1006,7 +1006,7 @@ void main() {
       process.on('uncaughtException', onUncaught);
       proxy = createHttpProxyServer(
         _HttpOptions(
-          mitmCA: SERVES_EMITTED_CONNECTIONS ? ca : null,
+          mitmCA: canServeEmittedConnections ? ca : null,
           filterRequest: (request, [info]) async =>
               const RequestDecision(action: 'allow'),
         ),

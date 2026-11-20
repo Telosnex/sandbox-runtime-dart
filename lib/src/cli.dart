@@ -36,7 +36,7 @@ import 'sandbox/windows_sandbox_utils.dart' as windows_sandbox_utils;
 import 'proxy_cli.dart' as proxy_cli;
 
 // Dart has no JSON import: package.json's version, kept equal to pubspec.yaml.
-const _pkg = (version: '0.0.84');
+const _pkg = (version: '0.0.85');
 
 /**
  * Get default config path

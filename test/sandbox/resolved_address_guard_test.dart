@@ -24,7 +24,7 @@ import 'package:sandbox_runtime/src/sandbox/sandbox_config.dart';
 import 'package:path/path.dart' as path;
 import 'package:test/test.dart';
 
-import '../helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
+import '../helpers/emitted_connections.dart' show canServeEmittedConnections;
 
 final FIXTURE_DIR = path.join(
   Directory.current.path, // import.meta.dir, '..'
@@ -106,7 +106,7 @@ Future<List<dns.LookupAddress>> lookupAll(
 }
 
 // Dart: upstream's `const it = testWithTls`, which `test` cannot alias.
-final Object _tlsSkip = SERVES_EMITTED_CONNECTIONS
+final Object _tlsSkip = canServeEmittedConnections
     ? false
     : 'TLS termination unavailable';
 
@@ -828,8 +828,7 @@ void main() {
         req.setEncoding('utf8').on('data', (Object? c) => body += _utf8(c));
         req.on('end', () {
           upstreamHits.add(
-            '${req.method} ${req.url} host=${req.headers['host']}' +
-                (body.isNotEmpty ? ' body=$body' : ''),
+            '${req.method} ${req.url} host=${req.headers['host']}${body.isNotEmpty ? ' body=$body' : ''}',
           );
           res.writeHead(200, {'Content-Type': 'text/plain'});
           res.end('upstream-ok');
@@ -1219,7 +1218,7 @@ void main() {
         req.setEncoding('utf8').on('data', (Object? c) => body += _utf8(c));
         req.on('end', () {
           upstreamHits.add(
-            '${req.method} ${req.url}' + (body.isNotEmpty ? ' body=$body' : ''),
+            '${req.method} ${req.url}${body.isNotEmpty ? ' body=$body' : ''}',
           );
           res.writeHead(200, {'x-upstream-host': '${req.headers['host']}'});
           res.end('tls-upstream-ok');

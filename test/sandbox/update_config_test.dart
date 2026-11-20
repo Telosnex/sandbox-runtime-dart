@@ -14,8 +14,6 @@ import 'package:sandbox_runtime/src/node/errno.dart' show NodeException;
 import 'package:sandbox_runtime/src/node/process.dart' as process;
 import 'package:sandbox_runtime/src/node/net.dart'
     show NodeAddress, NodeServer, NodeSocket, connect, createServer;
-import 'package:sandbox_runtime/src/sandbox/sandbox_schemas.dart'
-    show NetworkHostPattern, SandboxAskCallback;
 import 'package:sandbox_runtime/src/sandbox/sandbox_utils.dart'
     show encodeSandboxedCommand, proxyUsernameFor;
 import 'package:sandbox_runtime/src/utils/platform.dart' show getPlatform;
@@ -24,9 +22,7 @@ import '../helpers/spawn.dart' show RunOpts, spawnAsync;
 
 String b64(String s) => base64Encode(utf8.encode(s));
 
-/**
- * Helper to make a CONNECT request through the proxy using raw TCP
- */
+/// Helper to make a CONNECT request through the proxy using raw TCP
 Future<({bool allowed, int? statusCode, String? response})> proxyRequest(
   int proxyPort,
   String targetHost, [
@@ -79,7 +75,7 @@ Future<({bool allowed, int? statusCode, String? response})> proxyRequest(
   return completer.future;
 }
 
-/** Write `payload` to the proxy and wait for the first reply, close, error or timeout. */
+/// Write `payload` to the proxy and wait for the first reply, close, error or timeout.
 Future<void> rawExchange(int port, String Function() payload) {
   final done = Completer<void>();
   void resolve() {
@@ -515,10 +511,8 @@ void main() {
     );
   });
 
-  /**
-   * CONNECT `target` ("host:port") through the proxy under `username`, with the
-   * session token, and report the status code of the reply.
-   */
+  /// CONNECT `target` ("host:port") through the proxy under `username`, with the
+  /// session token, and report the status code of the reply.
   Future<int?> connectAs(int proxyPort, String target, String username) {
     final completer = Completer<int?>();
     void resolve(int? v) {
@@ -551,10 +545,8 @@ void main() {
     return completer.future;
   }
 
-  /**
-   * The same over SOCKS5: the reply code to a CONNECT for `target` under
-   * `username` (0 is granted, 2 is refused by the rules).
-   */
+  /// The same over SOCKS5: the reply code to a CONNECT for `target` under
+  /// `username` (0 is granted, 2 is refused by the rules).
   Future<int?> socksConnectAs(int proxyPort, String target, String username) {
     final completer = Completer<int?>();
     final parts = target.split(':');
@@ -594,12 +586,10 @@ void main() {
     return completer.future;
   }
 
-  /**
-   * A listener on loopback for the proxy to dial, so an allow is observed as a
-   * 200 without leaving the machine: an IP literal has no name to resolve and
-   * nothing for the resolved-address check to refuse. It answers a request with
-   * the body `ok`.
-   */
+  /// A listener on loopback for the proxy to dial, so an allow is observed as a
+  /// 200 without leaving the machine: an IP literal has no name to resolve and
+  /// nothing for the resolved-address check to refuse. It answers a request with
+  /// the body `ok`.
   Future<({NodeServer server, String target})> listenOnLoopback() {
     final completer = Completer<({NodeServer server, String target})>();
     final server = createServer((NodeSocket socket) {
@@ -616,14 +606,14 @@ void main() {
     return completer.future;
   }
 
-  /** An id of the kind the API asks for: 16 random bytes, 22 characters. */
+  /// An id of the kind the API asks for: 16 random bytes, 22 characters.
   String randomCommandId() => randomBytes(16).toString('base64url');
 
-  /** The proxy username a wrap given this commandId puts in the proxy URLs. */
+  /// The proxy username a wrap given this commandId puts in the proxy URLs.
   String usernameFor(String commandId) =>
       proxyUsernameFor(encodeSandboxedCommand(commandId));
 
-  const NO_FILESYSTEM_RULES = noFs;
+  const noFilesystemRules = noFs;
 
   List<String> violationLines() => SandboxManager.getSandboxViolationStore()
       .getViolations()
@@ -653,7 +643,7 @@ void main() {
             strictAllowlist: strictAllowlist,
             httpProxyPort: httpProxyPort,
           ),
-          filesystem: NO_FILESYSTEM_RULES,
+          filesystem: noFilesystemRules,
         ),
         callback,
       );
@@ -1118,7 +1108,7 @@ void main() {
                 'allowedDomains': [entry],
                 'deniedDomains': <String>[],
               },
-              'filesystem': NO_FILESYSTEM_RULES.toJson(),
+              'filesystem': noFilesystemRules.toJson(),
             }).success,
             valid,
           );
@@ -1286,14 +1276,14 @@ void main() {
   group('ask callback answers', () {
     late ({NodeServer server, String target}) loopback;
 
-    /** One CONNECT to the loopback listener, decided by `answer` alone. */
+    /// One CONNECT to the loopback listener, decided by `answer` alone.
     Future<({int? status, List<String> lines})> decideWith(
       Object answer,
     ) async {
       await SandboxManager.initialize(
         const SandboxRuntimeConfig(
           network: NetworkConfig(allowedDomains: [], deniedDomains: []),
-          filesystem: NO_FILESYSTEM_RULES,
+          filesystem: noFilesystemRules,
         ),
         (NetworkHostPattern _) async => answer,
       );
@@ -1500,7 +1490,7 @@ void main() {
         await SandboxManager.initialize(
           const SandboxRuntimeConfig(
             network: NetworkConfig(allowedDomains: [], deniedDomains: []),
-            filesystem: NO_FILESYSTEM_RULES,
+            filesystem: noFilesystemRules,
           ),
           (NetworkHostPattern _) async {
             throw Exception('prompt went away');
@@ -1923,10 +1913,8 @@ void main() {
     });
   });
 
-  /**
-   * Integration tests using wrapWithSandbox() to verify sandbox wrapper generation
-   * and actual network behavior with sandboxed curl commands.
-   */
+  /// Integration tests using wrapWithSandbox() to verify sandbox wrapper generation
+  /// and actual network behavior with sandboxed curl commands.
   group('SandboxManager.updateConfig integration (wrapWithSandbox)', () {
     tearDown(() async {
       await SandboxManager.reset();
@@ -2069,16 +2057,14 @@ void main() {
       timeout: const Timeout(Duration(milliseconds: 20000)),
     );
 
-    /**
-     * This test verifies the exact user scenario:
-     * 1. Start sandbox with allowedDomains: [], deniedDomains: ["example.com"]
-     * 2. Generate wrapper (should include proxy config even with empty allowlist)
-     * 3. Update config to allow example.com
-     * 4. Proxy should now allow requests (tested via raw TCP)
-     *
-     * The fix: even with empty allowlist, wrapper includes proxy config so
-     * updateConfig() can enable network access for sandboxed processes.
-     */
+    /// This test verifies the exact user scenario:
+    /// 1. Start sandbox with allowedDomains: [], deniedDomains: ["example.com"]
+    /// 2. Generate wrapper (should include proxy config even with empty allowlist)
+    /// 3. Update config to allow example.com
+    /// 4. Proxy should now allow requests (tested via raw TCP)
+    ///
+    /// The fix: even with empty allowlist, wrapper includes proxy config so
+    /// updateConfig() can enable network access for sandboxed processes.
     test(
       'should allow network after updateConfig when started with empty allowlist and denylist',
       () async {
@@ -2127,10 +2113,8 @@ void main() {
       },
     );
 
-    /**
-     * This test verifies the core fix: sandbox wrapper should include proxy config
-     * even with empty allowlist, enabling dynamic updates.
-     */
+    /// This test verifies the core fix: sandbox wrapper should include proxy config
+    /// even with empty allowlist, enabling dynamic updates.
     test(
       'should include proxy in sandbox wrapper even with empty allowlist',
       () async {

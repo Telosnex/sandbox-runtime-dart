@@ -39,7 +39,7 @@ typedef Mount = ({int index, String flag, String? source, String dest});
  * itself: the `/dev/null` of a read deny or an absent write deny, the fake
  * of a credential mask. Two at one destination, with nothing between that
  * mounts at or above it, only replace one another, and bubblewrap before
- * 0.5.0 refuses to start on that ("Can't create file at <dest>: Permission
+ * 0.5.0 refuses to start on that ("Can't create file at `<dest>`: Permission
  * denied"). Spellings of one path converge on one destination, so the corpus
  * spells the same file several ways.
  *

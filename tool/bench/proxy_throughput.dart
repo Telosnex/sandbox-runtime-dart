@@ -128,7 +128,7 @@ Future<void> main(List<String> args) async {
     if (proxyPort != null) {
       client.findProxy = (_) => 'PROXY 127.0.0.1:$proxyPort';
     }
-    final url = Uri.parse('https://127.0.0.1:${originPort}/x');
+    final url = Uri.parse('https://127.0.0.1:$originPort/x');
     var sw = Stopwatch()..start();
     final r = await (await client.getUrl(url)).close();
     var n = 0;

@@ -4,7 +4,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:sandbox_runtime/src/node/stream.dart' as stream;
 
-/** A frame: the 4-byte big-endian length, then the JSON text as given. */
+/// A frame: the 4-byte big-endian length, then the JSON text as given.
 Uint8List frameOf(String json) {
   final b = Uint8List.fromList(utf8.encode(json));
   final n = ByteData(4)..setUint32(0, b.length, Endian.big);
@@ -13,7 +13,7 @@ Uint8List frameOf(String json) {
 
 typedef Frame = Map<String, Object?>;
 
-/** An in-test decider on a pair of streams, driven by a verdict function. */
+/// An in-test decider on a pair of streams, driven by a verdict function.
 Map<String, Object> fakeDecider(
   List<String> allowedDomains,
   Object Function(Frame f) decide, {
@@ -59,12 +59,13 @@ Map<String, Object> fakeDecider(
         continue;
       }
       if (v == 'hang') continue;
-      if (v == 'garbage')
+      if (v == 'garbage') {
         toProxy.write(Uint8List.fromList([0, 0, 0, 3, 120, 121, 122]));
-      else if (v == 'end')
+      } else if (v == 'end') {
         toProxy.end();
-      else
+      } else {
         send({'t': 'verdict', 'id': f['id'], ...(v as Frame)});
+      }
     }
   });
   return {

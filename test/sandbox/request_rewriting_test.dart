@@ -28,7 +28,7 @@ import 'package:sandbox_runtime/src/sandbox/sandbox_manager.dart';
 import 'package:sandbox_runtime/src/sandbox/socks_proxy.dart';
 import 'package:test/test.dart';
 
-import '../helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
+import '../helpers/emitted_connections.dart' show canServeEmittedConnections;
 
 final FIXTURE_DIR = path.join(
   Directory.current.path, // import.meta.dir, '..'
@@ -45,7 +45,7 @@ typedef Reply = ({int status, Map<String, String> headers, String body});
 
 // Dart: upstream's `testWithTls` cannot take a timeout, so each case passes
 // skip: _tlsSkip to `test` instead (as resolved_address_guard_test does).
-final Object? _tlsSkip = SERVES_EMITTED_CONNECTIONS
+final Object? _tlsSkip = canServeEmittedConnections
     ? null
     : 'TLS termination unavailable';
 
@@ -1787,7 +1787,7 @@ Future<void> main() async {
         });
         expect(asked, 0);
       },
-      skip: !EXPOSES_SERVER_NAME || !SERVES_EMITTED_CONNECTIONS
+      skip: !EXPOSES_SERVER_NAME || !canServeEmittedConnections
           ? 'server name or TLS termination unavailable'
           : null,
       timeout: const Timeout(Duration(milliseconds: 15000)),

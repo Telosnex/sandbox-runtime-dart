@@ -183,8 +183,9 @@ int? listeningFd(String address, int port) {
     // unconnected-stream check below stands in for it.
     final accepting = _sockOpt(c, fd, Platform.isMacOS ? 2 : 30);
     if (!Platform.isMacOS && accepting != 1) continue;
-    if (_sockOpt(c, fd, Platform.isMacOS ? 0x1008 : 3) != 1)
+    if (_sockOpt(c, fd, Platform.isMacOS ? 0x1008 : 3) != 1) {
       continue; // SOCK_STREAM
+    }
     try {
       final name = _name(c, fd, false);
       if (name.$2 != port || name.$1.address != address) continue;

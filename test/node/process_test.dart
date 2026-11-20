@@ -15,7 +15,7 @@ void main() {
     expect(process.versions['bun'], isNull);
     expect(process.memoryUsage().rss, greaterThan(0));
     expect(process.argv, hasLength(greaterThanOrEqualTo(2)));
-    expect(os.EOL, '\n');
+    expect(os.eol, '\n');
   }, testOn: '!windows');
 
   test('env is mutable', () {

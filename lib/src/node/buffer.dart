@@ -133,12 +133,15 @@ class Buffer with ListMixin<int> {
   @override
   String toString([String encoding = 'utf8']) {
     if (encoding == 'base64') return base64.encode(_bytes);
-    if (encoding == 'base64url')
+    if (encoding == 'base64url') {
       return base64Url.encode(_bytes).replaceAll('=', '');
-    if (encoding == 'hex')
+    }
+    if (encoding == 'hex') {
       return _bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-    if (encoding == 'binary' || encoding == 'latin1')
+    }
+    if (encoding == 'binary' || encoding == 'latin1') {
       return String.fromCharCodes(_bytes);
+    }
     return utf8.decode(_bytes, allowMalformed: true);
   }
 

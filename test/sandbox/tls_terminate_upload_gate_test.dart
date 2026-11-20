@@ -16,7 +16,7 @@ import 'package:sandbox_runtime/src/sandbox/mitm_ca.dart';
 import 'package:sandbox_runtime/src/sandbox/mitm_leaf.dart';
 import 'package:test/test.dart';
 
-import '../helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
+import '../helpers/emitted_connections.dart' show canServeEmittedConnections;
 
 // Dart: the object literal upstream hands createHttpProxyServer; every
 // option not named here is absent (null).
@@ -240,7 +240,7 @@ void main() {
       );
       expect(budget.used, 0);
     },
-    skip: SERVES_EMITTED_CONNECTIONS ? null : 'TLS termination unavailable',
+    skip: canServeEmittedConnections ? null : 'TLS termination unavailable',
     timeout: const Timeout(Duration(milliseconds: 60000)),
   );
 }

@@ -14,10 +14,10 @@ import 'package:sandbox_runtime/src/sandbox/mitm_ca.dart';
 import 'package:sandbox_runtime/src/sandbox/tls_terminate_proxy.dart';
 import 'package:test/test.dart';
 
-import '../helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
+import '../helpers/emitted_connections.dart' show canServeEmittedConnections;
 
-// Dart: upstream's `it.skipIf(!SERVES_EMITTED_CONNECTIONS)`.
-final Object _tlsSkip = SERVES_EMITTED_CONNECTIONS
+// Dart: upstream's `it.skipIf(!canServeEmittedConnections)`.
+final Object _tlsSkip = canServeEmittedConnections
     ? false
     : 'TLS termination unavailable';
 

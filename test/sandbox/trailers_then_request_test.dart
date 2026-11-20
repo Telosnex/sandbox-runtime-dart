@@ -15,7 +15,7 @@ import 'package:sandbox_runtime/src/sandbox/request_filter.dart'
     show FilterRequestCallback, RequestDecision;
 import 'package:test/test.dart';
 
-import '../helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
+import '../helpers/emitted_connections.dart' show canServeEmittedConnections;
 import '../helpers/fake_decider.dart' show fakeDecider;
 
 // Dart: the object literal upstream hands createHttpProxyServer; every
@@ -98,10 +98,10 @@ Future<({int port, List<String> Function() asked})> startProxy(
         output: streams['output'] as stream.Writable,
       ),
       deciderTimeoutMs: 2000,
-      caPem: SERVES_EMITTED_CONNECTIONS
+      caPem: canServeEmittedConnections
           ? authority.keyPem + authority.certPem
           : null,
-      upstreamCA: SERVES_EMITTED_CONNECTIONS ? authority.certPem : null,
+      upstreamCA: canServeEmittedConnections ? authority.certPem : null,
     ),
   );
   cleanup.add(() => proxy.close());
@@ -140,7 +140,7 @@ void main() {
       final tlsPath = path != 'srt-proxy, plain HTTP';
       test(
         'has its own target and headers, for the request filter and for the upstream',
-        skip: tlsPath && !SERVES_EMITTED_CONNECTIONS
+        skip: tlsPath && !canServeEmittedConnections
             ? 'TLS termination unavailable'
             : null,
         () async {

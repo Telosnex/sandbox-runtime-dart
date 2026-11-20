@@ -33,7 +33,7 @@ import 'package:sandbox_runtime/src/sandbox/sandbox_manager.dart'
 import 'package:sandbox_runtime/src/sandbox/socks_proxy.dart';
 import 'package:test/test.dart';
 
-import '../helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
+import '../helpers/emitted_connections.dart' show canServeEmittedConnections;
 import '../helpers/platform.dart' show isWindows;
 
 // Dart: the object literal upstream hands createHttpProxyServer; every option
@@ -617,7 +617,7 @@ void main() {
 
       test(
         'CONNECT: the tlsTerminate exemption hook is consulted with the canonical host',
-        skip: !SERVES_EMITTED_CONNECTIONS
+        skip: !canServeEmittedConnections
             ? 'TLS termination unavailable'
             : null,
         () async {

@@ -130,7 +130,7 @@ void main() {
 
   group('extractAndSubstitute', () {
     // Deterministic sentinel callback for unit tests: <S0>, <S1>, …
-    final S = (String _, int i) => '<S$i>';
+    String S(String _, int i) => '<S$i>';
 
     test('single match: capture replaced by sentinel, rest preserved', () {
       final content = 'github.com:\n  oauth_token: ghp_real\n  user: alice\n';
@@ -146,14 +146,14 @@ void main() {
 
     test('multiple distinct matches each get their own sentinel index', () {
       final content =
-          'machine a.example.com password tok-A\n' +
+          'machine a.example.com password tok-A\n'
           'machine b.example.com password tok-B\n';
       final out = extractAndSubstitute(content, 'password\\s+(\\S+)', S)!;
       expect(out.captures, ['tok-A', 'tok-B']);
       expect(
         out.fakeContent,
-        'machine a.example.com password <S0>\n' +
-            'machine b.example.com password <S1>\n',
+        'machine a.example.com password <S0>\n'
+        'machine b.example.com password <S1>\n',
       );
     });
 
@@ -188,13 +188,14 @@ void main() {
         // of each match, so the comment is preserved byte-for-byte. The old
         // value-based pass would have rewritten both.
         final content =
-            'oauth_token: abc123\n' +
+            'oauth_token: abc123\n'
             '# note: the token abc123 is stored above\n';
         final out = extractAndSubstitute(content, 'oauth_token:\\s*(\\S+)', S)!;
         expect(out.captures, ['abc123']);
         expect(
           out.fakeContent,
-          'oauth_token: <S0>\n' + '# note: the token abc123 is stored above\n',
+          'oauth_token: <S0>\n'
+          '# note: the token abc123 is stored above\n',
         );
       },
     );
@@ -245,7 +246,7 @@ void main() {
         'a verbatim duplicate outside the match is also masked when true',
         () {
           final content =
-              'oauth_token: ghp_supersecret123\n' +
+              'oauth_token: ghp_supersecret123\n'
               '# backup copy: ghp_supersecret123\n';
           final out = extractAndSubstitute(
             content,
@@ -261,7 +262,7 @@ void main() {
 
       test('explicit false keeps the offset-only behaviour', () {
         final content =
-            'oauth_token: ghp_supersecret123\n' +
+            'oauth_token: ghp_supersecret123\n'
             '# backup copy: ghp_supersecret123\n';
         final out = extractAndSubstitute(
           content,
@@ -338,7 +339,7 @@ void main() {
           int i,
         ) {
           calls.add((cap, i));
-          return '<S${i}>';
+          return '<S$i>';
         }, maskDuplicates: true);
         expect(calls, [('A', 0)]);
       });
@@ -353,7 +354,7 @@ void main() {
           final out = extractAndSubstitute(
             content,
             'k=(\\S+)',
-            (String cap, int i) => (cap == 'bad' ? cap : '<S${i}>'),
+            (String cap, int i) => (cap == 'bad' ? cap : '<S$i>'),
             maskDuplicates: true,
           )!;
           expect(out.fakeContent, 'k=<S0> k=bad\n# dup: <S0> and bad\n');
@@ -399,15 +400,15 @@ void main() {
         store,
       );
       final sentinel = (readFileSync(binds[0].fakePath, 'utf8') as String);
-      final eq = (String h, String p) => h == p;
+      bool eq(String h, String p) => h == p;
 
-      final toGh = {'authorization': 'Bearer ${sentinel}'};
+      final toGh = {'authorization': 'Bearer $sentinel'};
       reg.substituteInHeaders(toGh, 'api.github.com', eq);
-      expect(toGh['authorization'], 'Bearer ${TOKEN_CONTENT}');
+      expect(toGh['authorization'], 'Bearer $TOKEN_CONTENT');
 
-      final toEvil = {'authorization': 'Bearer ${sentinel}'};
+      final toEvil = {'authorization': 'Bearer $sentinel'};
       reg.substituteInHeaders(toEvil, 'evil.example.com', eq);
-      expect(toEvil['authorization'], 'Bearer ${sentinel}');
+      expect(toEvil['authorization'], 'Bearer $sentinel');
       store.dispose();
     });
 
@@ -421,7 +422,7 @@ void main() {
         store,
       );
       final sentinel = (readFileSync(binds[0].fakePath, 'utf8') as String);
-      final eq = (String h, String p) => h == p;
+      bool eq(String h, String p) => h == p;
       final headers = {'authorization': sentinel};
       reg.substituteInHeaders(headers, 'fallback.example.com', eq);
       expect(headers['authorization']!, TOKEN_CONTENT);
@@ -544,7 +545,7 @@ void main() {
         final dupFile = join(FIXTURE_DIR, 'hosts-dup.yml');
         writeFileSync(
           dupFile,
-          '# rotate ${HOSTS_TOKEN} before 2027\n' + HOSTS_CONTENT,
+          '# rotate $HOSTS_TOKEN before 2027\n$HOSTS_CONTENT',
         );
         final reg = SentinelRegistry();
         final store = MaskedFileStore();
@@ -567,7 +568,7 @@ void main() {
         // Both the matched span and the comment duplicate carry the same
         // sentinel, registered once.
         final sentinels = RegExp(
-          '${SENTINEL_PREFIX}\\S+',
+          '$SENTINEL_PREFIX\\S+',
         ).allMatches(fake).map((m) => m[0]!).toList();
         expect(sentinels, hasLength(2));
         expect(sentinels.toSet().length, 1);
@@ -583,7 +584,7 @@ void main() {
         final dupFile = join(FIXTURE_DIR, 'hosts-dup-off.yml');
         writeFileSync(
           dupFile,
-          '# rotate ${HOSTS_TOKEN} before 2027\n' + HOSTS_CONTENT,
+          '# rotate $HOSTS_TOKEN before 2027\n$HOSTS_CONTENT',
         );
         final reg = SentinelRegistry();
         final store = MaskedFileStore();
@@ -602,8 +603,8 @@ void main() {
         expect(binds, hasLength(1));
         final fake = (readFileSync(binds[0].fakePath, 'utf8') as String);
         // Default (#326) behaviour: only the regex-matched span is replaced.
-        expect(fake, contains('# rotate ${HOSTS_TOKEN} before 2027\n'));
-        expect(fake, isNot(contains('oauth_token: ${HOSTS_TOKEN}')));
+        expect(fake, contains('# rotate $HOSTS_TOKEN before 2027\n'));
+        expect(fake, isNot(contains('oauth_token: $HOSTS_TOKEN')));
         store.dispose();
       },
     );
@@ -776,17 +777,13 @@ void main() {
   });
 
   group('buildMaskedFileBinds decode: "jwt"', () {
-    final b64u = (String s) => Buffer.from(s, 'utf8').toString('base64url');
+    String b64u(String s) => Buffer.from(s, 'utf8').toString('base64url');
 
     // Real-shaped JWTs: HS256 header, JSON payload, garbage signature.
     final REAL_JWT =
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.' +
-        b64u('{"sub":"1234567890","name":"John Doe","iat":1516239022}') +
-        '.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.${b64u('{"sub":"1234567890","name":"John Doe","iat":1516239022}')}.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
     final REAL_JWT_2 =
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.' +
-        b64u('{"sub":"other","iat":1516239022}') +
-        '.c2lnbmF0dXJl';
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.${b64u('{"sub":"other","iat":1516239022}')}.c2lnbmF0dXJl';
     // Matches the default eyJ-triple pattern but is not a JWT: the first
     // segment decodes to truncated (invalid) JSON.
     final PSEUDO_JWT = "${b64u('{"oops')}.${b64u('{}')}.c2ln";
@@ -808,7 +805,7 @@ void main() {
       'default pattern: a JWT in a JSON credentials file becomes a parseable fake JWT',
       () {
         final file = join(DECODE_DIR, 'credentials.json');
-        writeFileSync(file, '{"access_token":"${REAL_JWT}","note":"keep"}');
+        writeFileSync(file, '{"access_token":"$REAL_JWT","note":"keep"}');
         final reg = SentinelRegistry();
         final store = MaskedFileStore();
         final MaskedFileBuildResult(:binds) = buildMaskedFileBinds(
@@ -848,7 +845,7 @@ void main() {
 
     test('a regex-matched but non-JWT candidate is left untouched', () {
       final file = join(DECODE_DIR, 'mixed');
-      writeFileSync(file, 'good: ${REAL_JWT}\nblob: ${PSEUDO_JWT}\n');
+      writeFileSync(file, 'good: $REAL_JWT\nblob: $PSEUDO_JWT\n');
       final reg = SentinelRegistry();
       final store = MaskedFileStore();
       final MaskedFileBuildResult(:binds) = buildMaskedFileBinds(
@@ -862,7 +859,7 @@ void main() {
       // The real JWT is masked; the over-matched blob is preserved as-is
       // (it is not a JWT, so there is nothing to protect).
       expect(fake, isNot(contains(REAL_JWT)));
-      expect(fake, contains('blob: ${PSEUDO_JWT}\n'));
+      expect(fake, contains('blob: $PSEUDO_JWT\n'));
       expect(reg.size, 1);
       store.dispose();
     });
@@ -874,7 +871,7 @@ void main() {
         warnCalls.add(a);
       };
       final file = join(DECODE_DIR, 'only-blob');
-      writeFileSync(file, 'blob: ${PSEUDO_JWT}\n');
+      writeFileSync(file, 'blob: $PSEUDO_JWT\n');
       final reg = SentinelRegistry();
       final store = MaskedFileStore();
       final MaskedFileBuildResult(:binds) = buildMaskedFileBinds(
@@ -925,7 +922,7 @@ void main() {
         final file = join(DECODE_DIR, 'tokens.yml');
         writeFileSync(
           file,
-          'id_token: ${REAL_JWT}\nother_jwt: ${REAL_JWT_2}\nblob: x\n',
+          'id_token: $REAL_JWT\nother_jwt: $REAL_JWT_2\nblob: x\n',
         );
         final reg = SentinelRegistry();
         final store = MaskedFileStore();
@@ -946,8 +943,8 @@ void main() {
         final fake = (readFileSync(binds[0].fakePath, 'utf8') as String);
         // The author's pattern is the candidate source: the other JWT is NOT
         // masked even though the default pattern would have found it.
-        expect(fake, isNot(contains('id_token: ${REAL_JWT}')));
-        expect(fake, contains('other_jwt: ${REAL_JWT_2}\n'));
+        expect(fake, isNot(contains('id_token: $REAL_JWT')));
+        expect(fake, contains('other_jwt: $REAL_JWT_2\n'));
         final fakeToken = RegExp(r'id_token: (\S+)').firstMatch(fake)![1]!;
         expect(verifyJwt(fakeToken), isTrue);
         expect(reg.lookupReal(fakeToken), REAL_JWT);
@@ -965,8 +962,8 @@ void main() {
         // must stay untouched.
         writeFileSync(
           file,
-          'id_token: ${REAL_JWT}\nblob: ${PSEUDO_JWT}\n' +
-              '# rotate ${REAL_JWT} before 2027 (blob was ${PSEUDO_JWT})\n',
+          'id_token: $REAL_JWT\nblob: $PSEUDO_JWT\n'
+          '# rotate $REAL_JWT before 2027 (blob was $PSEUDO_JWT)\n',
         );
         final reg = SentinelRegistry();
         final store = MaskedFileStore();
@@ -991,11 +988,11 @@ void main() {
         // verified capture's sentinel without re-verification.
         final fakeToken = RegExp(r'id_token: (\S+)').firstMatch(fake)![1]!;
         expect(verifyJwt(fakeToken), isTrue);
-        expect(fake, contains('# rotate ${fakeToken} before 2027'));
+        expect(fake, contains('# rotate $fakeToken before 2027'));
         expect(reg.lookupReal(fakeToken), REAL_JWT);
         // The unverified candidate and its duplicate are left as-is.
-        expect(fake, contains('blob: ${PSEUDO_JWT}\n'));
-        expect(fake, contains('(blob was ${PSEUDO_JWT})'));
+        expect(fake, contains('blob: $PSEUDO_JWT\n'));
+        expect(fake, contains('(blob was $PSEUDO_JWT)'));
         expect(reg.size, 1);
         store.dispose();
       },
@@ -1044,15 +1041,13 @@ void main() {
         'iat': 1516239022,
       };
       final CLAIMS_JWT =
-          'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.' +
-          b64u(jsonEncode(CLAIMS_PAYLOAD)) +
-          '.Y2xhaW1zLXNpZw';
+          'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.${b64u(jsonEncode(CLAIMS_PAYLOAD))}.Y2xhaW1zLXNpZw';
 
       test(
         'masks the named claim inside the token; both registry mappings exist',
         () {
           final file = join(DECODE_DIR, 'claims.json');
-          writeFileSync(file, '{"id_token":"${CLAIMS_JWT}","note":"keep"}');
+          writeFileSync(file, '{"id_token":"$CLAIMS_JWT","note":"keep"}');
           final reg = SentinelRegistry();
           final store = MaskedFileStore();
           final MaskedFileBuildResult(:binds) = buildMaskedFileBinds(
@@ -1103,7 +1098,7 @@ void main() {
         'a named claim absent from the payload is skipped; matching claims still mask',
         () {
           final file = join(DECODE_DIR, 'claims-partial.json');
-          writeFileSync(file, 'token: ${CLAIMS_JWT}\n');
+          writeFileSync(file, 'token: $CLAIMS_JWT\n');
           final reg = SentinelRegistry();
           final store = MaskedFileStore();
           final MaskedFileBuildResult(:binds) = buildMaskedFileBinds(
@@ -1149,7 +1144,7 @@ void main() {
             warnCalls.add(a);
           };
           final file = join(DECODE_DIR, 'claims-none.json');
-          writeFileSync(file, 'token: ${CLAIMS_JWT}\n');
+          writeFileSync(file, 'token: $CLAIMS_JWT\n');
           final reg = SentinelRegistry();
           final store = MaskedFileStore();
           final MaskedFileBuildResult(:binds) = buildMaskedFileBinds(
@@ -1183,7 +1178,7 @@ void main() {
         'no named claim matching with onExtractNoMatch "deny" → degrades to deny',
         () {
           final file = join(DECODE_DIR, 'claims-deny.json');
-          writeFileSync(file, 'token: ${CLAIMS_JWT}\n');
+          writeFileSync(file, 'token: $CLAIMS_JWT\n');
           final reg = SentinelRegistry();
           final store = MaskedFileStore();
           final MaskedFileBuildResult(
@@ -1211,11 +1206,9 @@ void main() {
 
       test('two JWTs in one file: claim sentinels are per-token', () {
         final otherJwt =
-            'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.' +
-            b64u('{"sub":"user-2","api_key":"other-claim-secret"}') +
-            '.b3RoZXItc2ln';
+            'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.${b64u('{"sub":"user-2","api_key":"other-claim-secret"}')}.b3RoZXItc2ln';
         final file = join(DECODE_DIR, 'claims-two.yml');
-        writeFileSync(file, 'a: ${CLAIMS_JWT}\nb: ${otherJwt}\n');
+        writeFileSync(file, 'a: $CLAIMS_JWT\nb: $otherJwt\n');
         final reg = SentinelRegistry();
         final store = MaskedFileStore();
         final MaskedFileBuildResult(:binds) = buildMaskedFileBinds(
@@ -1235,7 +1228,7 @@ void main() {
         final fake = (readFileSync(binds[0].fakePath, 'utf8') as String);
         final fakeA = RegExp(r'a: (\S+)').firstMatch(fake)![1]!;
         final fakeB = RegExp(r'b: (\S+)').firstMatch(fake)![1]!;
-        final claimOf = (String t) =>
+        String claimOf(String t) =>
             (jsonDecode(
                       Buffer.from(
                         t.split('.')[1],
@@ -1267,9 +1260,9 @@ void main() {
     final YML_FILE = join(TEST_DIR, 'hosts.yml');
     final YML_TOKEN = 'gho_struct_real_0123456789abcdef';
     final YML_CONTENT =
-        'github.com:\n' +
-        '    user: alice\n' +
-        '    oauth_token: ${YML_TOKEN}\n' +
+        'github.com:\n'
+        '    user: alice\n'
+        '    oauth_token: $YML_TOKEN\n'
         '    git_protocol: https\n';
 
     SpawnSyncResult runInSandbox(String wrappedCommand) {
@@ -1317,7 +1310,7 @@ void main() {
     test(
       'cat inside the sandbox preserves YAML structure with sentinel',
       () async {
-        final wrapped = await SandboxManager.wrapWithSandbox('cat ${YML_FILE}');
+        final wrapped = await SandboxManager.wrapWithSandbox('cat $YML_FILE');
         expect(wrapped, isNot(contains(YML_TOKEN)));
         final result = runInSandbox(wrapped);
         expect(result.status, 0);
@@ -1344,7 +1337,7 @@ void main() {
 
     test('the masked file is read-only inside the sandbox', () async {
       final wrapped = await SandboxManager.wrapWithSandbox(
-        'sh -c \'echo pwned > ${YML_FILE}\'',
+        'sh -c \'echo pwned > $YML_FILE\'',
       );
       final result = runInSandbox(wrapped);
       expect(result.status, isNot(0));
@@ -1393,11 +1386,9 @@ void main() {
       );
     }
 
-    ;
-
     setUpAll(() {
       mkdirSync(TEST_DIR, {'recursive': true});
-      writeFileSync(SECRET_FILE, 'oauth_token: ${SECRET}\n');
+      writeFileSync(SECRET_FILE, 'oauth_token: $SECRET\n');
     });
 
     tearDownAll(() async {
@@ -1415,7 +1406,7 @@ void main() {
           warnCalls.add(a);
         };
         final wrapped = await SandboxManager.wrapWithSandbox(
-          'cat ${SECRET_FILE}',
+          'cat $SECRET_FILE',
         );
         // A loud stderr warning surfaces the config error at wrap time.
         expect(warnCalls, isNotEmpty);
@@ -1439,15 +1430,13 @@ void main() {
         // cat succeeds and returns the real bytes: fail-open means the
         // file is left readable via the root mount.
         expect(result.status, 0);
-        expect((result.stdout as String), 'oauth_token: ${SECRET}\n');
+        expect((result.stdout as String), 'oauth_token: $SECRET\n');
       },
     );
 
     test('"deny": file unreadable inside the sandbox (fail-closed)', () async {
       await init('deny');
-      final wrapped = await SandboxManager.wrapWithSandbox(
-        'cat ${SECRET_FILE}',
-      );
+      final wrapped = await SandboxManager.wrapWithSandbox('cat $SECRET_FILE');
       // The real credential never appears in the wrapped command.
       expect(wrapped, isNot(contains(SECRET)));
       // No --ro-bind <fake> <real> — degraded entries go via denyRead, not
@@ -1477,7 +1466,7 @@ void main() {
       await init('error');
       Object? thrown;
       try {
-        await SandboxManager.wrapWithSandbox('cat ${SECRET_FILE}');
+        await SandboxManager.wrapWithSandbox('cat $SECRET_FILE');
       } catch (e) {
         thrown = e;
       }
@@ -1506,7 +1495,7 @@ void main() {
 
     setUpAll(() async {
       mkdirSync(TEST_DIR, {'recursive': true});
-      writeFileSync(SECRET_FILE, 'oauth_token: ${SECRET}\n');
+      writeFileSync(SECRET_FILE, 'oauth_token: $SECRET\n');
       await SandboxManager.reset();
       await SandboxManager.initialize(
         SandboxRuntimeConfig(
@@ -1540,9 +1529,7 @@ void main() {
     });
 
     test('stays unreadable inside the sandbox', () async {
-      final wrapped = await SandboxManager.wrapWithSandbox(
-        'cat ${SECRET_FILE}',
-      );
+      final wrapped = await SandboxManager.wrapWithSandbox('cat $SECRET_FILE');
       expect(wrapped, isNot(contains(SECRET)));
       final result = spawnSync(wrapped, [], {
         'shell': true,
@@ -1774,9 +1761,7 @@ void main() {
           // The store-dir ro-bind must overlay any allowWrite covering it,
           // so it must appear after `--bind /tmp /tmp` in argv order.
           final writeBind = wrapped.indexOf('--bind /tmp /tmp');
-          final storeBind = wrapped.indexOf(
-            '--ro-bind ${storeDir} ${storeDir}',
-          );
+          final storeBind = wrapped.indexOf('--ro-bind $storeDir $storeDir');
           expect(writeBind, greaterThan(-1));
           expect(storeBind, greaterThan(writeBind));
         },
@@ -1788,7 +1773,7 @@ void main() {
         'cat <maskedFile> inside the sandbox returns the sentinel',
         () async {
           final wrapped = await SandboxManager.wrapWithSandbox(
-            'cat ${SECRET_FILE}',
+            'cat $SECRET_FILE',
           );
           final result = runInSandbox(wrapped);
           expect(result.status, 0);
@@ -1802,7 +1787,7 @@ void main() {
         // masked path layers on top — overwriting it would expose a way
         // to swap the sentinel for something the proxy might still inject.
         final wrapped = await SandboxManager.wrapWithSandbox(
-          'sh -c \'echo pwned > ${SECRET_FILE}\'',
+          'sh -c \'echo pwned > $SECRET_FILE\'',
         );
         final result = runInSandbox(wrapped);
         expect(result.status, isNot(0));
@@ -1812,7 +1797,7 @@ void main() {
 
       test('a non-masked sibling file is still readable unchanged', () async {
         final wrapped = await SandboxManager.wrapWithSandbox(
-          'cat ${CONTROL_FILE}',
+          'cat $CONTROL_FILE',
         );
         final result = runInSandbox(wrapped);
         expect(result.status, 0);
@@ -1834,7 +1819,7 @@ void main() {
           final fake = join(storeDir, '0.fake');
           final before = (readFileSync(fake, 'utf8') as String);
           final overwrite = await SandboxManager.wrapWithSandbox(
-            'sh -c \'echo pwned > ${fake}\'',
+            'sh -c \'echo pwned > $fake\'',
           );
           expect(runInSandbox(overwrite).status, isNot(0));
           expect((readFileSync(fake, 'utf8') as String), before);
@@ -1965,7 +1950,7 @@ void main() {
       () async {
         // bwrap leg: cat inside the sandbox returns the sentinel.
         final wrapped = await SandboxManager.wrapWithSandbox(
-          'cat ${SECRET_FILE}',
+          'cat $SECRET_FILE',
         );
         expect(wrapped, isNot(contains(SECRET_CONTENT)));
         final inSandbox = spawnSync(wrapped, [], {
@@ -1982,11 +1967,11 @@ void main() {
         // proxy reaches HOST_A (injectHost) as the real file content.
         lastHeaders.clear();
         final exit = await curlViaManagerProxy(
-          'http://${HOST_A}:${upstreamPort}/',
+          'http://$HOST_A:$upstreamPort/',
           sentinel,
         );
         expect(exit, 0);
-        expect(lastHeaders.value?['authorization'], 'Bearer ${SECRET_CONTENT}');
+        expect(lastHeaders.value?['authorization'], 'Bearer $SECRET_CONTENT');
       },
       timeout: const Timeout(Duration(milliseconds: 20000)),
     );
@@ -1995,7 +1980,7 @@ void main() {
       'a non-injectHost destination receives the sentinel unchanged',
       () async {
         final wrapped = await SandboxManager.wrapWithSandbox(
-          'cat ${SECRET_FILE}',
+          'cat $SECRET_FILE',
         );
         final sentinel =
             (spawnSync(wrapped, [], {
@@ -2010,11 +1995,11 @@ void main() {
         // the sentinel as-is — fails closed.
         lastHeaders.clear();
         final exit = await curlViaManagerProxy(
-          'http://${HOST_B}:${upstreamPort}/',
+          'http://$HOST_B:$upstreamPort/',
           sentinel,
         );
         expect(exit, 0);
-        expect(lastHeaders.value?['authorization'], 'Bearer ${sentinel}');
+        expect(lastHeaders.value?['authorization'], 'Bearer $sentinel');
         expect(
           lastHeaders.value?['authorization'],
           isNot(contains(SECRET_CONTENT)),
@@ -2042,9 +2027,9 @@ void main() {
     final YML_FILE = join(TEST_DIR, 'hosts.yml');
     final YML_TOKEN = 'gho_e2e_real_0123456789abcdef';
     final YML_CONTENT =
-        'github.com:\n' +
-        '    user: alice\n' +
-        '    oauth_token: ${YML_TOKEN}\n' +
+        'github.com:\n'
+        '    user: alice\n'
+        '    oauth_token: $YML_TOKEN\n'
         '    git_protocol: https\n';
 
     // .netrc-style: two credentials → two sentinels, each must swap to
@@ -2053,8 +2038,8 @@ void main() {
     final NETRC_TOK_A = 'npm_e2e_real_aaaaaaaa';
     final NETRC_TOK_B = 'npm_e2e_real_bbbbbbbb';
     final NETRC_CONTENT =
-        'machine a.example.com login alice password ${NETRC_TOK_A}\n' +
-        'machine b.example.com login bob password ${NETRC_TOK_B}\n';
+        'machine a.example.com login alice password $NETRC_TOK_A\n'
+        'machine b.example.com login bob password $NETRC_TOK_B\n';
 
     late NodeServer upstream;
     late int upstreamPort;
@@ -2159,7 +2144,7 @@ void main() {
         // inside the sandbox — the file parses, and the field value is
         // the sentinel.
         final wrapped = await SandboxManager.wrapWithSandbox(
-          'sh -c "grep oauth_token ${YML_FILE} | awk \'{print \\\$2}\'"',
+          'sh -c "grep oauth_token $YML_FILE | awk \'{print \\\$2}\'"',
         );
         expect(wrapped, isNot(contains(YML_TOKEN)));
         final result = runInSandbox(wrapped);
@@ -2171,11 +2156,11 @@ void main() {
         // Proxy leg: the sentinel reaches HOST_A as the real token.
         lastHeaders.clear();
         final exit = await curlViaManagerProxy(
-          'http://${HOST_A}:${upstreamPort}/',
+          'http://$HOST_A:$upstreamPort/',
           sentinel,
         );
         expect(exit, 0);
-        expect(lastHeaders.value?['authorization'], 'Bearer ${YML_TOKEN}');
+        expect(lastHeaders.value?['authorization'], 'Bearer $YML_TOKEN');
       },
       timeout: const Timeout(Duration(milliseconds: 20000)),
     );
@@ -2185,7 +2170,7 @@ void main() {
       () async {
         // bwrap leg: read both password fields inside the sandbox.
         final wrapped = await SandboxManager.wrapWithSandbox(
-          'sh -c "awk \'{print \\\$NF}\' ${NETRC_FILE}"',
+          'sh -c "awk \'{print \\\$NF}\' $NETRC_FILE"',
         );
         final result = runInSandbox(wrapped);
         expect(result.status, 0);
@@ -2199,19 +2184,16 @@ void main() {
         // Proxy leg: each sentinel swaps to its own real captured value.
         lastHeaders.clear();
         var exit = await curlViaManagerProxy(
-          'http://${HOST_A}:${upstreamPort}/',
+          'http://$HOST_A:$upstreamPort/',
           sA,
         );
         expect(exit, 0);
-        expect(lastHeaders.value?['authorization'], 'Bearer ${NETRC_TOK_A}');
+        expect(lastHeaders.value?['authorization'], 'Bearer $NETRC_TOK_A');
 
         lastHeaders.clear();
-        exit = await curlViaManagerProxy(
-          'http://${HOST_A}:${upstreamPort}/',
-          sB,
-        );
+        exit = await curlViaManagerProxy('http://$HOST_A:$upstreamPort/', sB);
         expect(exit, 0);
-        expect(lastHeaders.value?['authorization'], 'Bearer ${NETRC_TOK_B}');
+        expect(lastHeaders.value?['authorization'], 'Bearer $NETRC_TOK_B');
       },
       timeout: const Timeout(Duration(milliseconds: 20000)),
     );
@@ -2220,17 +2202,17 @@ void main() {
       'an extract sentinel does not substitute at a non-injectHost',
       () async {
         final wrapped = await SandboxManager.wrapWithSandbox(
-          'sh -c "grep oauth_token ${YML_FILE} | awk \'{print \\\$2}\'"',
+          'sh -c "grep oauth_token $YML_FILE | awk \'{print \\\$2}\'"',
         );
         final sentinel = (runInSandbox(wrapped).stdout as String).trim();
 
         lastHeaders.clear();
         final exit = await curlViaManagerProxy(
-          'http://${HOST_B}:${upstreamPort}/',
+          'http://$HOST_B:$upstreamPort/',
           sentinel,
         );
         expect(exit, 0);
-        expect(lastHeaders.value?['authorization'], 'Bearer ${sentinel}');
+        expect(lastHeaders.value?['authorization'], 'Bearer $sentinel');
         expect(lastHeaders.value?['authorization'], isNot(contains(YML_TOKEN)));
       },
       timeout: const Timeout(Duration(milliseconds: 20000)),
@@ -2252,11 +2234,9 @@ void main() {
     final HOST_A = 'localhost';
     final HOST_B = 'host-b.localhost';
 
-    final b64u = (String s) => Buffer.from(s, 'utf8').toString('base64url');
+    String b64u(String s) => Buffer.from(s, 'utf8').toString('base64url');
     final REAL_JWT =
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.' +
-        b64u('{"sub":"e2e-user","iat":1516239022}') +
-        '.ZTJlLXJlYWwtc2lnbmF0dXJl';
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.${b64u('{"sub":"e2e-user","iat":1516239022}')}.ZTJlLXJlYWwtc2lnbmF0dXJl';
 
     late NodeServer upstream;
     late int upstreamPort;
@@ -2264,7 +2244,7 @@ void main() {
 
     setUpAll(() async {
       mkdirSync(TEST_DIR, {'recursive': true});
-      writeFileSync(JWT_FILE, '${REAL_JWT}\n');
+      writeFileSync(JWT_FILE, '$REAL_JWT\n');
 
       upstream = http.createServer((
         http.IncomingMessage req,
@@ -2343,7 +2323,7 @@ void main() {
       'cat → fake JWT inside; proxy delivers the real JWT to the injectHost',
       () async {
         // bwrap leg: the sandboxed read returns a structurally valid fake.
-        final wrapped = await SandboxManager.wrapWithSandbox('cat ${JWT_FILE}');
+        final wrapped = await SandboxManager.wrapWithSandbox('cat $JWT_FILE');
         expect(wrapped, isNot(contains(REAL_JWT)));
         final result = spawnSync(wrapped, [], {
           'shell': true,
@@ -2359,11 +2339,11 @@ void main() {
         // as the REAL JWT.
         lastHeaders.clear();
         final exit = await curlViaManagerProxy(
-          'http://${HOST_A}:${upstreamPort}/',
+          'http://$HOST_A:$upstreamPort/',
           fakeJwt,
         );
         expect(exit, 0);
-        expect(lastHeaders.value?['authorization'], 'Bearer ${REAL_JWT}');
+        expect(lastHeaders.value?['authorization'], 'Bearer $REAL_JWT');
       },
       timeout: const Timeout(Duration(milliseconds: 20000)),
     );
@@ -2371,7 +2351,7 @@ void main() {
     test(
       'a non-injectHost destination receives the fake JWT unchanged',
       () async {
-        final wrapped = await SandboxManager.wrapWithSandbox('cat ${JWT_FILE}');
+        final wrapped = await SandboxManager.wrapWithSandbox('cat $JWT_FILE');
         final fakeJwt =
             (spawnSync(wrapped, [], {
                       'shell': true,
@@ -2383,11 +2363,11 @@ void main() {
 
         lastHeaders.clear();
         final exit = await curlViaManagerProxy(
-          'http://${HOST_B}:${upstreamPort}/',
+          'http://$HOST_B:$upstreamPort/',
           fakeJwt,
         );
         expect(exit, 0);
-        expect(lastHeaders.value?['authorization'], 'Bearer ${fakeJwt}');
+        expect(lastHeaders.value?['authorization'], 'Bearer $fakeJwt');
         expect(lastHeaders.value?['authorization'], isNot(contains(REAL_JWT)));
       },
       timeout: const Timeout(Duration(milliseconds: 20000)),
@@ -2410,12 +2390,10 @@ void main() {
     final HOST_A = 'localhost';
     final HOST_B = 'host-b.localhost';
 
-    final b64u = (String s) => Buffer.from(s, 'utf8').toString('base64url');
+    String b64u(String s) => Buffer.from(s, 'utf8').toString('base64url');
     final REAL_CLAIM = 'e2e-real-claim-secret-0123456789';
     final REAL_JWT =
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.' +
-        b64u('{"sub":"e2e-user","api_key":"${REAL_CLAIM}","iat":1516239022}') +
-        '.ZTJlLXJlYWwtc2lnbmF0dXJl';
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.${b64u('{"sub":"e2e-user","api_key":"$REAL_CLAIM","iat":1516239022}')}.ZTJlLXJlYWwtc2lnbmF0dXJl';
 
     late NodeServer upstream;
     late int upstreamPort;
@@ -2423,7 +2401,7 @@ void main() {
 
     setUpAll(() async {
       mkdirSync(TEST_DIR, {'recursive': true});
-      writeFileSync(JWT_FILE, '${REAL_JWT}\n');
+      writeFileSync(JWT_FILE, '$REAL_JWT\n');
 
       upstream = http.createServer((
         http.IncomingMessage req,
@@ -2501,7 +2479,7 @@ void main() {
 
     /** Read the masked token from inside the sandbox. */
     Future<String> readFakeJwt() async {
-      final wrapped = await SandboxManager.wrapWithSandbox('cat ${JWT_FILE}');
+      final wrapped = await SandboxManager.wrapWithSandbox('cat $JWT_FILE');
       expect(wrapped, isNot(contains(REAL_JWT)));
       final result = spawnSync(wrapped, [], {
         'shell': true,
@@ -2545,11 +2523,11 @@ void main() {
         // whole REAL token.
         lastHeaders.clear();
         final exit = await curlViaManagerProxy(
-          'http://${HOST_A}:${upstreamPort}/',
+          'http://$HOST_A:$upstreamPort/',
           fakeJwt,
         );
         expect(exit, 0);
-        expect(lastHeaders.value?['authorization'], 'Bearer ${REAL_JWT}');
+        expect(lastHeaders.value?['authorization'], 'Bearer $REAL_JWT');
       },
       timeout: const Timeout(Duration(milliseconds: 20000)),
     );
@@ -2562,11 +2540,11 @@ void main() {
 
         lastHeaders.clear();
         final exit = await curlViaManagerProxy(
-          'http://${HOST_A}:${upstreamPort}/',
+          'http://$HOST_A:$upstreamPort/',
           sentinel,
         );
         expect(exit, 0);
-        expect(lastHeaders.value?['authorization'], 'Bearer ${REAL_CLAIM}');
+        expect(lastHeaders.value?['authorization'], 'Bearer $REAL_CLAIM');
       },
       timeout: const Timeout(Duration(milliseconds: 20000)),
     );
@@ -2578,11 +2556,11 @@ void main() {
 
         lastHeaders.clear();
         var exit = await curlViaManagerProxy(
-          'http://${HOST_B}:${upstreamPort}/',
+          'http://$HOST_B:$upstreamPort/',
           fakeJwt,
         );
         expect(exit, 0);
-        expect(lastHeaders.value?['authorization'], 'Bearer ${fakeJwt}');
+        expect(lastHeaders.value?['authorization'], 'Bearer $fakeJwt');
         expect(
           lastHeaders.value?['authorization'],
           isNot(contains(REAL_CLAIM)),
@@ -2590,7 +2568,7 @@ void main() {
 
         lastHeaders.clear();
         exit = await curlViaManagerProxy(
-          'http://${HOST_B}:${upstreamPort}/',
+          'http://$HOST_B:$upstreamPort/',
           claimOf(fakeJwt),
         );
         expect(exit, 0);

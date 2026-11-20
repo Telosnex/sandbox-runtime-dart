@@ -27,7 +27,7 @@ import 'package:test/test.dart';
 
 // Every case here runs a proxy configured to terminate TLS, so each is
 // skipped where this runtime cannot terminate it in-process.
-import '../helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
+import '../helpers/emitted_connections.dart' show canServeEmittedConnections;
 
 // Committed test-only CA — see test/fixtures/tls-terminate/README.md.
 final FIXTURE_DIR = join(
@@ -78,7 +78,7 @@ void main() {
   // Dart: upstream's describeWithTls, spelled as group so the title audit sees it.
   group(
     'tls-terminate-proxy: end-to-end through createHttpProxyServer',
-    skip: SERVES_EMITTED_CONNECTIONS ? null : 'TLS termination unavailable',
+    skip: canServeEmittedConnections ? null : 'TLS termination unavailable',
     () {
       final ca = createMitmCA(caCertPath: CA_CERT, caKeyPath: CA_KEY);
 
@@ -335,7 +335,7 @@ void main() {
   // when testing against a non-fixture CA.
   group(
     'tls-terminate-proxy: end-to-end with ephemeral CA',
-    skip: SERVES_EMITTED_CONNECTIONS ? null : 'TLS termination unavailable',
+    skip: canServeEmittedConnections ? null : 'TLS termination unavailable',
     () {
       test('curl trusts the ephemeral-CA-signed leaf and round-trips', () async {
         final ca = createMitmCA();
@@ -428,7 +428,7 @@ void main() {
   // CA — the same shape as srt's ephemeral CA vs a real upstream's PKI.
   group(
     'tls-terminate-proxy: per-host termination opt-out (mTLS upstream)',
-    skip: SERVES_EMITTED_CONNECTIONS ? null : 'TLS termination unavailable',
+    skip: canServeEmittedConnections ? null : 'TLS termination unavailable',
     () {
       // "Real" PKI the upstream + client belong to (fixture CA).
       final realCA = createMitmCA(caCertPath: CA_CERT, caKeyPath: CA_KEY);
@@ -714,7 +714,7 @@ void main() {
 
   group(
     'tls-terminate-proxy: extraCaCertPaths lets the client verify an excluded host with a site-local root',
-    skip: SERVES_EMITTED_CONNECTIONS ? null : 'TLS termination unavailable',
+    skip: canServeEmittedConnections ? null : 'TLS termination unavailable',
     () {
       // The "site-local" PKI: the fixture CA plays the role of an internal root
       // (e.g. an internal mTLS CA) that is in no public root store. The

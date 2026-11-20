@@ -15,7 +15,7 @@ import 'package:test/test.dart';
 
 // Every case here runs a proxy configured to terminate TLS, so each is
 // skipped where this runtime cannot terminate it in-process.
-import '../helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
+import '../helpers/emitted_connections.dart' show canServeEmittedConnections;
 import 'package:sandbox_runtime/src/node/https.dart' as https;
 import 'package:sandbox_runtime/src/node/net.dart'
     show connect, LookupFunction, NodeAddress, NodeServer, NodeSocket;
@@ -213,7 +213,7 @@ class _HttpProxyServerOptions implements HttpProxyServerOptions {
 void main() {
   group(
     'tls-terminate-proxy: upstream keep-alive',
-    skip: SERVES_EMITTED_CONNECTIONS ? false : 'TLS termination unavailable',
+    skip: canServeEmittedConnections ? false : 'TLS termination unavailable',
     () {
       final ca = createMitmCA(caCertPath: CA_CERT, caKeyPath: CA_KEY);
 

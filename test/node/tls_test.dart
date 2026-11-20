@@ -763,8 +763,9 @@ Uint8List _pemDer(String pem) =>
 /// Runs openssl in [dir]; returns the PEM of file [name].
 String _ossl(Directory dir, List<String> args, String name) {
   final r = Process.runSync('openssl', args, workingDirectory: dir.path);
-  if (r.exitCode != 0)
+  if (r.exitCode != 0) {
     throw StateError('openssl ${args.join(' ')}: ${r.stderr}');
+  }
   return File('${dir.path}/$name').readAsStringSync();
 }
 
@@ -945,8 +946,10 @@ $ext
       final needle = [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b];
       var last = -1;
       for (var i = 0; i < der.length - 9; i++) {
-        if (List.generate(9, (j) => der[i + j]).toString() == needle.toString())
+        if (List.generate(9, (j) => der[i + j]).toString() ==
+            needle.toString()) {
           last = i;
+        }
       }
       der[last + 8] = 0x0c;
       expect(

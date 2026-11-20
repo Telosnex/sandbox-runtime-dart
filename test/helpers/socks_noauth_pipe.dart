@@ -1,13 +1,13 @@
 // Ported from sandbox-runtime test/helpers/socks-noauth-pipe.ts @ 0bbebed.
-/**
- * Minimal no-auth SOCKS5 CONNECT pipe for tests: connects to the proxy,
- * offers ONLY the no-auth method (like BSD `nc -X 5`), issues CONNECT for
- * the given destination, then pipes stdin/stdout to the socket. Used as an
- * ssh ProxyCommand so the ssh-refusal end-to-end tests do not depend on
- * which netcat flavor the host ships (GNU/nmap variants lack `-X`).
- *
- * Usage: bun socks-noauth-pipe.ts <proxyPort> <destHost> <destPort>
- */
+/// Minimal no-auth SOCKS5 CONNECT pipe for tests: connects to the proxy,
+/// offers ONLY the no-auth method (like BSD `nc -X 5`), issues CONNECT for
+/// the given destination, then pipes stdin/stdout to the socket. Used as an
+/// ssh ProxyCommand so the ssh-refusal end-to-end tests do not depend on
+/// which netcat flavor the host ships (GNU/nmap variants lack `-X`).
+///
+/// Usage: `dart run test/helpers/socks_noauth_pipe.dart <proxyPort> <destHost> <destPort>`
+library;
+
 import 'dart:async';
 import 'dart:io';
 

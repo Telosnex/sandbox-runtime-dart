@@ -122,8 +122,10 @@ Steps<List<String>> expandReadDenyGlobLinuxSteps(
       // the walk did not list through (a link back up the tree, or a further
       // name for a directory already listed) has no match beneath it, yet
       // denies everything it reaches.
-      if (holdMatches.contains(locationOf(dir)) || walk.symlinks.contains(dir))
+      if (holdMatches.contains(locationOf(dir)) ||
+          walk.symlinks.contains(dir)) {
         candidates.add(dir);
+      }
     }
   }
   final locations = <String>{};

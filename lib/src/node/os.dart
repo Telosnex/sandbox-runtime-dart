@@ -12,7 +12,7 @@ import 'process.dart' as process;
 String endianness() => Endian.host == Endian.little ? 'LE' : 'BE';
 
 /// Node's `os.EOL`.
-final String EOL = Platform.isWindows ? '\r\n' : '\n';
+final String eol = Platform.isWindows ? '\r\n' : '\n';
 
 String homedir() {
   final env = process.env;

@@ -34,7 +34,7 @@ import 'package:test/test.dart';
 
 // Every case here runs a proxy configured to terminate TLS, so each is
 // skipped where this runtime cannot terminate it in-process.
-import '../helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
+import '../helpers/emitted_connections.dart' show canServeEmittedConnections;
 
 final FIXTURE_DIR = join(
   Directory.current.path, // import.meta.dir, '..'
@@ -1210,7 +1210,7 @@ void main() {
         );
       },
     );
-  }, skip: SERVES_EMITTED_CONNECTIONS ? false : 'TLS termination unavailable');
+  }, skip: canServeEmittedConnections ? false : 'TLS termination unavailable');
   group('readRequestTarget', () {
     for (final (raw, normalized) in AMBIGUOUS) {
       test('$raw is ambiguous', () {

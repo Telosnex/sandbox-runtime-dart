@@ -1,3 +1,7 @@
+## 0.0.85
+
+- Shorten the package description, add a runnable sandbox example, and fix analyzer lints.
+
 ## 0.0.84
 
 - Fix `execFileSync`/`spawnSync` on macOS sometimes failing with `ECHILD` when

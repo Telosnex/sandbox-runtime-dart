@@ -10,7 +10,7 @@ import 'package:test/test.dart';
 
 // Every case here runs a proxy configured to terminate TLS, so each is
 // skipped where this runtime cannot terminate it in-process.
-import '../helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
+import '../helpers/emitted_connections.dart' show canServeEmittedConnections;
 import 'package:sandbox_runtime/src/node/abort.dart' show AbortSignal;
 import 'package:sandbox_runtime/src/node/child_process.dart' show spawn;
 import 'package:sandbox_runtime/src/node/fetch.dart' as fetch;
@@ -59,7 +59,7 @@ void main() {
   // Dart: describeWithTls as a plain group with its skip, so the title audit sees it.
   group(
     'network.filterRequest',
-    skip: SERVES_EMITTED_CONNECTIONS ? null : 'TLS termination unavailable',
+    skip: canServeEmittedConnections ? null : 'TLS termination unavailable',
     () {
       // Every test here drives real TLS (CA mint, MITM re-encrypt) through a
       // spawned curl whose functional watchdog is --max-time 10. The per-test

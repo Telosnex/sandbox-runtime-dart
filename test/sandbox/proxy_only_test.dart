@@ -37,7 +37,7 @@ import 'package:sandbox_runtime/src/sandbox/request_filter.dart'
     show foldHeaderName, requestTargetAsSpelled;
 
 import '../helpers/emitted_connections.dart'
-    show SERVES_EMITTED_CONNECTIONS, testWithTls;
+    show canServeEmittedConnections, testWithTls;
 import '../helpers/fake_decider.dart' show Frame, fakeDecider, frameOf;
 
 // Dart: Node's Buffer-to-string coercion of a chunk (`raw += d`).
@@ -279,7 +279,7 @@ final Map<String, Object?> allowWithCredential = {
 Future<bool> probeMaxHeaderSize() async {
   final server = http.createServer({
     'maxHeaderSize': 64 << 10,
-  }, (http.IncomingMessage _req, http.ServerResponse res) => res.end('ok'));
+  }, (http.IncomingMessage req, http.ServerResponse res) => res.end('ok'));
   final listening = Completer<void>();
   server.listen(0, '127.0.0.1', () => listening.complete());
   await listening.future;
@@ -594,7 +594,7 @@ stalledClientResponse() async {
   ).firstMatch(leaf.certPem)![0]!;
   var written = 0;
   final up = https.createServer({'cert': leafOnly, 'key': leaf.keyPem}, (
-    http.IncomingMessage _req,
+    http.IncomingMessage req,
     http.ServerResponse res,
   ) {
     res.writeHead(200, {'content-length': size});
@@ -697,7 +697,7 @@ Future<({String raw, String? cn})> sendWithSni(
       'socket': c,
       'ca': s.ca,
       'servername': servername,
-      'checkServerIdentity': (Object? _host, Object? cert) {
+      'checkServerIdentity': (Object? host, Object? cert) {
         cn = (cert as tls.PeerCertificate).subject.CN;
         return null;
       },
@@ -1615,7 +1615,7 @@ Future<void> main() async {
     '/v1/%2e%2e/messages',
     '/v1//./messages',
   ];
-  final Object? emitSkip = SERVES_EMITTED_CONNECTIONS
+  final Object? emitSkip = canServeEmittedConnections
       ? null
       : 'emitted connections unavailable';
 

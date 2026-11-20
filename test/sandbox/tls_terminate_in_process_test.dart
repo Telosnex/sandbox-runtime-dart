@@ -16,7 +16,7 @@ import 'package:sandbox_runtime/src/sandbox/mitm_leaf.dart';
 import 'package:sandbox_runtime/src/sandbox/request_filter.dart';
 import 'package:test/test.dart';
 
-import '../helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
+import '../helpers/emitted_connections.dart' show canServeEmittedConnections;
 
 // Dart: the named imports upstream takes from node:http, node:https, node:net
 // and node:tls, as aliases.
@@ -29,9 +29,9 @@ final createServer = http.createServer;
 final createHttpsServer = https.createServer;
 final tlsConnect = tls_.connect;
 
-// Dart: upstream's `test.skipIf(!SERVES_EMITTED_CONNECTIONS)` and
+// Dart: upstream's `test.skipIf(!canServeEmittedConnections)` and
 // `testWithTls`, which `test` cannot alias (and whose helper takes no timeout).
-final Object? _tlsSkip = SERVES_EMITTED_CONNECTIONS
+final Object? _tlsSkip = canServeEmittedConnections
     ? null
     : 'TLS termination unavailable';
 

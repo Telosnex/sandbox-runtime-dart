@@ -13,7 +13,7 @@ import '../node/crypto.dart' show randomBytes;
 import '../node/structured_clone.dart';
 import '../node/errno.dart' show NodeError, NodeException, errorMessage;
 import '../node/fs.dart' as fs;
-import '../node/os.dart' show EOL;
+import '../node/os.dart' show eol;
 import '../node/process.dart' as process;
 import '../node/util.dart' show isDeepStrictEqual;
 import '../utils/debug.dart';
@@ -4196,9 +4196,9 @@ String _annotateStderrWithSandboxFailures(String command, String stderr) {
   }
 
   var annotated = stderr;
-  annotated += '$EOL<sandbox_violations>$EOL';
+  annotated += '$eol<sandbox_violations>$eol';
   for (final violation in violations) {
-    annotated += violation.line + EOL;
+    annotated += violation.line + eol;
   }
   annotated += '</sandbox_violations>';
 

@@ -20,7 +20,7 @@ import 'package:sandbox_runtime/src/sandbox/proxy_only.dart';
 import 'package:sandbox_runtime/src/sandbox/request_filter.dart';
 import 'package:test/test.dart';
 
-import '../helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
+import '../helpers/emitted_connections.dart' show canServeEmittedConnections;
 import '../helpers/fake_decider.dart';
 
 final List<FutureOr<void> Function()> cleanup = [];
@@ -117,7 +117,7 @@ Future<Buffer> fetchRaw(String path, List<String> paths) async {
   if (path.startsWith('full mode')) {
     final proxy = createHttpProxyServer(
       _HttpOptions(
-        mitmCA: SERVES_EMITTED_CONNECTIONS ? ca() : null,
+        mitmCA: canServeEmittedConnections ? ca() : null,
         tlsTerminateUpstreamCA: authority.certPem,
         filterRequest: (request, [info]) async =>
             request.url.endsWith('/refuse')
@@ -149,10 +149,10 @@ Future<Buffer> fetchRaw(String path, List<String> paths) async {
           output: streams['output']! as stream.Writable,
         ),
         deciderTimeoutMs: 2000,
-        caPem: SERVES_EMITTED_CONNECTIONS
+        caPem: canServeEmittedConnections
             ? authority.keyPem + authority.certPem
             : null,
-        upstreamCA: SERVES_EMITTED_CONNECTIONS ? authority.certPem : null,
+        upstreamCA: canServeEmittedConnections ? authority.certPem : null,
       ),
     );
     cleanup.add(() => proxy.close());
@@ -231,7 +231,7 @@ void main() {
 
   for (final path in [...PATHS])
     group('bytes past ASCII through the proxy ($path)', () {
-      final skip = path.endsWith('TLS') && !SERVES_EMITTED_CONNECTIONS;
+      final skip = path.endsWith('TLS') && !canServeEmittedConnections;
 
       test(
         'a response header value reaches the client as the upstream sent it',

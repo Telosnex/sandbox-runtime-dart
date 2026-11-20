@@ -132,12 +132,12 @@ void main() {
         ? 'Bun ${process.versions['bun']}'
         : process.version;
     test(
-      SERVES_EMITTED_CONNECTIONS
+      canServeEmittedConnections
           ? 'this runtime ($runtime) serves handed-in connections: a terminating proxy starts'
           : 'this runtime ($runtime) cannot: a terminating proxy fails to start, naming it',
       () {
         start() => createHttpProxyServer(_HttpOptions(mitmCA: testCA()));
-        if (SERVES_EMITTED_CONNECTIONS) {
+        if (canServeEmittedConnections) {
           expect(start, returnsNormally);
         } else {
           expect(
@@ -188,7 +188,7 @@ void main() {
 
   group(
     "the manager's proxy takes its tunnel cap and handshake deadline from tlsTerminate",
-    skip: SERVES_EMITTED_CONNECTIONS ? null : 'TLS termination unavailable',
+    skip: canServeEmittedConnections ? null : 'TLS termination unavailable',
     () {
       test(
         'maxTunnels: 1 answers a second tunnel 503; handshakeTimeoutMs closes a silent one and frees its slot',

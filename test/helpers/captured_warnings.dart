@@ -2,13 +2,11 @@
 import 'package:sandbox_runtime/src/node/console.dart' as console;
 import 'package:sandbox_runtime/src/node/process.dart' as process;
 
-/**
- * Run `fn` with debug logging on and console.warn/error captured, and return
- * what it produced beside the warnings it logged. The library routes its
- * warnings through the debug logger, so SRT_DEBUG has to be set for any of
- * them to be emitted at all; it is restored to whatever it was, unset
- * included.
- */
+/// Run `fn` with debug logging on and console.warn/error captured, and return
+/// what it produced beside the warnings it logged. The library routes its
+/// warnings through the debug logger, so SRT_DEBUG has to be set for any of
+/// them to be emitted at all; it is restored to whatever it was, unset
+/// included.
 Future<({T result, List<String> warnings})> withCapturedWarnings<T>(
   Future<T> Function() fn,
 ) async {

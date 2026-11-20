@@ -30,7 +30,7 @@ import 'package:test/test.dart';
 
 import '../helpers/captured.dart';
 import '../helpers/emitted_connections.dart'
-    show SERVES_EMITTED_CONNECTIONS, testWithTls;
+    show canServeEmittedConnections, testWithTls;
 import '../helpers/platform.dart' show isLinux;
 
 // Dart: the object literal upstream hands createHttpProxyServer; every
@@ -353,7 +353,7 @@ void main() {
 
       proxy = createHttpProxyServer(
         _HttpOptions(
-          mitmCA: SERVES_EMITTED_CONNECTIONS ? ca : null,
+          mitmCA: canServeEmittedConnections ? ca : null,
           tlsTerminateUpstreamCA: CA_PEM,
           // Per-sentinel host gating lives in the registry now; the closure
           // just forwards destHost.

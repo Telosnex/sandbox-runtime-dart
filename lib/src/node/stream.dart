@@ -1758,11 +1758,11 @@ class Duplex extends Readable with _WritableImpl implements Writable {
     bool objectMode = false,
     bool readableObjectMode = false,
     bool writableObjectMode = false,
-    bool allowHalfOpen = true,
+    this.allowHalfOpen = true,
     bool readable = true,
     bool writable = true,
     bool decodeStrings = true,
-    String? encoding,
+    super.encoding,
     String? defaultEncoding,
     bool emitClose = true,
     bool autoDestroy = true,
@@ -1771,11 +1771,9 @@ class Duplex extends Readable with _WritableImpl implements Writable {
     Function? writev,
     Function? finalCallback,
     super.destroy,
-  }) : allowHalfOpen = allowHalfOpen,
-       super(
+  }) : super(
          highWaterMark: readableHighWaterMark ?? highWaterMark,
          objectMode: objectMode || readableObjectMode,
-         encoding: encoding,
          emitClose: emitClose,
          autoDestroy: autoDestroy,
        ) {
@@ -1871,8 +1869,8 @@ class Duplex extends Readable with _WritableImpl implements Writable {
   }
 
   @override
-  Duplex unpipe([EventEmitter? destination]) {
-    super.unpipe(destination);
+  Duplex unpipe([EventEmitter? dest]) {
+    super.unpipe(dest);
     return this;
   }
 

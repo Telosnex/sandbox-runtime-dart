@@ -277,8 +277,9 @@ abstract interface class HttpProxyServerOptions {
 
   /**
    * Per-session bearer token. When set, every CONNECT and absolute-URI
-   * request must carry `Proxy-Authorization: Basic
-   * base64("srt[.<encodedCommand>]:<token>")` or it gets a 407. Without
+   * request must carry
+   * `Proxy-Authorization: Basic base64("srt[.<encodedCommand>]:<token>")`
+   * or it gets a 407. Without
    * this, any host process can dial 127.0.0.1 and reach the filter
    * callback. The optional `<encodedCommand>` suffix is parsed and passed to
    * `filter()` / `onFilterRequestDenied` so denials can be attributed to a

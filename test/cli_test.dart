@@ -14,16 +14,12 @@ import 'package:sandbox_runtime/src/node/os.dart' show tmpdir;
 import 'package:sandbox_runtime/src/node/process.dart' as process;
 import 'helpers/platform.dart' show isLinux;
 
-/**
- * Get the path to the CLI entry point
- */
+/// Get the path to the CLI entry point
 String getCliPath() {
   return join(process.cwd(), 'bin', 'srt.dart');
 }
 
-/**
- * Run the CLI with given arguments and return the result
- */
+/// Run the CLI with given arguments and return the result
 ({String stdout, String stderr, int? status}) runCli(
   List<String> args, {
   String? input,

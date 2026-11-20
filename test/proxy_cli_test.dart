@@ -20,7 +20,7 @@ import 'package:sandbox_runtime/src/sandbox/decider_client.dart'
 import 'package:sandbox_runtime/src/sandbox/mitm_ca.dart';
 import 'package:test/test.dart';
 
-import 'helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
+import 'helpers/emitted_connections.dart' show canServeEmittedConnections;
 
 // Dart: process.execPath is the Dart VM, and the entry is bin/srt_proxy.dart.
 final ENTRY = '${io.Directory.current.path}/bin/srt_proxy.dart';
@@ -512,7 +512,7 @@ Future<void> main() async {
             expect(stderr, contains('lifeline closed'));
           },
           timeout: const Timeout(Duration(milliseconds: 20000)),
-          skip: !SERVES_EMITTED_CONNECTIONS || (pin && TASKSET == null)
+          skip: !canServeEmittedConnections || (pin && TASKSET == null)
               ? true
               : null,
         );

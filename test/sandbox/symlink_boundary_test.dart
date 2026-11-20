@@ -98,8 +98,9 @@ void main() {
 
         // Clean up test directories and files
         if (_exists(TEST_BASE_DIR)) _removeTree(TEST_BASE_DIR);
-        if (_exists(OUTSIDE_WORKSPACE_FILE))
+        if (_exists(OUTSIDE_WORKSPACE_FILE)) {
           _deleteEntity(OUTSIDE_WORKSPACE_FILE);
+        }
       });
 
       group('Symlink Boundary Enforcement', () {

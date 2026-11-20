@@ -11,7 +11,7 @@ import 'package:sandbox_runtime/src/node/stream.dart' as stream;
 import 'package:sandbox_runtime/src/node/tls.dart' as tls;
 import 'package:sandbox_runtime/src/sandbox/tls_terminate_proxy.dart';
 import 'package:test/test.dart';
-import '../helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
+import '../helpers/emitted_connections.dart' show canServeEmittedConnections;
 
 // Every way a TLS-terminated tunnel can end frees its slot, its upstream
 // connection and the bytes counted for it within a bounded time, whatever
@@ -25,7 +25,7 @@ final FIXTURE =
 typedef Outcome = Map<String, dynamic>;
 final RUNS = [
   (name: 'Node', bin: 'node', how: 'accepted'),
-  if (SERVES_EMITTED_CONNECTIONS) ...[
+  if (canServeEmittedConnections) ...[
     (name: 'Dart', bin: io.Platform.resolvedExecutable, how: 'accepted'),
     (name: 'Dart', bin: io.Platform.resolvedExecutable, how: 'handed'),
   ],

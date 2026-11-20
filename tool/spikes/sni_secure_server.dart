@@ -64,8 +64,9 @@ Future<void> main() async {
         },
         onError: replyDone.completeError,
         onDone: () {
-          if (!replyDone.isCompleted)
+          if (!replyDone.isCompleted) {
             replyDone.complete(latin1.decode(replyBytes));
+          }
         },
       );
       tls.write('GET / HTTP/1.1\r\nHost: $host\r\nConnection: close\r\n\r\n');
@@ -104,8 +105,9 @@ Future<void> _serve(
       if (!gotHello.isCompleted) gotHello.completeError(e);
     },
     onDone: () {
-      if (!gotHello.isCompleted)
+      if (!gotHello.isCompleted) {
         gotHello.completeError(StateError('EOF before ClientHello'));
+      }
     },
   );
   try {
@@ -130,8 +132,9 @@ Future<void> _serve(
     late StreamSubscription<List<int>> requestSub;
     requestSub = tls.listen((chunk) {
       requestBytes.addAll(chunk);
-      if (_containsHeaderEnd(requestBytes) && !requestDone.isCompleted)
+      if (_containsHeaderEnd(requestBytes) && !requestDone.isCompleted) {
         requestDone.complete();
+      }
     }, onError: requestDone.completeError);
     await requestDone.future.timeout(const Duration(seconds: 5));
     await requestSub.cancel();
@@ -186,8 +189,9 @@ String? _clientHelloSni(List<int> input) {
             final nameLength = (b[q + 1] << 8) | b[q + 2];
             q += 3;
             if (q + nameLength > listEnd) return null;
-            if (nameType == 0)
+            if (nameType == 0) {
               return ascii.decode(b.sublist(q, q + nameLength));
+            }
             q += nameLength;
           }
         }
@@ -201,8 +205,9 @@ String? _clientHelloSni(List<int> input) {
 
 bool _containsHeaderEnd(List<int> b) {
   for (var i = 0; i + 3 < b.length; i++) {
-    if (b[i] == 13 && b[i + 1] == 10 && b[i + 2] == 13 && b[i + 3] == 10)
+    if (b[i] == 13 && b[i + 1] == 10 && b[i + 2] == 13 && b[i + 3] == 10) {
       return true;
+    }
   }
   return false;
 }

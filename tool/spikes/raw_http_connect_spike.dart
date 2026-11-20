@@ -23,8 +23,8 @@ Future<void> main() async {
     headerServer.port,
   );
   parsedClient.write(
-    'GET / HTTP/1.1\r\nHost: localhost\r\nX-MiXeD: first\r\nx-mixed: second\r\n' +
-        'X-Order-B: b\r\nX-Order-A: a\r\nConnection: close\r\n\r\n',
+    'GET / HTTP/1.1\r\nHost: localhost\r\nX-MiXeD: first\r\nx-mixed: second\r\n'
+    'X-Order-B: b\r\nX-Order-A: a\r\nConnection: close\r\n\r\n',
   );
   await parsedClient.flush();
   final normalized = await received.future.timeout(const Duration(seconds: 5));
@@ -42,9 +42,9 @@ Future<void> main() async {
   );
   final payload = <int>[
     ...ascii.encode(
-      'CONNECT api.example:443 HTTP/1.1\r\nHost: api.example:443\r\n' +
-          'X-MiXeD: first\r\nx-mixed: second\r\nX-Order-B: b\r\n' +
-          'X-Order-A: a\r\n\r\n',
+      'CONNECT api.example:443 HTTP/1.1\r\nHost: api.example:443\r\n'
+      'X-MiXeD: first\r\nx-mixed: second\r\nX-Order-B: b\r\n'
+      'X-Order-A: a\r\n\r\n',
     ),
     0x16,
     0x03,
@@ -99,8 +99,9 @@ int _headerEnd(List<int> bytes) {
     if (bytes[i] == 13 &&
         bytes[i + 1] == 10 &&
         bytes[i + 2] == 13 &&
-        bytes[i + 3] == 10)
+        bytes[i + 3] == 10) {
       return i;
+    }
   }
   return -1;
 }

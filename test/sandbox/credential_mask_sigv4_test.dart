@@ -43,10 +43,10 @@ import 'package:test/test.dart';
 
 // Every case here runs a proxy configured to terminate TLS, so each is
 // skipped where this runtime cannot terminate it in-process.
-import '../helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
+import '../helpers/emitted_connections.dart' show canServeEmittedConnections;
 
 // Dart: upstream's `describeWithTls as describe`, which `group` cannot alias.
-final Object? _tlsSkip = SERVES_EMITTED_CONNECTIONS
+final Object? _tlsSkip = canServeEmittedConnections
     ? null
     : 'TLS termination unavailable';
 

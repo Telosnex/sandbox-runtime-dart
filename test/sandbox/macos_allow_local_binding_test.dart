@@ -26,20 +26,20 @@ ProcessResult runInSandbox(String pythonCode, bool allowLocalBinding) {
 // Python one-liners for socket bind tests
 // AF_INET bind
 String bindIPv4(String addr) =>
-    "import socket; s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('${addr}', 0)); print('BOUND'); s.close()";
+    "import socket; s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('$addr', 0)); print('BOUND'); s.close()";
 
 // AF_INET6 dual-stack bind (IPV6_V6ONLY=0, same as Java ServerSocketChannel.open())
 String bindIPv6DualStack(String addr) =>
-    "import socket; s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0); s.bind(('${addr}', 0)); print('BOUND'); s.close()";
+    "import socket; s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0); s.bind(('$addr', 0)); print('BOUND'); s.close()";
 
 // Outbound TCP connect to a public IP (Seatbelt check, not reachability — settimeout
 // keeps the success path bounded; the deny path is an immediate EPERM at connect()).
 String connectTCP(String addr, int port) =>
-    "import socket; s = socket.socket(); s.settimeout(3); s.connect(('${addr}', ${port})); print('CONNECTED')";
+    "import socket; s = socket.socket(); s.settimeout(3); s.connect(('$addr', $port)); print('CONNECTED')";
 
 // Outbound UDP sendto a public IP (DNS-exfil shape, #88).
 String sendUDP(String addr, int port) =>
-    "import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3); s.sendto(b'x', ('${addr}', ${port})); print('SENT')";
+    "import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3); s.sendto(b'x', ('$addr', $port)); print('SENT')";
 
 // Bind a loopback listener and connect to it from a sibling AF_INET socket
 // in the same sandboxed process.

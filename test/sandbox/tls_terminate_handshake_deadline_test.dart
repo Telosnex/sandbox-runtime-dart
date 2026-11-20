@@ -15,7 +15,7 @@ import 'package:sandbox_runtime/src/sandbox/mitm_ca.dart';
 import 'package:sandbox_runtime/src/sandbox/mitm_leaf.dart';
 import 'package:test/test.dart';
 
-import '../helpers/emitted_connections.dart' show SERVES_EMITTED_CONNECTIONS;
+import '../helpers/emitted_connections.dart' show canServeEmittedConnections;
 
 // Dart: the named imports upstream takes from node:https, node:net and
 // node:tls, as aliases.
@@ -228,7 +228,7 @@ void main() {
 
   group(
     'TLS handshake deadline',
-    skip: SERVES_EMITTED_CONNECTIONS ? null : 'TLS termination unavailable',
+    skip: canServeEmittedConnections ? null : 'TLS termination unavailable',
     () {
       for (final version in VERSIONS) {
         test(
